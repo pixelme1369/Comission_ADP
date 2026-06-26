@@ -1,0 +1,36 @@
+{% extends "base.html" %}
+{% block title %}History — ADP Commission Calculator{% endblock %}
+
+{% block content %}
+<h1>Commission History</h1>
+
+{% if periods %}
+<table class="data-table sortable" id="history-table">
+  <thead>
+    <tr>
+      <th data-col="0">Period</th>
+      <th data-col="1">Agents</th>
+      <th data-col="2">Uploaded</th>
+      <th data-col="3">File</th>
+      <th>Actions</th>
+    </tr>
+  </thead>
+  <tbody>
+    {% for p in periods %}
+    <tr>
+      <td><a href="{{ url_for('main.period_detail', period_id=p.id) }}">{{ p.period_label }}</a></td>
+      <td>{{ p.total_agents }}</td>
+      <td>{{ p.uploaded_at.strftime('%Y-%m-%d %H:%M') }}</td>
+      <td class="muted">{{ p.filename }}</td>
+      <td>
+        <a href="{{ url_for('main.period_detail', period_id=p.id) }}" class="btn btn-sm">View</a>
+        <a href="{{ url_for('main.export_period', period_id=p.id) }}" class="btn btn-sm">Export</a>
+      </td>
+    </tr>
+    {% endfor %}
+  </tbody>
+</table>
+{% else %}
+<p class="muted">No commission periods on record yet. <a href="{{ url_for('main.index') }}">Upload your first CSV.</a></p>
+{% endif %}
+{% endblock %}

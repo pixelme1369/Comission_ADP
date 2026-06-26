@@ -1,0 +1,53 @@
+{% extends "base.html" %}
+{% block title %}Upload Commission CSV — ADP{% endblock %}
+
+{% block content %}
+<h1>Upload Monthly Commission CSV</h1>
+
+<div class="card">
+  <form method="POST" action="{{ url_for('main.upload') }}" enctype="multipart/form-data">
+    <div class="form-group">
+      <label for="csv_file">Select CSV File</label>
+      <input type="file" id="csv_file" name="csv_file" accept=".csv" required>
+    </div>
+    <div class="form-hint">
+      Required columns: <code>agent_name, units_cleared, total_cleared_debt, cancellation_rate, hourly_draw, period</code><br>
+      <code>cancellation_rate</code> is a percentage (e.g. <code>18.5</code> = 18.5%). <code>period</code> format: <code>YYYY-MM</code>.
+    </div>
+    <button type="submit" class="btn btn-primary">Calculate Commissions</button>
+  </form>
+</div>
+
+<div class="card">
+  <a href="/static/sample.csv" class="btn btn-secondary" download>Download Sample CSV</a>
+</div>
+
+{% if periods %}
+<h2>Recent Periods</h2>
+<table class="data-table">
+  <thead>
+    <tr>
+      <th>Period</th>
+      <th>Agents</th>
+      <th>Uploaded</th>
+      <th>Actions</th>
+    </tr>
+  </thead>
+  <tbody>
+    {% for p in periods %}
+    <tr>
+      <td><a href="{{ url_for('main.period_detail', period_id=p.id) }}">{{ p.period_label }}</a></td>
+      <td>{{ p.total_agents }}</td>
+      <td>{{ p.uploaded_at.strftime('%Y-%m-%d %H:%M') }}</td>
+      <td>
+        <a href="{{ url_for('main.period_detail', period_id=p.id) }}" class="btn btn-sm">View</a>
+        <a href="{{ url_for('main.export_period', period_id=p.id) }}" class="btn btn-sm">Export</a>
+      </td>
+    </tr>
+    {% endfor %}
+  </tbody>
+</table>
+{% else %}
+<p class="muted">No commission periods uploaded yet.</p>
+{% endif %}
+{% endblock %}
