@@ -185,6 +185,14 @@ h2 { font-size: 1.15rem; margin-bottom: 0.75rem; margin-top: 1.5rem; }
 /* Notes cell */
 .notes-cell { max-width: 280px; white-space: normal; color: #6b7280; font-size: 0.76rem; }
 
+/* Agent drill-down link */
+.agent-link { font-weight: 600; color: #2563eb; text-decoration: none; }
+.agent-link:hover { text-decoration: underline; }
+
+/* Back link */
+.back-link { display: inline-block; color: #6b7280; font-size: 0.85rem; margin-bottom: 0.5rem; text-decoration: none; }
+.back-link:hover { color: #1a1a2e; }
+
 /* Misc */
 .muted { color: #6b7280; }
 a { color: #2563eb; text-decoration: none; }
