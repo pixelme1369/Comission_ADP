@@ -324,10 +324,27 @@ def parse_crm_and_calculate(file_bytes: bytes, filename: str, already_cleared_cr
         if c["unit_status"] != "clawback":
             continue
 
+        crm_id = c.get("crm_id", "")
         agent_name = c["agent_name"]
         cleared_period = c["cleared_period"]
         dropped_period = c["dropped_period"]
         orig_key = (agent_name, cleared_period)
+
+        # Guard: only clawback if commission was actually paid on this client.
+        # It was paid if the client was in the cleared bucket this file (commission
+        # calculated now) OR was saved as is_cleared=True in a prior DB upload.
+        was_cleared_in_file = any(
+            x.get("crm_id") == crm_id
+            for x in cleared_buckets.get(orig_key, [])
+        )
+        was_paid_in_db = bool(crm_id and crm_id in already_cleared_crm_ids)
+
+        if not was_cleared_in_file and not was_paid_in_db:
+            # Commission was never paid (e.g. client was pending then cancelled).
+            # Reclassify as a non-paying cancel — no clawback applies.
+            c["unit_status"] = "same_month_cancel"
+            c["is_cancelled"] = True
+            continue
 
         orig_result = agent_period_results.get(orig_key)
         if not orig_result:
