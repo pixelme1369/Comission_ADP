@@ -292,22 +292,24 @@ def export_agent(period_id, agent_id):
     output = io.StringIO()
     writer = csv.writer(output)
     writer.writerow([
-        "Type", "Client Name", "Enrolled Debt", "Status",
+        "Type", "ID", "Client Name", "Enrolled Date", "Enrolled Debt", "Status",
         "1st Payment Cleared Date", "2nd Payment Cleared Date",
         "Payments Made", "# NSF", "Dropped Date",
         "Commission on Client", "Clawback Amount",
     ])
     for c in active_clients:
-        t = "Cleared" if c.is_cleared else ("Pending" if c.is_pending else "Cancelled (same month)")
+        t = "Cleared" if c.is_cleared else ("Pending" if c.is_pending else "Cancelled")
         writer.writerow([
-            t, c.client_name, f"{c.enrolled_debt:.2f}", c.status,
+            t, c.crm_id or "", c.client_name, c.enrolled_date or "",
+            f"{c.enrolled_debt:.2f}", c.status,
             c.first_payment_cleared_date, c.second_payment_cleared_date or "",
             c.payments_made, c.nsf_count, c.dropped_date or "",
             f"{c.commission_on_client:.2f}", "",
         ])
     for c in clawback_clients:
         writer.writerow([
-            "Clawback", c.client_name, f"{c.enrolled_debt:.2f}", c.status,
+            "Clawback", c.crm_id or "", c.client_name, c.enrolled_date or "",
+            f"{c.enrolled_debt:.2f}", c.status,
             c.first_payment_cleared_date, c.second_payment_cleared_date or "",
             c.payments_made, c.nsf_count, c.dropped_date or "",
             "", f"-{c.clawback_amount:.2f}",
