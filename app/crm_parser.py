@@ -57,6 +57,17 @@ def _period_of(dt) -> str:
     return dt.strftime("%Y-%m") if dt else None
 
 
+def _payment_date_for_period(period_str: str):
+    """Commission for a cleared period is paid on the 25th of the following month."""
+    if not period_str:
+        return None
+    dt = datetime.strptime(period_str, "%Y-%m")
+    # Advance one month
+    if dt.month == 12:
+        return datetime(dt.year + 1, 1, 25)
+    return datetime(dt.year, dt.month + 1, 25)
+
+
 def _parse_currency(value: str) -> float:
     return float(value.strip().replace("$", "").replace(",", "") or 0)
 
@@ -150,6 +161,14 @@ def parse_crm_and_calculate(file_bytes: bytes, filename: str) -> list:
         dropped_period = _period_of(dropped_date)
         same_month = (cleared_period and dropped_period and cleared_period == dropped_period)
 
+        # Commission for the cleared month is paid on the 25th of the FOLLOWING month.
+        # If the client drops BEFORE that payment date, commission was never sent out
+        # → treat as a non-paying cancel (same_month_cancel bucket), NOT a clawback.
+        payment_date = _payment_date_for_period(cleared_period)
+        dropped_before_payment = (
+            dropped_date and payment_date and dropped_date < payment_date
+        )
+
         # Classify the client
         if cleared_date and not dropped_date and not is_pending_cancellation:
             unit_status = "cleared"
@@ -157,10 +176,13 @@ def parse_crm_and_calculate(file_bytes: bytes, filename: str) -> list:
             unit_status = "pending"
         elif cleared_date and dropped_date and same_month:
             unit_status = "same_month_cancel"
-        elif cleared_date and dropped_date and not same_month and payments_made < 3:
-            unit_status = "clawback"
+        elif cleared_date and dropped_date and not same_month and dropped_before_payment:
+            # Dropped before the 25th payout — commission was never sent, just exclude
+            unit_status = "same_month_cancel"
         elif cleared_date and dropped_date and not same_month and payments_made >= 3:
             unit_status = "safe_cancel"
+        elif cleared_date and dropped_date and not same_month and payments_made < 3:
+            unit_status = "clawback"
         else:
             unit_status = "not_yet_cleared"
             if not cleared_date:
