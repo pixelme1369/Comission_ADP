@@ -14,7 +14,7 @@
   </div>
   <div class="card summary-card">
     <div class="card-value">${{ "{:,.2f}".format(total_payout) }}</div>
-    <div class="card-label">Total Payout</div>
+    <div class="card-label">Total Commission Owed</div>
   </div>
   <div class="card summary-card">
     <div class="card-value">${{ "{:,.2f}".format(total_commission) }}</div>
@@ -51,7 +51,7 @@
 
 <div class="legend">
   <span class="legend-item legend-green">Quality Bonus Rate Eligible</span>
-  <span class="legend-item legend-amber">Received Draw (commission below draw)</span>
+  <span class="legend-item legend-amber">Draw Only (commission below draw amount)</span>
   <span class="legend-item legend-red">Cancellation Tier Penalty Applied</span>
   <span class="legend-item legend-orange">NSF Flagged (client with 3+ NSF)</span>
   <span class="legend-item legend-purple">Has Pending Affiliate Cancellation Units</span>
@@ -67,7 +67,7 @@
         <th data-col="3">Rate</th>
         <th data-col="4">Cleared Debt</th>
         <th data-col="5">Gross Commission</th>
-        <th data-col="6">Payout</th>
+        <th data-col="6">Commission</th>
         <th data-col="7">Type</th>
         <th data-col="8">Cancel Rate</th>
         <th data-col="9">Quality Bonus</th>
@@ -104,9 +104,9 @@
           {% if a.payout_type == 'commission' %}
             <span class="badge badge-green">Commission</span>
           {% elif a.payout_type == 'draw' %}
-            <span class="badge badge-amber">Draw</span>
+            <span class="badge badge-amber">Draw Only</span>
           {% else %}
-            <span class="badge badge-gray">None</span>
+            <span class="badge badge-gray">No Units</span>
           {% endif %}
         </td>
         <td>{{ "%.1f"|format(a.cancellation_rate) }}%</td>
