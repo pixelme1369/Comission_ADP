@@ -88,7 +88,7 @@ def _get_adjusted_rate(units: int, cancel_rate_pct: float):
     return adj_tier, adj_rate
 
 
-def parse_crm_and_calculate(file_bytes: bytes, filename: str) -> list:
+def parse_crm_and_calculate(file_bytes: bytes, filename: str, already_cleared_crm_ids: set = None) -> list:
     """
     Parse a full-history CRM export and return one dict per commission period found.
 
@@ -216,6 +216,32 @@ def parse_crm_and_calculate(file_bytes: bytes, filename: str) -> list:
         })
 
     # ---------------------------------------------------------------
+    # Late activation: if a client is currently cleared (active) but
+    # their crm_id was never saved as is_cleared in the DB, and their
+    # cleared_period is earlier than the latest period in this file,
+    # they were pending before and just became active. Credit their
+    # commission in the latest period instead of their cleared month.
+    # ---------------------------------------------------------------
+    if already_cleared_crm_ids is None:
+        already_cleared_crm_ids = set()
+
+    all_cleared_periods = [c["cleared_period"] for c in all_clients if c["cleared_period"]]
+    latest_period = max(all_cleared_periods) if all_cleared_periods else None
+
+    for c in all_clients:
+        if (
+            c["unit_status"] == "cleared"
+            and c["crm_id"]
+            and c["crm_id"] not in already_cleared_crm_ids
+            and c["cleared_period"]
+            and latest_period
+            and c["cleared_period"] < latest_period
+        ):
+            c["original_cleared_period"] = c["cleared_period"]
+            c["cleared_period"] = latest_period
+            c["is_late_activation"] = True
+
+    # ---------------------------------------------------------------
     # Step 1: Build per-agent per-period cleared unit counts
     # (agent, cleared_period) → list of cleared clients
     # ---------------------------------------------------------------
@@ -269,6 +295,15 @@ def parse_crm_and_calculate(file_bytes: bytes, filename: str) -> list:
             result["notes"] += f" | {len(pending)} unit(s) pending Affiliate Cancellation review"
         if nsf_flagged:
             result["notes"] += f" | NSF flag: client(s) with {NSF_FLAG_THRESHOLD}+ NSF events"
+
+        # Note any late activations included in this period
+        late_activations = [c for c in cleared if c.get("is_late_activation")]
+        if late_activations:
+            periods = sorted({c["original_cleared_period"] for c in late_activations})
+            result["notes"] += (
+                f" | {len(late_activations)} late activation(s) — originally cleared "
+                f"{', '.join(periods)}, commission credited this period"
+            )
 
         # Commission per cleared client
         for c in cleared:

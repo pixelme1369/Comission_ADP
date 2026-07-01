@@ -75,7 +75,12 @@ def upload_crm():
         return redirect(url_for("main.index"))
 
     file_bytes = file.read()
-    period_results = parse_crm_and_calculate(file_bytes, file.filename)
+
+    # Collect crm_ids already saved as cleared so the parser can detect late activations
+    already_cleared_crm_ids = {
+        r.crm_id for r in ClientRecord.query.filter_by(is_cleared=True).all() if r.crm_id
+    }
+    period_results = parse_crm_and_calculate(file_bytes, file.filename, already_cleared_crm_ids)
 
     saved_period_ids = []
     shown_errors = set()
@@ -155,6 +160,8 @@ def upload_crm():
                     is_pending=cr.get("is_pending", False),
                     is_cancelled=cr.get("is_cancelled", False),
                     commission_on_client=cr.get("commission_on_client", 0.0),
+                    is_late_activation=cr.get("is_late_activation", False),
+                    original_cleared_period=cr.get("original_cleared_period"),
                 )
                 db.session.add(rec)
 
