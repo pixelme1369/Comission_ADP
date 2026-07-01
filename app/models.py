@@ -92,3 +92,7 @@ class ClientRecord(db.Model):
     clawback_applied = db.Column(db.Boolean, default=False)
     clawback_period_id = db.Column(db.Integer, db.ForeignKey("commission_period.id"), nullable=True)
     clawback_amount = db.Column(db.Float, default=0.0)  # amount clawed back due to this client
+
+    # Late activation: client was pending in their cleared month, became active later
+    is_late_activation = db.Column(db.Boolean, default=False)
+    original_cleared_period = db.Column(db.String(10), nullable=True)  # YYYY-MM they originally cleared

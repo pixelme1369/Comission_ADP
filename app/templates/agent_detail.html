@@ -93,7 +93,12 @@
       {% for c in clients if c.is_cleared %}
       <tr {% if c.nsf_count >= 3 %}class="row-orange"{% endif %}>
         <td class="muted">{{ c.crm_id or '—' }}</td>
-        <td>{{ c.client_name }}</td>
+        <td>
+          {{ c.client_name }}
+          {% if c.is_late_activation %}
+            <span class="badge badge-purple" title="Originally cleared {{ c.original_cleared_period }}, commission paid this period">Late</span>
+          {% endif %}
+        </td>
         <td>{{ c.enrolled_date or '—' }}</td>
         <td>${{ "{:,.2f}".format(c.enrolled_debt) }}</td>
         <td><strong>${{ "{:,.2f}".format(c.commission_on_client) }}</strong></td>

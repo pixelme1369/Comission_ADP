@@ -9,7 +9,7 @@ A web application for calculating and tracking agent commissions at American Deb
 ```bash
 cd /Users/saman/Documents/GitHub/Comission_ADP
 source .venv/bin/activate
-python run.py
+python3 run.py
 ```
 
 Open your browser and go to **http://127.0.0.1:5000**
@@ -22,21 +22,23 @@ To stop the server: press **CTRL+C** in the terminal.
 
 ### Step 1 — Upload Your CRM Export
 
-On the home page, use the **"Upload CRM Export"** form (left side). Select the CSV file you export from the backend CRM system and click **Import CRM Data**.
+On the home page, use the **"Upload CRM Export"** form. Select the CSV file you export from the backend CRM system and click **Import CRM Data**.
 
 The system will automatically:
-- Group all clients by their Sales Rep (agent)
+- Read every client row from the file (full history — all months in one file)
+- Group clients by Sales Rep (agent) and by calendar month
 - Identify which clients have cleared their first payment
-- Calculate each agent's commission tier and dollar amount
-- Flag any clawbacks, NSF issues, or pending units
+- Calculate each agent's commission tier and dollar amount per month
+- Detect and calculate any clawbacks
+- Flag NSF issues and pending units
 
-> **One period per upload.** If your CRM file spans multiple months, the system will split them automatically.
+> **One file covers all history.** If your CRM file spans multiple months, the system splits them automatically and creates one commission period per month found.
 
 ---
 
 ## How to Read the Results Page
 
-After uploading, you will see a results page for the commission period. Here is what everything means:
+After uploading, you will see a results page for the commission period.
 
 ### Summary Cards (top of page)
 
@@ -68,12 +70,13 @@ Commissions shown for a given month are **paid on the 25th of the following mont
 | **Rate** | Commission percentage for this tier |
 | **Cleared Debt** | Total enrolled debt of all cleared clients for this agent |
 | **Gross Commission** | Cleared Debt × Rate |
-| **Clawback** | Amount deducted because a prior-month client cancelled with fewer than 3 payments |
+| **Clawback** | Amount deducted because a prior-month client cancelled after commission was already paid out |
 | **Net Commission** | What you actually owe this agent (Gross − Clawback) |
 | **Cancel Rate** | Percentage of the agent's clients who cancelled this period |
 | **Quality Bonus** | "Rate OK" means cancellation rate is below 10% — still requires your manual review before paying the $500 bonus |
 | **NSF** | "Flag" means at least one client has 3+ NSF events — review before paying |
 | **Pending** | Number of clients held due to "Pending Affiliate Cancellation" status |
+| **Notes** | Click the pill button to open a popup listing all notes for that agent |
 
 ### Row Colors
 
@@ -91,21 +94,21 @@ Commissions shown for a given month are **paid on the 25th of the following mont
 
 Click any agent's name to see a full breakdown of every individual client. This is what you show an agent if they ask "how are you calculating my commission?"
 
-The page is divided into sections:
+Every client table shows: **ID, Client Name, Enrolled Date, Enrolled Debt, Dropped Date**, payment dates, payments made, NSF count, status, email, and phone.
+
+The page is divided into four sections:
 
 ### Cleared Clients
-Clients whose first payment cleared this month and are being paid commission on. Shows:
-- Client name, enrolled debt, commission earned on that client
-- Payment dates, payments made, NSF count, contact info
+Clients whose first payment cleared this month. Commission is being paid on these. Shows the commission earned per client (Enrolled Debt × Rate).
 
 ### Pending — Affiliate Cancellation Review
 Clients whose first payment cleared but whose status is "Pending Affiliate Cancellation." **Commission is not paid** on these until the status resolves to active.
 
 ### Clawbacks Applied This Period
-Clients who were paid commission in a **prior month** but cancelled this month with fewer than 3 payments. The commission originally paid on them has been deducted from this period's payout.
+Clients who were paid commission in a **prior month** but cancelled this month **after** the commission payment date (on or after the 25th of the month following their cleared month), with fewer than 3 payments made. The commission originally paid on them has been deducted from this period's payout.
 
-### Cancelled Same Month — Not Paid
-Clients who cleared and cancelled in the **same month**. No commission was ever paid on these, so there is no clawback — they are simply excluded.
+### Cancelled — Not Paid
+Clients who cancelled **before** commission was ever sent out — either in the same month they cleared, or before the 25th payout date. No commission was ever paid on these, so there is no clawback; they are simply excluded.
 
 ---
 
@@ -130,30 +133,22 @@ Clients who cleared and cancelled in the **same month**. No commission was ever 
 - Cancellation rate **below 10%** → agent is flagged as eligible for $500 Quality Performance Bonus (requires manual approval)
 
 ### Clawback Rules
-- If a client cancels in a **later month** than when they cleared → commission is clawed back
-- Clawback only applies if the client has **fewer than 3 payments made**
-- If removing the cancelled client drops the agent's tier for the original month, the clawback is the **full difference in commission** for that month — not just the one client
-- Same-month cancels are **never** a clawback (commission was never paid)
+
+Commission for a cleared month is paid on the **25th of the following month**. Whether a cancellation triggers a clawback depends on that payment date:
+
+| Situation | Result |
+|---|---|
+| Client cleared April, dropped before May 25 | **Not a clawback** — commission was never sent out |
+| Client cleared April, dropped May 25 or later | **Clawback** — commission was already paid |
+| Client cleared April, dropped June or later | **Clawback** — commission was already paid |
+| Client has 3 or more payments made | **Never a clawback**, regardless of when they drop |
+
+- If removing the cancelled client drops the agent's tier for the original cleared month, the clawback is the **full difference in commission for that month** — not just the one client's share
 
 ### Draw vs Commission
 - The agent's hourly pay for the 1st–15th of the month acts as a **draw**
 - If commission > draw → agent receives commission only
 - If commission < draw → agent keeps the draw, **no repayment required**
-
----
-
-## CSV Format (Manual Upload)
-
-If you want to manually enter data instead of uploading a CRM file, the manual CSV requires these columns:
-
-```
-agent_name, units_cleared, total_cleared_debt, cancellation_rate, hourly_draw, period
-```
-
-- `cancellation_rate`: percentage as a number (e.g. `18.5` = 18.5%)
-- `period`: format `YYYY-MM` (e.g. `2026-05`)
-
-Download a sample file from the Upload page.
 
 ---
 
@@ -174,10 +169,23 @@ A unit is **cancelled** when `Dropped Date` has a date.
 
 ---
 
+## CSV Format (Manual Upload)
+
+If you want to manually enter pre-aggregated data instead of uploading a CRM file:
+
+```
+agent_name, units_cleared, total_cleared_debt, cancellation_rate, hourly_draw, period
+```
+
+- `cancellation_rate`: percentage as a number (e.g. `18.5` = 18.5%)
+- `period`: format `YYYY-MM` (e.g. `2026-05`)
+
+---
+
 ## Exporting Results
 
 - **Period export**: Click "Export CSV" on any results page to download all agents for that period
-- **Agent export**: Click "Export Agent CSV" on any agent detail page to download that agent's full client list — useful to share with the agent directly
+- **Agent export**: Click "Export Agent CSV" on any agent detail page to download that agent's full client list — includes ID, Enrolled Date, Dropped Date, and all payment columns. Useful to share directly with the agent.
 
 ---
 
