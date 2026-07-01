@@ -5,7 +5,6 @@ from app import db
 from app.models import CommissionPeriod, AgentCommission, ClientRecord
 from app.csv_parser import parse_and_calculate
 from app.crm_parser import parse_crm_and_calculate
-from app.clawback import calculate_clawbacks
 
 bp = Blueprint("main", __name__)
 
@@ -79,10 +78,14 @@ def upload_crm():
     period_results = parse_crm_and_calculate(file_bytes, file.filename)
 
     saved_period_ids = []
+    shown_errors = set()
 
     for parsed in period_results:
+        # Show row-level warnings once (they repeat across periods)
         for err in parsed.get("errors", []):
-            flash(err, "error")
+            if err not in shown_errors:
+                flash(err, "error")
+                shown_errors.add(err)
 
         if not parsed["results"] or not parsed["period_label"]:
             continue
@@ -96,24 +99,39 @@ def upload_crm():
             )
             continue
 
-        period = CommissionPeriod(period_label=period_label, filename=file.filename,
-                                   total_agents=len(parsed["results"]))
+        period = CommissionPeriod(
+            period_label=period_label,
+            filename=file.filename,
+            total_agents=len(parsed["results"]),
+        )
         db.session.add(period)
         db.session.flush()
 
         # Save agent commission records
-        agent_map = {}  # agent_name → AgentCommission object
+        # Strip internal keys before saving to model
+        agent_obj_map = {}  # agent_name → AgentCommission
         for r in parsed["results"]:
-            client_rows = r.pop("_client_rows", [])
-            agent = AgentCommission(period_id=period.id, **r)
-            db.session.add(agent)
-            db.session.flush()
-            agent_map[r["agent_name"]] = (agent, client_rows)
+            cleared_clients = r.pop("_cleared_clients", [])
+            all_period_clients = r.pop("_all_period_clients", [])
+            clawback_clients = r.pop("_clawback_clients", [])
+            r.pop("_period_label", None)
 
-        # Save individual client records and link to agent commission
-        client_record_map = {}  # (agent_name, crm_id) → ClientRecord
-        for agent_name, (agent_obj, client_rows) in agent_map.items():
-            for cr in client_rows:
+            agent_obj = AgentCommission(period_id=period.id, **r)
+            db.session.add(agent_obj)
+            db.session.flush()
+            agent_obj_map[r["agent_name"]] = {
+                "obj": agent_obj,
+                "cleared_clients": cleared_clients,
+                "all_period_clients": all_period_clients,
+                "clawback_clients": clawback_clients,
+            }
+
+        # Save individual client records
+        for agent_name, data in agent_obj_map.items():
+            agent_obj = data["obj"]
+
+            # Clients that belong to this period (cleared, pending, same-month cancel)
+            for cr in data["all_period_clients"]:
                 rec = ClientRecord(
                     period_id=period.id,
                     agent_commission_id=agent_obj.id,
@@ -138,52 +156,38 @@ def upload_crm():
                     is_cancelled=cr.get("is_cancelled", False),
                     commission_on_client=cr.get("commission_on_client", 0.0),
                 )
-                # Store the cleared_period for clawback lookup later
-                rec.cleared_period = cr.get("cleared_period")
                 db.session.add(rec)
-                client_record_map[(agent_name, cr.get("crm_id", ""))] = rec
 
-        db.session.flush()
-
-        # --- Clawback engine ---
-        # Find clients in THIS file that cancelled in this period but cleared in a prior period
-        clawback_candidates = []
-        for agent_name, (agent_obj, client_rows) in agent_map.items():
-            for cr in client_rows:
-                if (cr.get("unit_status") == "clawback_candidate"
-                        and cr.get("payments_made", 0) < 3
-                        and cr.get("dropped_period") == period_label
-                        and cr.get("cleared_period")
-                        and cr["cleared_period"] != period_label):
-                    # Find the stored ClientRecord for the original period
-                    orig_client = ClientRecord.query.join(
-                        CommissionPeriod, ClientRecord.period_id == CommissionPeriod.id
-                    ).filter(
-                        CommissionPeriod.period_label == cr["cleared_period"],
-                        ClientRecord.agent_name == agent_name,
-                        ClientRecord.crm_id == cr.get("crm_id"),
-                    ).first()
-
-                    if orig_client:
-                        orig_client.cleared_period = cr["cleared_period"]
-                        clawback_candidates.append((agent_name, agent_obj, orig_client))
-
-        # Group clawback candidates by agent
-        agent_clawback_clients = {}
-        for agent_name, agent_obj, orig_client in clawback_candidates:
-            agent_clawback_clients.setdefault((agent_name, agent_obj.id), (agent_obj, []))
-            agent_clawback_clients[(agent_name, agent_obj.id)][1].append(orig_client)
-
-        for (agent_name, _), (agent_obj, clients) in agent_clawback_clients.items():
-            total_cb, per_client = calculate_clawbacks(agent_obj, clients, db.session)
-            agent_obj.clawback_amount = total_cb
-            agent_obj.net_commission = max(0.0, round(agent_obj.gross_commission - total_cb, 2))
-            agent_obj.notes = (agent_obj.notes or "") + f" | Clawback ${total_cb:,.2f} deducted from {len(clients)} cancelled client(s)"
-
-            for orig_client, cb_amt in per_client:
-                orig_client.clawback_applied = True
-                orig_client.clawback_period_id = period.id
-                orig_client.clawback_amount = cb_amt
+            # Clawback clients — these cleared in a prior month, cancelled this month
+            for cr in data["clawback_clients"]:
+                rec = ClientRecord(
+                    period_id=period.id,
+                    agent_commission_id=agent_obj.id,
+                    crm_id=cr.get("crm_id"),
+                    agent_name=cr["agent_name"],
+                    client_name=cr.get("client_name"),
+                    email=cr.get("email"),
+                    phone=cr.get("phone"),
+                    stage=cr.get("stage"),
+                    status=cr.get("status"),
+                    submitted_date=cr.get("submitted_date"),
+                    enrolled_date=cr.get("enrolled_date"),
+                    first_payment_date=cr.get("first_payment_date"),
+                    first_payment_cleared_date=cr.get("first_payment_cleared_date"),
+                    second_payment_cleared_date=cr.get("second_payment_cleared_date"),
+                    dropped_date=cr.get("dropped_date"),
+                    payments_made=cr.get("payments_made", 0),
+                    nsf_count=cr.get("nsf_count", 0),
+                    enrolled_debt=cr.get("enrolled_debt", 0.0),
+                    is_cleared=False,
+                    is_pending=False,
+                    is_cancelled=True,
+                    commission_on_client=0.0,
+                    clawback_applied=True,
+                    clawback_period_id=period.id,
+                    clawback_amount=cr.get("clawback_amount", 0.0),
+                )
+                db.session.add(rec)
 
         db.session.commit()
         saved_period_ids.append((period.id, period_label, len(parsed["results"])))
@@ -231,17 +235,14 @@ def agent_detail(period_id, agent_id):
     period = CommissionPeriod.query.get_or_404(period_id)
     agent = AgentCommission.query.get_or_404(agent_id)
     clients = ClientRecord.query.filter_by(agent_commission_id=agent_id).all()
-
-    # Also show clawback rows: clients from prior periods that were clawed back this period
-    clawback_clients = ClientRecord.query.filter_by(clawback_period_id=period_id).filter(
-        ClientRecord.agent_name == agent.agent_name
-    ).all()
+    clawback_clients = [c for c in clients if c.clawback_applied]
+    active_clients = [c for c in clients if not c.clawback_applied]
 
     return render_template(
         "agent_detail.html",
         period=period,
         agent=agent,
-        clients=clients,
+        clients=active_clients,
         clawback_clients=clawback_clients,
     )
 
@@ -285,32 +286,31 @@ def export_agent(period_id, agent_id):
     period = CommissionPeriod.query.get_or_404(period_id)
     agent = AgentCommission.query.get_or_404(agent_id)
     clients = ClientRecord.query.filter_by(agent_commission_id=agent_id).all()
-    clawback_clients = ClientRecord.query.filter_by(clawback_period_id=period_id).filter(
-        ClientRecord.agent_name == agent.agent_name
-    ).all()
+    clawback_clients = [c for c in clients if c.clawback_applied]
+    active_clients = [c for c in clients if not c.clawback_applied]
 
     output = io.StringIO()
     writer = csv.writer(output)
     writer.writerow([
-        "Client Name", "Enrolled Debt", "Status", "1st Payment Cleared Date",
-        "2nd Payment Cleared Date", "Payments Made", "# NSF",
-        "Dropped Date", "Commission on Client", "Type", "Clawback Amount",
+        "Type", "Client Name", "Enrolled Debt", "Status",
+        "1st Payment Cleared Date", "2nd Payment Cleared Date",
+        "Payments Made", "# NSF", "Dropped Date",
+        "Commission on Client", "Clawback Amount",
     ])
-    for c in clients:
+    for c in active_clients:
+        t = "Cleared" if c.is_cleared else ("Pending" if c.is_pending else "Cancelled (same month)")
         writer.writerow([
-            c.client_name, f"{c.enrolled_debt:.2f}", c.status,
-            c.first_payment_cleared_date, c.second_payment_cleared_date,
+            t, c.client_name, f"{c.enrolled_debt:.2f}", c.status,
+            c.first_payment_cleared_date, c.second_payment_cleared_date or "",
             c.payments_made, c.nsf_count, c.dropped_date or "",
-            f"{c.commission_on_client:.2f}",
-            "Cleared" if c.is_cleared else ("Pending" if c.is_pending else "Cancelled"),
-            "",
+            f"{c.commission_on_client:.2f}", "",
         ])
     for c in clawback_clients:
         writer.writerow([
-            c.client_name, f"{c.enrolled_debt:.2f}", c.status,
-            c.first_payment_cleared_date, c.second_payment_cleared_date,
+            "Clawback", c.client_name, f"{c.enrolled_debt:.2f}", c.status,
+            c.first_payment_cleared_date, c.second_payment_cleared_date or "",
             c.payments_made, c.nsf_count, c.dropped_date or "",
-            "", "Clawback", f"{c.clawback_amount:.2f}",
+            "", f"-{c.clawback_amount:.2f}",
         ])
 
     return Response(

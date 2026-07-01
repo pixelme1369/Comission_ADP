@@ -1,18 +1,25 @@
 """
-Parses the backend CRM export (one row per client) and aggregates into
-per-agent, per-commission-period commission data.
+Parses a full-history CRM export (one row per client, all months in one file).
 
-Cleared unit rules:
-  - 1st Payment Cleared Date has a value
-  - Dropped Date is empty
-  - Status != "Pending Affiliate Cancellation"
+For each client row:
+  - If 1st Payment Cleared Date filled + Dropped Date empty + Status != Pending Affiliate Cancellation
+    → CLEARED: counts as a unit in the cleared month, commission is owed
 
-Same-month cancel: Cleared Date and Dropped Date in the same month → excluded,
-never paid, NOT a clawback.
+  - If 1st Payment Cleared Date filled + Dropped Date filled + same month
+    → SAME_MONTH_CANCEL: excluded from commission, NOT a clawback (never paid)
 
-Clawback (handled in routes.py after DB lookup):
-  - Dropped Date in a LATER month than 1st Payment Cleared Date
-  - Payments Made < 3
+  - If 1st Payment Cleared Date filled + Dropped Date filled + different month + Payments Made < 3
+    → CLAWBACK: commission was paid in cleared month, must be deducted in dropped month
+
+  - If 1st Payment Cleared Date filled + Dropped Date filled + different month + Payments Made >= 3
+    → SAFE_CANCEL: 3+ payments made, no clawback
+
+  - If 1st Payment Cleared Date filled + Status == Pending Affiliate Cancellation
+    → PENDING: not paid yet
+
+Clawbacks are computed entirely within the parser (no DB lookups needed) since
+the full history is in one file. The clawback amount is applied to the agent's
+dropped-month commission period.
 """
 
 import csv
@@ -20,7 +27,7 @@ import io
 from collections import defaultdict
 from datetime import datetime
 
-from app.calculator import calculate_agent_commission, get_tier, TIERS
+from app.calculator import calculate_agent_commission, TIERS, CANCELLATION_PENALTY_THRESHOLD
 
 NSF_FLAG_THRESHOLD = 3
 
@@ -32,12 +39,6 @@ CRM_REQUIRED_COLUMNS = {
     "enrolled debt",
     "# nsf",
 }
-
-OPTIONAL_COLUMNS = [
-    "id", "full name", "email", "home phone", "stage",
-    "submitted date", "enrolled date",
-    "1st payment date", "2nd payment cleared date", "payments made",
-]
 
 
 def _parse_date(value: str):
@@ -60,14 +61,32 @@ def _parse_currency(value: str) -> float:
     return float(value.strip().replace("$", "").replace(",", "") or 0)
 
 
+def _get_adjusted_rate(units: int, cancel_rate_pct: float):
+    """Return (adjusted_tier_num, rate) applying cancellation penalty."""
+    if units <= 0:
+        return 0, 0.0
+    for i, (low, high, rate, _) in enumerate(TIERS, start=1):
+        if high is None or low <= units <= high:
+            raw_tier = i
+            break
+    else:
+        return 0, 0.0
+    penalty = cancel_rate_pct > CANCELLATION_PENALTY_THRESHOLD
+    adj_tier = max(1, raw_tier - 1) if penalty else raw_tier
+    _, _, adj_rate, _ = TIERS[adj_tier - 1]
+    return adj_tier, adj_rate
+
+
 def parse_crm_and_calculate(file_bytes: bytes, filename: str) -> list:
     """
-    Parse CRM export. Returns a list of period dicts:
+    Parse a full-history CRM export and return one dict per commission period found.
+
+    Returns list of:
     {
-        "period_label": "2026-06",
+        "period_label": "2026-05",
         "filename": str,
         "results": [ agent_result_dict, ... ],
-        "client_rows": [ client_row_dict, ... ],   # all individual clients for this period
+        "client_rows": [ client_row_dict, ... ],
         "errors": [],
     }
     """
@@ -96,8 +115,8 @@ def parse_crm_and_calculate(file_bytes: bytes, filename: str) -> list:
     def get(row, key):
         return row.get(col_map.get(key, key), "").strip()
 
-    # (agent_name, period_label) → list of parsed client dicts
-    buckets = defaultdict(list)
+    # Parse every row first
+    all_clients = []
     row_errors = []
 
     for row_num, raw_row in enumerate(reader, start=2):
@@ -127,33 +146,27 @@ def parse_crm_and_calculate(file_bytes: bytes, filename: str) -> list:
             payments_made = 0
 
         is_pending_cancellation = status.strip().lower() == "pending affiliate cancellation"
-        is_cancelled = dropped_date is not None
         cleared_period = _period_of(cleared_date)
         dropped_period = _period_of(dropped_date)
+        same_month = (cleared_period and dropped_period and cleared_period == dropped_period)
 
-        # Same-month cancel: cleared and dropped in same month → exclude entirely
-        same_month_cancel = (cleared_date and dropped_date and cleared_period == dropped_period)
-
-        if cleared_date and not is_cancelled and not is_pending_cancellation:
+        # Classify the client
+        if cleared_date and not dropped_date and not is_pending_cancellation:
             unit_status = "cleared"
-        elif cleared_date and not is_cancelled and is_pending_cancellation:
+        elif cleared_date and not dropped_date and is_pending_cancellation:
             unit_status = "pending"
-        elif same_month_cancel:
-            unit_status = "same_month_cancel"  # excluded from commission AND not a clawback
-        elif is_cancelled and cleared_date and cleared_period != dropped_period:
-            unit_status = "clawback_candidate"  # paid in cleared_period, cancelled in dropped_period
-        elif is_cancelled and not cleared_date:
-            unit_status = "cancelled_never_cleared"  # never paid, ignore
+        elif cleared_date and dropped_date and same_month:
+            unit_status = "same_month_cancel"
+        elif cleared_date and dropped_date and not same_month and payments_made < 3:
+            unit_status = "clawback"
+        elif cleared_date and dropped_date and not same_month and payments_made >= 3:
+            unit_status = "safe_cancel"
         else:
             unit_status = "not_yet_cleared"
+            if not cleared_date:
+                continue  # no cleared date = no commission relevance
 
-        # Only include rows that have a cleared date (or are clawback candidates)
-        if not cleared_date and unit_status not in ("same_month_cancel",):
-            continue
-
-        period_label = cleared_period  # attribute to the period when it cleared
-
-        client_dict = {
+        all_clients.append({
             "crm_id": get(raw_row, "id"),
             "agent_name": agent,
             "client_name": get(raw_row, "full name"),
@@ -175,36 +188,141 @@ def parse_crm_and_calculate(file_bytes: bytes, filename: str) -> list:
             "dropped_period": dropped_period,
             "is_cleared": unit_status == "cleared",
             "is_pending": unit_status == "pending",
-            "is_cancelled": is_cancelled,
-        }
+            "is_cancelled": dropped_date is not None,
+            "commission_on_client": 0.0,   # filled in below
+            "clawback_amount": 0.0,        # filled in below
+        })
 
-        if period_label:
-            buckets[(agent, period_label)].append(client_dict)
+    # ---------------------------------------------------------------
+    # Step 1: Build per-agent per-period cleared unit counts
+    # (agent, cleared_period) → list of cleared clients
+    # ---------------------------------------------------------------
+    cleared_buckets = defaultdict(list)   # (agent, period) → cleared clients
+    cancel_buckets = defaultdict(list)    # (agent, period) → cancelled clients (for cancel rate)
 
-    # Aggregate per agent per period
-    period_map = defaultdict(lambda: {"results": [], "client_rows": []})
+    for c in all_clients:
+        key = (c["agent_name"], c["cleared_period"])
+        if c["unit_status"] == "cleared":
+            cleared_buckets[key].append(c)
+        elif c["unit_status"] in ("same_month_cancel", "clawback", "safe_cancel"):
+            cancel_buckets[key].append(c)
 
-    for (agent_name, period_label), rows in buckets.items():
-        cleared_rows = [r for r in rows if r["unit_status"] == "cleared"]
-        pending_rows = [r for r in rows if r["unit_status"] == "pending"]
-        cancelled_rows = [r for r in rows if r["unit_status"] in ("same_month_cancel", "clawback_candidate")]
+    # ---------------------------------------------------------------
+    # Step 2: Calculate base commission per agent per cleared period
+    # Store (agent, period) → commission result dict
+    # ---------------------------------------------------------------
+    agent_period_results = {}  # (agent, cleared_period) → result dict
 
-        units_cleared = len(cleared_rows)
-        total_cleared_debt = sum(r["enrolled_debt"] for r in cleared_rows)
-        pending_units = len(pending_rows)
-        pending_debt = sum(r["enrolled_debt"] for r in pending_rows)
+    for (agent_name, period_label), cleared in cleared_buckets.items():
+        cancelled = cancel_buckets.get((agent_name, period_label), [])
+        pending = [c for c in all_clients
+                   if c["agent_name"] == agent_name
+                   and c["cleared_period"] == period_label
+                   and c["unit_status"] == "pending"]
 
-        total_for_rate = len(cleared_rows) + len(cancelled_rows) + len(pending_rows)
-        cancellation_rate_pct = (len(cancelled_rows) / total_for_rate * 100) if total_for_rate > 0 else 0.0
+        units_cleared = len(cleared)
+        total_cleared_debt = sum(c["enrolled_debt"] for c in cleared)
+        total_for_rate = units_cleared + len(cancelled) + len(pending)
+        cancel_rate_pct = (len(cancelled) / total_for_rate * 100) if total_for_rate > 0 else 0.0
+        nsf_flagged = any(c["nsf_count"] >= NSF_FLAG_THRESHOLD
+                          for c in cleared + cancelled + pending)
 
-        nsf_flagged = any(r["nsf_count"] >= NSF_FLAG_THRESHOLD for r in rows)
+        result = calculate_agent_commission(
+            agent_name=agent_name,
+            units_cleared=units_cleared,
+            total_cleared_debt=total_cleared_debt,
+            cancellation_rate_pct=cancel_rate_pct,
+            hourly_draw=0.0,
+        )
+        result["clawback_amount"] = 0.0
+        result["net_commission"] = result["gross_commission"]
+        result["nsf_flagged"] = nsf_flagged
+        result["pending_units"] = len(pending)
+        result["pending_debt"] = sum(c["enrolled_debt"] for c in pending)
+        result["source"] = "crm"
+        result["_cleared_clients"] = cleared
+        result["_all_period_clients"] = cleared + cancelled + pending
 
-        if units_cleared == 0:
-            result = {
+        if len(pending) > 0:
+            result["notes"] += f" | {len(pending)} unit(s) pending Affiliate Cancellation review"
+        if nsf_flagged:
+            result["notes"] += f" | NSF flag: client(s) with {NSF_FLAG_THRESHOLD}+ NSF events"
+
+        # Commission per cleared client
+        for c in cleared:
+            c["commission_on_client"] = round(c["enrolled_debt"] * result["tier_rate"], 2)
+
+        agent_period_results[(agent_name, period_label)] = result
+
+    # ---------------------------------------------------------------
+    # Step 3: Calculate clawbacks
+    # For each clawback client, find their original cleared period,
+    # recalculate that period's commission without them, compute delta.
+    # Apply the clawback to the agent's DROPPED month period.
+    # ---------------------------------------------------------------
+    # (agent, dropped_period) → list of (client, clawback_amount)
+    clawback_by_drop_period = defaultdict(list)
+
+    for c in all_clients:
+        if c["unit_status"] != "clawback":
+            continue
+
+        agent_name = c["agent_name"]
+        cleared_period = c["cleared_period"]
+        dropped_period = c["dropped_period"]
+        orig_key = (agent_name, cleared_period)
+
+        orig_result = agent_period_results.get(orig_key)
+        if not orig_result:
+            # Commission record not found (agent had 0 cleared in that month after cancels)
+            # Clawback = just this client's debt × lowest possible rate
+            cb = round(c["enrolled_debt"] * 0.01, 2)
+            c["clawback_amount"] = cb
+            clawback_by_drop_period[(agent_name, dropped_period)].append(c)
+            continue
+
+        orig_units = orig_result["units_cleared"]
+        orig_debt = orig_result["total_cleared_debt"]
+        orig_commission = orig_result["gross_commission"]
+        orig_cancel_rate = orig_result["cancellation_rate"]
+
+        if orig_units <= 1:
+            # Removing this unit leaves 0 — full commission clawed back
+            cb = orig_commission
+        else:
+            new_units = orig_units - 1
+            new_debt = orig_debt - c["enrolled_debt"]
+            _, new_rate = _get_adjusted_rate(new_units, orig_cancel_rate)
+            _, orig_rate = _get_adjusted_rate(orig_units, orig_cancel_rate)
+
+            if new_rate != orig_rate:
+                # Tier dropped — clawback is full difference on all Month A debt
+                new_commission = new_rate * new_debt
+                cb = orig_commission - new_commission
+            else:
+                # Same tier — clawback is just this client's share
+                cb = c["enrolled_debt"] * orig_rate
+
+        cb = max(0.0, round(cb, 2))
+        c["clawback_amount"] = cb
+        clawback_by_drop_period[(agent_name, dropped_period)].append(c)
+
+    # ---------------------------------------------------------------
+    # Step 4: Apply clawbacks to the dropped-month period results
+    # If no commission result exists for the dropped month yet,
+    # create a zero-unit entry just to carry the clawback.
+    # ---------------------------------------------------------------
+    for (agent_name, dropped_period), cb_clients in clawback_by_drop_period.items():
+        total_cb = round(sum(c["clawback_amount"] for c in cb_clients), 2)
+        key = (agent_name, dropped_period)
+
+        if key not in agent_period_results:
+            # Agent had no cleared units in the dropped month — create a holding entry
+            agent_period_results[key] = {
                 "agent_name": agent_name,
                 "units_cleared": 0,
                 "total_cleared_debt": 0.0,
-                "cancellation_rate": round(cancellation_rate_pct, 2),
+                "cancellation_rate": 0.0,
                 "hourly_draw": 0.0,
                 "raw_tier": 0,
                 "adjusted_tier": 0,
@@ -216,51 +334,52 @@ def parse_crm_and_calculate(file_bytes: bytes, filename: str) -> list:
                 "payout_type": "none",
                 "quality_bonus_eligible": False,
                 "cancellation_penalty_applied": False,
-                "nsf_flagged": nsf_flagged,
-                "pending_units": pending_units,
-                "pending_debt": pending_debt,
+                "nsf_flagged": False,
+                "pending_units": 0,
+                "pending_debt": 0.0,
                 "source": "crm",
-                "notes": "No cleared units this period" + (
-                    f" | {pending_units} unit(s) pending Affiliate Cancellation review" if pending_units else ""),
+                "notes": "",
+                "_cleared_clients": [],
+                "_all_period_clients": [],
             }
-            tier_rate = 0.0
-        else:
-            result = calculate_agent_commission(
-                agent_name=agent_name,
-                units_cleared=units_cleared,
-                total_cleared_debt=total_cleared_debt,
-                cancellation_rate_pct=cancellation_rate_pct,
-                hourly_draw=0.0,
-            )
-            result["clawback_amount"] = 0.0
-            result["net_commission"] = result["gross_commission"]
-            result["nsf_flagged"] = nsf_flagged
-            result["pending_units"] = pending_units
-            result["pending_debt"] = pending_debt
-            result["source"] = "crm"
-            tier_rate = result["tier_rate"]
-            if pending_units:
-                result["notes"] += f" | {pending_units} unit(s) pending Affiliate Cancellation review (${pending_debt:,.2f} on hold)"
-            if nsf_flagged:
-                result["notes"] += f" | NSF flag: one or more clients have {NSF_FLAG_THRESHOLD}+ NSF events"
 
-        # Annotate each client with their individual commission contribution
-        for r in cleared_rows:
-            r["commission_on_client"] = round(r["enrolled_debt"] * tier_rate, 2)
-        for r in pending_rows + cancelled_rows:
-            r["commission_on_client"] = 0.0
+        r = agent_period_results[key]
+        r["clawback_amount"] = round(r.get("clawback_amount", 0.0) + total_cb, 2)
+        r["net_commission"] = max(0.0, round(r["gross_commission"] - r["clawback_amount"], 2))
+        r["notes"] = (r.get("notes") or "") + \
+            f" | Clawback -${total_cb:,.2f} from {len(cb_clients)} cancelled client(s) (prior month)"
+        r["_clawback_clients"] = cb_clients
 
-        result["_client_rows"] = rows  # carry clients along for DB insertion
-        period_map[period_label]["results"].append(result)
-        period_map[period_label]["client_rows"].extend(rows)
+    # ---------------------------------------------------------------
+    # Step 5: Group everything by period for output
+    # ---------------------------------------------------------------
+    period_map = defaultdict(list)
+    for (agent_name, period_label), result in agent_period_results.items():
+        result["_period_label"] = period_label
+        period_map[period_label].append(result)
+
+    # Also collect agents with only clawbacks in a period (no cleared units there)
+    # already handled above via the holding entry
 
     periods_out = []
-    for period_label, data in sorted(period_map.items()):
+    for period_label in sorted(period_map.keys()):
+        agent_results = period_map[period_label]
+
+        # Build client_rows for this period
+        period_client_rows = []
+        for r in agent_results:
+            for c in r.get("_all_period_clients", []):
+                c["_period_label"] = period_label
+                period_client_rows.append(c)
+            for c in r.get("_clawback_clients", []):
+                c["_clawback_in_period"] = period_label
+                period_client_rows.append(c)
+
         periods_out.append({
             "period_label": period_label,
             "filename": filename,
-            "results": data["results"],
-            "client_rows": data["client_rows"],
+            "results": agent_results,
+            "client_rows": period_client_rows,
             "errors": row_errors,
         })
 
