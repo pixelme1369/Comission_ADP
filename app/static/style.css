@@ -55,12 +55,13 @@ body {
 }
 .summary-card {
   flex: 1;
-  min-width: 140px;
+  min-width: 160px;
   text-align: center;
   padding: 1rem;
+  overflow: hidden;
 }
-.card-value { font-size: 1.75rem; font-weight: 700; color: #1a1a2e; }
-.card-label { font-size: 0.8rem; color: #6b7280; margin-top: 0.25rem; text-transform: uppercase; letter-spacing: 0.5px; }
+.card-value { font-size: 1.4rem; font-weight: 700; color: #1a1a2e; word-break: break-word; }
+.card-label { font-size: 0.75rem; color: #6b7280; margin-top: 0.25rem; text-transform: uppercase; letter-spacing: 0.5px; }
 .highlight-green .card-value { color: #166534; }
 .highlight-amber .card-value { color: #92400e; }
 .highlight-red .card-value { color: #991b1b; }
