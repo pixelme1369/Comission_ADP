@@ -73,11 +73,36 @@ Commission for a cleared month is **paid on the 25th of the following month** (`
 ```
 cleared          → 1st Payment Cleared Date filled, no Dropped Date, not Pending Affiliate Cancellation
 pending          → 1st Payment Cleared Date filled, no Dropped Date, status == "Pending Affiliate Cancellation"
-same_month_cancel → cleared and dropped same calendar month, OR dropped before the 25th payout date
-clawback         → cleared Month A, dropped Month B (on/after payment date), payments_made < 3
+same_month_cancel → cleared and dropped same calendar month, OR dropped before the 25th payout date,
+                    OR was pending then cancelled (commission never paid — no clawback)
+clawback         → cleared Month A, dropped Month B (on/after payment date), payments_made < 3,
+                    AND commission was actually paid (client was in cleared_buckets this file OR
+                    crm_id exists as is_cleared=True in DB from a prior upload)
 safe_cancel      → cleared Month A, dropped any time, payments_made >= 3
 not_yet_cleared  → no 1st Payment Cleared Date (skipped entirely)
+late_activation  → was pending in cleared month (crm_id never in DB as is_cleared), now active,
+                    cleared_period < latest period in file → commission credited in latest period
 ```
+
+## Late Activation Logic
+
+When a client was "Pending Affiliate Cancellation" in their cleared month and later becomes active:
+- Commission was never paid in their original cleared month
+- On next upload, `parse_crm_and_calculate` receives `already_cleared_crm_ids` (set of crm_ids
+  saved as `is_cleared=True` in DB) from `routes.py`
+- If client's `crm_id` not in that set AND `cleared_period < latest_period` in file → late activation
+- Their `cleared_period` is reassigned to `latest_period` BEFORE bucket-building (Step 1)
+- This means the tier for the latest period is recalculated including the late activation client
+- `ClientRecord` stores `is_late_activation=True` and `original_cleared_period` for display
+
+## Clawback Guard (Pending → Cancelled)
+
+If a client goes from "Pending Affiliate Cancellation" directly to cancelled (never became active):
+- Commission was never paid → must NOT trigger a clawback
+- Before calculating any clawback, parser checks:
+  1. Was the client in `cleared_buckets` for their cleared month in this file? (first upload case)
+  2. Is their `crm_id` in `already_cleared_crm_ids` from DB? (prior upload case)
+- If neither → reclassified as `same_month_cancel` → excluded, no clawback
 
 ## CRM Required Columns
 
