@@ -28,6 +28,18 @@
     <div class="card-value">{{ penalty_count }}</div>
     <div class="card-label">Tier Penalties Applied</div>
   </div>
+  {% if nsf_count %}
+  <div class="card summary-card highlight-red">
+    <div class="card-value">{{ nsf_count }}</div>
+    <div class="card-label">NSF Flagged Agents</div>
+  </div>
+  {% endif %}
+  {% if pending_count %}
+  <div class="card summary-card highlight-purple">
+    <div class="card-value">{{ pending_count }}</div>
+    <div class="card-label">Agents w/ Pending Units</div>
+  </div>
+  {% endif %}
 </div>
 
 <div class="table-actions">
@@ -41,6 +53,8 @@
   <span class="legend-item legend-green">Quality Bonus Rate Eligible</span>
   <span class="legend-item legend-amber">Received Draw (commission below draw)</span>
   <span class="legend-item legend-red">Cancellation Tier Penalty Applied</span>
+  <span class="legend-item legend-orange">NSF Flagged (client with 3+ NSF)</span>
+  <span class="legend-item legend-purple">Has Pending Affiliate Cancellation Units</span>
 </div>
 
 <div class="table-wrapper">
@@ -53,40 +67,46 @@
         <th data-col="3">Rate</th>
         <th data-col="4">Cleared Debt</th>
         <th data-col="5">Gross Commission</th>
-        <th data-col="6">Draw</th>
-        <th data-col="7">Payout</th>
-        <th data-col="8">Type</th>
-        <th data-col="9">Cancel Rate</th>
-        <th data-col="10">Quality Bonus</th>
+        <th data-col="6">Payout</th>
+        <th data-col="7">Type</th>
+        <th data-col="8">Cancel Rate</th>
+        <th data-col="9">Quality Bonus</th>
+        <th data-col="10">NSF</th>
+        <th data-col="11">Pending Units</th>
         <th>Notes</th>
       </tr>
     </thead>
     <tbody>
       {% for a in agents %}
       <tr class="
-        {% if a.quality_bonus_eligible %}row-green{% endif %}
+        {% if a.nsf_flagged %}row-orange{% endif %}
+        {% if a.quality_bonus_eligible and not a.nsf_flagged %}row-green{% endif %}
         {% if a.payout_type == 'draw' %}row-amber{% endif %}
         {% if a.cancellation_penalty_applied %}row-red{% endif %}
+        {% if a.pending_units %}row-purple{% endif %}
       ">
         <td>{{ a.agent_name }}</td>
         <td>{{ a.units_cleared }}</td>
         <td>
-          {% if a.cancellation_penalty_applied %}
+          {% if a.units_cleared == 0 %}
+            <span class="tier-badge" style="background:#f1f5f9;color:#6b7280">—</span>
+          {% elif a.cancellation_penalty_applied %}
             <span class="tier-badge tier-penalty">{{ a.raw_tier }} → {{ a.adjusted_tier }}</span>
           {% else %}
             <span class="tier-badge">{{ a.adjusted_tier }}</span>
           {% endif %}
         </td>
-        <td>{{ "%.2f"|format(a.tier_rate * 100) }}%</td>
+        <td>{% if a.units_cleared > 0 %}{{ "%.2f"|format(a.tier_rate * 100) }}%{% else %}—{% endif %}</td>
         <td>${{ "{:,.2f}".format(a.total_cleared_debt) }}</td>
         <td>${{ "{:,.2f}".format(a.gross_commission) }}</td>
-        <td>${{ "{:,.2f}".format(a.hourly_draw) }}</td>
         <td><strong>${{ "{:,.2f}".format(a.payout) }}</strong></td>
         <td>
           {% if a.payout_type == 'commission' %}
             <span class="badge badge-green">Commission</span>
-          {% else %}
+          {% elif a.payout_type == 'draw' %}
             <span class="badge badge-amber">Draw</span>
+          {% else %}
+            <span class="badge badge-gray">None</span>
           {% endif %}
         </td>
         <td>{{ "%.1f"|format(a.cancellation_rate) }}%</td>
@@ -95,6 +115,20 @@
             <span class="badge badge-green">Rate OK – Pending Review</span>
           {% else %}
             <span class="badge badge-gray">Not Eligible</span>
+          {% endif %}
+        </td>
+        <td>
+          {% if a.nsf_flagged %}
+            <span class="badge badge-orange">NSF Flag</span>
+          {% else %}
+            <span class="badge badge-gray">Clear</span>
+          {% endif %}
+        </td>
+        <td>
+          {% if a.pending_units %}
+            <span class="badge badge-purple">{{ a.pending_units }} unit{% if a.pending_units != 1 %}s{% endif %} (${{ "{:,.0f}".format(a.pending_debt) }})</span>
+          {% else %}
+            —
           {% endif %}
         </td>
         <td class="notes-cell">{{ a.notes }}</td>

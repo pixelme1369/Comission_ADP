@@ -1,25 +1,42 @@
 {% extends "base.html" %}
-{% block title %}Upload Commission CSV — ADP{% endblock %}
+{% block title %}Upload — ADP Commission Calculator{% endblock %}
 
 {% block content %}
-<h1>Upload Monthly Commission CSV</h1>
+<h1>Commission Calculator</h1>
 
-<div class="card">
-  <form method="POST" action="{{ url_for('main.upload') }}" enctype="multipart/form-data">
-    <div class="form-group">
-      <label for="csv_file">Select CSV File</label>
-      <input type="file" id="csv_file" name="csv_file" accept=".csv" required>
-    </div>
-    <div class="form-hint">
-      Required columns: <code>agent_name, units_cleared, total_cleared_debt, cancellation_rate, hourly_draw, period</code><br>
-      <code>cancellation_rate</code> is a percentage (e.g. <code>18.5</code> = 18.5%). <code>period</code> format: <code>YYYY-MM</code>.
-    </div>
-    <button type="submit" class="btn btn-primary">Calculate Commissions</button>
-  </form>
-</div>
+<div class="upload-grid">
+  <!-- CRM Upload -->
+  <div class="card upload-card">
+    <h2>Upload CRM Export <span class="badge badge-green">Recommended</span></h2>
+    <p class="muted" style="margin-bottom:1rem;">Upload the backend CRM CSV directly. The system groups clients by agent and calculates commissions automatically.</p>
+    <form method="POST" action="{{ url_for('main.upload_crm') }}" enctype="multipart/form-data">
+      <div class="form-group">
+        <label for="crm_file">CRM Export CSV</label>
+        <input type="file" id="crm_file" name="csv_file" accept=".csv" required>
+      </div>
+      <div class="form-hint">
+        Required columns: <code>Sales Rep, 1st Payment Cleared Date, Dropped Date, Status, Enrolled Debt, # NSF</code>
+      </div>
+      <button type="submit" class="btn btn-primary">Import CRM Data</button>
+    </form>
+  </div>
 
-<div class="card">
-  <a href="/static/sample.csv" class="btn btn-secondary" download>Download Sample CSV</a>
+  <!-- Manual Upload -->
+  <div class="card upload-card">
+    <h2>Manual CSV Upload</h2>
+    <p class="muted" style="margin-bottom:1rem;">Upload a pre-aggregated summary CSV with one row per agent.</p>
+    <form method="POST" action="{{ url_for('main.upload') }}" enctype="multipart/form-data">
+      <div class="form-group">
+        <label for="csv_file">Manual Summary CSV</label>
+        <input type="file" id="csv_file" name="csv_file" accept=".csv" required>
+      </div>
+      <div class="form-hint">
+        Required columns: <code>agent_name, units_cleared, total_cleared_debt, cancellation_rate, hourly_draw, period</code><br>
+        <a href="/static/sample.csv" download>Download sample CSV</a>
+      </div>
+      <button type="submit" class="btn btn-secondary">Upload Manual CSV</button>
+    </form>
+  </div>
 </div>
 
 {% if periods %}

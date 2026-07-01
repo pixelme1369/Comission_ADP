@@ -36,4 +36,8 @@ class AgentCommission(db.Model):
 
     quality_bonus_eligible = db.Column(db.Boolean, default=False)
     cancellation_penalty_applied = db.Column(db.Boolean, default=False)
+    nsf_flagged = db.Column(db.Boolean, default=False)       # any client with # NSF >= 3
+    pending_units = db.Column(db.Integer, default=0)         # units held due to Pending Affiliate Cancellation
+    pending_debt = db.Column(db.Float, default=0.0)          # enrolled debt of pending units
+    source = db.Column(db.String(20), default="manual")      # "manual" or "crm"
     notes = db.Column(db.Text)

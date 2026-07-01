@@ -25,7 +25,7 @@ def calculate_agent_commission(
     units_cleared: int,
     total_cleared_debt: float,
     cancellation_rate_pct: float,
-    hourly_draw: float,
+    hourly_draw: float = 0.0,
 ) -> dict:
     """
     Calculate commission for a single agent for one month.
