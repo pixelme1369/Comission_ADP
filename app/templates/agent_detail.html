@@ -74,7 +74,9 @@
   <table class="data-table" id="clients-table">
     <thead>
       <tr>
+        <th>ID</th>
         <th>Client Name</th>
+        <th>Enrolled Date</th>
         <th>Enrolled Debt</th>
         <th>Commission on Client</th>
         <th>1st Payment Cleared</th>
@@ -82,7 +84,6 @@
         <th>Payments Made</th>
         <th># NSF</th>
         <th>Status</th>
-        <th>Enrolled Date</th>
         <th>Email</th>
         <th>Phone</th>
       </tr>
@@ -90,7 +91,9 @@
     <tbody>
       {% for c in clients if c.is_cleared %}
       <tr {% if c.nsf_count >= 3 %}class="row-orange"{% endif %}>
+        <td class="muted">{{ c.crm_id or '—' }}</td>
         <td>{{ c.client_name }}</td>
+        <td>{{ c.enrolled_date or '—' }}</td>
         <td>${{ "{:,.2f}".format(c.enrolled_debt) }}</td>
         <td><strong>${{ "{:,.2f}".format(c.commission_on_client) }}</strong></td>
         <td>{{ c.first_payment_cleared_date }}</td>
@@ -98,12 +101,11 @@
         <td>{{ c.payments_made }}</td>
         <td>{% if c.nsf_count >= 3 %}<span class="badge badge-orange">{{ c.nsf_count }}</span>{% else %}{{ c.nsf_count }}{% endif %}</td>
         <td>{{ c.status }}</td>
-        <td>{{ c.enrolled_date }}</td>
         <td>{{ c.email }}</td>
         <td>{{ c.phone }}</td>
       </tr>
       {% else %}
-      <tr><td colspan="11" class="muted" style="padding:1rem;">No cleared clients this period.</td></tr>
+      <tr><td colspan="12" class="muted" style="padding:1rem;">No cleared clients this period.</td></tr>
       {% endfor %}
     </tbody>
   </table>
@@ -118,7 +120,9 @@
   <table class="data-table">
     <thead>
       <tr>
+        <th>ID</th>
         <th>Client Name</th>
+        <th>Enrolled Date</th>
         <th>Enrolled Debt</th>
         <th>1st Payment Cleared</th>
         <th>Payments Made</th>
@@ -130,7 +134,9 @@
     <tbody>
       {% for c in pending_list %}
       <tr class="row-purple">
+        <td class="muted">{{ c.crm_id or '—' }}</td>
         <td>{{ c.client_name }}</td>
+        <td>{{ c.enrolled_date or '—' }}</td>
         <td>${{ "{:,.2f}".format(c.enrolled_debt) }}</td>
         <td>{{ c.first_payment_cleared_date }}</td>
         <td>{{ c.payments_made }}</td>
@@ -152,7 +158,9 @@
   <table class="data-table">
     <thead>
       <tr>
+        <th>ID</th>
         <th>Client Name</th>
+        <th>Enrolled Date</th>
         <th>Enrolled Debt</th>
         <th>Originally Cleared</th>
         <th>Dropped Date</th>
@@ -165,7 +173,9 @@
     <tbody>
       {% for c in clawback_clients %}
       <tr class="row-red">
+        <td class="muted">{{ c.crm_id or '—' }}</td>
         <td>{{ c.client_name }}</td>
+        <td>{{ c.enrolled_date or '—' }}</td>
         <td>${{ "{:,.2f}".format(c.enrolled_debt) }}</td>
         <td>{{ c.first_payment_cleared_date }}</td>
         <td>{{ c.dropped_date }}</td>
@@ -183,13 +193,15 @@
 <!-- Same-month cancels -->
 {% set cancelled_list = clients|selectattr('is_cancelled')|list %}
 {% if cancelled_list %}
-<h2 style="margin-top:1.5rem;">Cancelled Same Month — Not Paid ({{ cancelled_list|length }})</h2>
-<p class="muted" style="margin-bottom:0.75rem;">These clients cancelled in the same month they cleared. No commission was ever paid, no clawback applies.</p>
+<h2 style="margin-top:1.5rem;">Cancelled — Not Paid ({{ cancelled_list|length }})</h2>
+<p class="muted" style="margin-bottom:0.75rem;">These clients cancelled before commission was paid out. No commission was ever sent, no clawback applies.</p>
 <div class="table-wrapper">
   <table class="data-table">
     <thead>
       <tr>
+        <th>ID</th>
         <th>Client Name</th>
+        <th>Enrolled Date</th>
         <th>Enrolled Debt</th>
         <th>1st Payment Cleared</th>
         <th>Dropped Date</th>
@@ -200,7 +212,9 @@
     <tbody>
       {% for c in cancelled_list %}
       <tr style="opacity:0.7;">
+        <td class="muted">{{ c.crm_id or '—' }}</td>
         <td>{{ c.client_name }}</td>
+        <td>{{ c.enrolled_date or '—' }}</td>
         <td>${{ "{:,.2f}".format(c.enrolled_debt) }}</td>
         <td>{{ c.first_payment_cleared_date }}</td>
         <td>{{ c.dropped_date }}</td>
