@@ -1,0 +1,216 @@
+{% extends "base.html" %}
+{% block title %}{{ agent.agent_name }} — {{ period.period_label }} — ADP{% endblock %}
+
+{% block content %}
+<div class="page-header">
+  <a href="{{ url_for('main.period_detail', period_id=period.id) }}" class="back-link">← Back to {{ period.period_label }}</a>
+  <h1>{{ agent.agent_name }}</h1>
+  <p class="muted">Commission period: {{ period.period_label }} &nbsp;|&nbsp; Paid on 25th of following month</p>
+</div>
+
+<!-- Agent Summary -->
+<div class="summary-cards" style="margin-bottom:1.5rem;">
+  <div class="card summary-card">
+    <div class="card-value">{{ agent.units_cleared }}</div>
+    <div class="card-label">Units Cleared</div>
+  </div>
+  <div class="card summary-card">
+    <div class="card-value">
+      {% if agent.cancellation_penalty_applied %}
+        <span style="color:#991b1b;">Tier {{ agent.raw_tier }}→{{ agent.adjusted_tier }}</span>
+      {% else %}
+        Tier {{ agent.adjusted_tier }}
+      {% endif %}
+    </div>
+    <div class="card-label">Commission Tier</div>
+  </div>
+  <div class="card summary-card">
+    <div class="card-value">{{ "%.2f"|format(agent.tier_rate * 100) }}%</div>
+    <div class="card-label">Rate</div>
+  </div>
+  <div class="card summary-card">
+    <div class="card-value">${{ "{:,.2f}".format(agent.total_cleared_debt) }}</div>
+    <div class="card-label">Total Cleared Debt</div>
+  </div>
+  <div class="card summary-card">
+    <div class="card-value">${{ "{:,.2f}".format(agent.gross_commission) }}</div>
+    <div class="card-label">Gross Commission</div>
+  </div>
+  {% if agent.clawback_amount > 0 %}
+  <div class="card summary-card highlight-red">
+    <div class="card-value">-${{ "{:,.2f}".format(agent.clawback_amount) }}</div>
+    <div class="card-label">Clawback Deducted</div>
+  </div>
+  {% endif %}
+  <div class="card summary-card highlight-green">
+    <div class="card-value">${{ "{:,.2f}".format(agent.net_commission) }}</div>
+    <div class="card-label">Net Commission Owed</div>
+  </div>
+  <div class="card summary-card">
+    <div class="card-value">{{ "%.1f"|format(agent.cancellation_rate) }}%</div>
+    <div class="card-label">Cancellation Rate</div>
+  </div>
+</div>
+
+{% if agent.quality_bonus_eligible %}
+<div class="flash flash-success" style="margin-bottom:1rem;">
+  Quality Bonus Rate Eligible (&lt;10% cancellations) — pending manual review and approval
+</div>
+{% endif %}
+
+{% if agent.nsf_flagged %}
+<div class="flash flash-error" style="margin-bottom:1rem;">
+  NSF Flag: one or more clients have 3+ NSF events — review required
+</div>
+{% endif %}
+
+<div class="table-actions">
+  <a href="{{ url_for('main.export_agent', period_id=period.id, agent_id=agent.id) }}" class="btn btn-primary">Export Agent CSV</a>
+</div>
+
+<!-- Cleared Clients -->
+<h2>Cleared Clients This Period ({{ clients|selectattr('is_cleared')|list|length }})</h2>
+<div class="table-wrapper">
+  <table class="data-table" id="clients-table">
+    <thead>
+      <tr>
+        <th>Client Name</th>
+        <th>Enrolled Debt</th>
+        <th>Commission on Client</th>
+        <th>1st Payment Cleared</th>
+        <th>2nd Payment Cleared</th>
+        <th>Payments Made</th>
+        <th># NSF</th>
+        <th>Status</th>
+        <th>Enrolled Date</th>
+        <th>Email</th>
+        <th>Phone</th>
+      </tr>
+    </thead>
+    <tbody>
+      {% for c in clients if c.is_cleared %}
+      <tr {% if c.nsf_count >= 3 %}class="row-orange"{% endif %}>
+        <td>{{ c.client_name }}</td>
+        <td>${{ "{:,.2f}".format(c.enrolled_debt) }}</td>
+        <td><strong>${{ "{:,.2f}".format(c.commission_on_client) }}</strong></td>
+        <td>{{ c.first_payment_cleared_date }}</td>
+        <td>{{ c.second_payment_cleared_date or '—' }}</td>
+        <td>{{ c.payments_made }}</td>
+        <td>{% if c.nsf_count >= 3 %}<span class="badge badge-orange">{{ c.nsf_count }}</span>{% else %}{{ c.nsf_count }}{% endif %}</td>
+        <td>{{ c.status }}</td>
+        <td>{{ c.enrolled_date }}</td>
+        <td>{{ c.email }}</td>
+        <td>{{ c.phone }}</td>
+      </tr>
+      {% else %}
+      <tr><td colspan="11" class="muted" style="padding:1rem;">No cleared clients this period.</td></tr>
+      {% endfor %}
+    </tbody>
+  </table>
+</div>
+
+<!-- Pending Clients -->
+{% set pending_list = clients|selectattr('is_pending')|list %}
+{% if pending_list %}
+<h2 style="margin-top:1.5rem;">Pending — Affiliate Cancellation Review ({{ pending_list|length }})</h2>
+<p class="muted" style="margin-bottom:0.75rem;">These clients cleared their first payment but are held pending cancellation review. Commission is not paid until status is resolved.</p>
+<div class="table-wrapper">
+  <table class="data-table">
+    <thead>
+      <tr>
+        <th>Client Name</th>
+        <th>Enrolled Debt</th>
+        <th>1st Payment Cleared</th>
+        <th>Payments Made</th>
+        <th>Status</th>
+        <th>Email</th>
+        <th>Phone</th>
+      </tr>
+    </thead>
+    <tbody>
+      {% for c in pending_list %}
+      <tr class="row-purple">
+        <td>{{ c.client_name }}</td>
+        <td>${{ "{:,.2f}".format(c.enrolled_debt) }}</td>
+        <td>{{ c.first_payment_cleared_date }}</td>
+        <td>{{ c.payments_made }}</td>
+        <td><span class="badge badge-purple">{{ c.status }}</span></td>
+        <td>{{ c.email }}</td>
+        <td>{{ c.phone }}</td>
+      </tr>
+      {% endfor %}
+    </tbody>
+  </table>
+</div>
+{% endif %}
+
+<!-- Clawback Clients -->
+{% if clawback_clients %}
+<h2 style="margin-top:1.5rem;">Clawbacks Applied This Period ({{ clawback_clients|length }})</h2>
+<p class="muted" style="margin-bottom:0.75rem;">These clients were paid commission in a prior month but cancelled this period with fewer than 3 payments. The commission has been deducted from this period's payout.</p>
+<div class="table-wrapper">
+  <table class="data-table">
+    <thead>
+      <tr>
+        <th>Client Name</th>
+        <th>Enrolled Debt</th>
+        <th>Originally Cleared</th>
+        <th>Dropped Date</th>
+        <th>Payments Made</th>
+        <th>Clawback Amount</th>
+        <th>Email</th>
+        <th>Phone</th>
+      </tr>
+    </thead>
+    <tbody>
+      {% for c in clawback_clients %}
+      <tr class="row-red">
+        <td>{{ c.client_name }}</td>
+        <td>${{ "{:,.2f}".format(c.enrolled_debt) }}</td>
+        <td>{{ c.first_payment_cleared_date }}</td>
+        <td>{{ c.dropped_date }}</td>
+        <td>{{ c.payments_made }}</td>
+        <td><strong style="color:#991b1b;">-${{ "{:,.2f}".format(c.clawback_amount) }}</strong></td>
+        <td>{{ c.email }}</td>
+        <td>{{ c.phone }}</td>
+      </tr>
+      {% endfor %}
+    </tbody>
+  </table>
+</div>
+{% endif %}
+
+<!-- Same-month cancels -->
+{% set cancelled_list = clients|selectattr('is_cancelled')|list %}
+{% if cancelled_list %}
+<h2 style="margin-top:1.5rem;">Cancelled Same Month — Not Paid ({{ cancelled_list|length }})</h2>
+<p class="muted" style="margin-bottom:0.75rem;">These clients cancelled in the same month they cleared. No commission was ever paid, no clawback applies.</p>
+<div class="table-wrapper">
+  <table class="data-table">
+    <thead>
+      <tr>
+        <th>Client Name</th>
+        <th>Enrolled Debt</th>
+        <th>1st Payment Cleared</th>
+        <th>Dropped Date</th>
+        <th>Payments Made</th>
+        <th>Email</th>
+      </tr>
+    </thead>
+    <tbody>
+      {% for c in cancelled_list %}
+      <tr style="opacity:0.7;">
+        <td>{{ c.client_name }}</td>
+        <td>${{ "{:,.2f}".format(c.enrolled_debt) }}</td>
+        <td>{{ c.first_payment_cleared_date }}</td>
+        <td>{{ c.dropped_date }}</td>
+        <td>{{ c.payments_made }}</td>
+        <td>{{ c.email }}</td>
+      </tr>
+      {% endfor %}
+    </tbody>
+  </table>
+</div>
+{% endif %}
+
+{% endblock %}

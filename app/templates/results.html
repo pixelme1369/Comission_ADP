@@ -13,48 +13,55 @@
     <div class="card-label">Agents</div>
   </div>
   <div class="card summary-card">
-    <div class="card-value">${{ "{:,.2f}".format(total_payout) }}</div>
+    <div class="card-value">${{ "{:,.2f}".format(total_gross) }}</div>
+    <div class="card-label">Gross Commission</div>
+  </div>
+  {% if total_clawback > 0 %}
+  <div class="card summary-card highlight-red">
+    <div class="card-value">${{ "{:,.2f}".format(total_clawback) }}</div>
+    <div class="card-label">Total Clawbacks</div>
+  </div>
+  {% endif %}
+  <div class="card summary-card highlight-green">
+    <div class="card-value">${{ "{:,.2f}".format(total_net) }}</div>
     <div class="card-label">Total Commission Owed</div>
   </div>
   <div class="card summary-card">
-    <div class="card-value">${{ "{:,.2f}".format(total_commission) }}</div>
-    <div class="card-label">Total Gross Commission</div>
-  </div>
-  <div class="card summary-card highlight-green">
     <div class="card-value">{{ bonus_eligible }}</div>
     <div class="card-label">Quality Bonus Eligible</div>
   </div>
   <div class="card summary-card highlight-amber">
     <div class="card-value">{{ penalty_count }}</div>
-    <div class="card-label">Tier Penalties Applied</div>
+    <div class="card-label">Tier Penalties</div>
   </div>
   {% if nsf_count %}
   <div class="card summary-card highlight-red">
     <div class="card-value">{{ nsf_count }}</div>
-    <div class="card-label">NSF Flagged Agents</div>
+    <div class="card-label">NSF Flagged</div>
   </div>
   {% endif %}
   {% if pending_count %}
   <div class="card summary-card highlight-purple">
     <div class="card-value">{{ pending_count }}</div>
-    <div class="card-label">Agents w/ Pending Units</div>
+    <div class="card-label">Pending Units</div>
   </div>
   {% endif %}
 </div>
 
 <div class="table-actions">
   <a href="{{ url_for('main.export_period', period_id=period.id) }}" class="btn btn-primary">Export CSV</a>
-  <form method="POST" action="{{ url_for('main.delete_period', period_id=period.id) }}" style="display:inline" onsubmit="return confirm('Delete period {{ period.period_label }}? This cannot be undone.')">
+  <form method="POST" action="{{ url_for('main.delete_period', period_id=period.id) }}" style="display:inline"
+        onsubmit="return confirm('Delete period {{ period.period_label }}? This cannot be undone.')">
     <button type="submit" class="btn btn-danger">Delete Period</button>
   </form>
 </div>
 
 <div class="legend">
   <span class="legend-item legend-green">Quality Bonus Rate Eligible</span>
-  <span class="legend-item legend-amber">Draw Only (commission below draw amount)</span>
-  <span class="legend-item legend-red">Cancellation Tier Penalty Applied</span>
-  <span class="legend-item legend-orange">NSF Flagged (client with 3+ NSF)</span>
-  <span class="legend-item legend-purple">Has Pending Affiliate Cancellation Units</span>
+  <span class="legend-item legend-amber">Draw Only (commission below draw)</span>
+  <span class="legend-item legend-red">Cancellation Tier Penalty or Clawback</span>
+  <span class="legend-item legend-orange">NSF Flagged</span>
+  <span class="legend-item legend-purple">Has Pending Units</span>
 </div>
 
 <div class="table-wrapper">
@@ -63,35 +70,39 @@
       <tr>
         <th data-col="0">Agent</th>
         <th data-col="1">Units</th>
-        <th data-col="2">Tier (Raw→Adj)</th>
+        <th data-col="2">Tier</th>
         <th data-col="3">Rate</th>
         <th data-col="4">Cleared Debt</th>
         <th data-col="5">Gross Commission</th>
-        <th data-col="6">Commission</th>
-        <th data-col="7">Type</th>
+        <th data-col="6">Clawback</th>
+        <th data-col="7">Net Commission</th>
         <th data-col="8">Cancel Rate</th>
         <th data-col="9">Quality Bonus</th>
         <th data-col="10">NSF</th>
-        <th data-col="11">Pending Units</th>
+        <th data-col="11">Pending</th>
         <th>Notes</th>
       </tr>
     </thead>
     <tbody>
       {% for a in agents %}
       <tr class="
-        {% if a.nsf_flagged %}row-orange{% endif %}
-        {% if a.quality_bonus_eligible and not a.nsf_flagged %}row-green{% endif %}
+        {% if a.nsf_flagged %}row-orange
+        {% elif a.quality_bonus_eligible %}row-green{% endif %}
         {% if a.payout_type == 'draw' %}row-amber{% endif %}
-        {% if a.cancellation_penalty_applied %}row-red{% endif %}
+        {% if a.cancellation_penalty_applied or a.clawback_amount > 0 %}row-red{% endif %}
         {% if a.pending_units %}row-purple{% endif %}
       ">
-        <td>{{ a.agent_name }}</td>
+        <td>
+          <a href="{{ url_for('main.agent_detail', period_id=period.id, agent_id=a.id) }}" class="agent-link">
+            {{ a.agent_name }}
+          </a>
+        </td>
         <td>{{ a.units_cleared }}</td>
         <td>
           {% if a.units_cleared == 0 %}
             <span class="tier-badge" style="background:#f1f5f9;color:#6b7280">—</span>
           {% elif a.cancellation_penalty_applied %}
-            <span class="tier-badge tier-penalty">{{ a.raw_tier }} → {{ a.adjusted_tier }}</span>
+            <span class="tier-badge tier-penalty">{{ a.raw_tier }}→{{ a.adjusted_tier }}</span>
           {% else %}
             <span class="tier-badge">{{ a.adjusted_tier }}</span>
           {% endif %}
@@ -99,37 +110,29 @@
         <td>{% if a.units_cleared > 0 %}{{ "%.2f"|format(a.tier_rate * 100) }}%{% else %}—{% endif %}</td>
         <td>${{ "{:,.2f}".format(a.total_cleared_debt) }}</td>
         <td>${{ "{:,.2f}".format(a.gross_commission) }}</td>
-        <td><strong>${{ "{:,.2f}".format(a.payout) }}</strong></td>
         <td>
-          {% if a.payout_type == 'commission' %}
-            <span class="badge badge-green">Commission</span>
-          {% elif a.payout_type == 'draw' %}
-            <span class="badge badge-amber">Draw Only</span>
-          {% else %}
-            <span class="badge badge-gray">No Units</span>
-          {% endif %}
+          {% if a.clawback_amount > 0 %}
+            <span style="color:#991b1b;font-weight:600;">-${{ "{:,.2f}".format(a.clawback_amount) }}</span>
+          {% else %}—{% endif %}
         </td>
+        <td><strong>${{ "{:,.2f}".format(a.net_commission) }}</strong></td>
         <td>{{ "%.1f"|format(a.cancellation_rate) }}%</td>
         <td>
           {% if a.quality_bonus_eligible %}
-            <span class="badge badge-green">Rate OK – Pending Review</span>
+            <span class="badge badge-green">Rate OK</span>
           {% else %}
-            <span class="badge badge-gray">Not Eligible</span>
+            <span class="badge badge-gray">No</span>
           {% endif %}
         </td>
         <td>
           {% if a.nsf_flagged %}
-            <span class="badge badge-orange">NSF Flag</span>
-          {% else %}
-            <span class="badge badge-gray">Clear</span>
-          {% endif %}
+            <span class="badge badge-orange">Flag</span>
+          {% else %}—{% endif %}
         </td>
         <td>
           {% if a.pending_units %}
-            <span class="badge badge-purple">{{ a.pending_units }} unit{% if a.pending_units != 1 %}s{% endif %} (${{ "{:,.0f}".format(a.pending_debt) }})</span>
-          {% else %}
-            —
-          {% endif %}
+            <span class="badge badge-purple">{{ a.pending_units }}</span>
+          {% else %}—{% endif %}
         </td>
         <td class="notes-cell">{{ a.notes }}</td>
       </tr>
