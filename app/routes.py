@@ -293,8 +293,8 @@ def export_agent(period_id, agent_id):
     writer = csv.writer(output)
     writer.writerow([
         "Type", "ID", "Client Name", "Enrolled Date", "Enrolled Debt", "Status",
-        "1st Payment Cleared Date", "2nd Payment Cleared Date",
-        "Payments Made", "# NSF", "Dropped Date",
+        "1st Payment Cleared Date", "2nd Payment Cleared Date", "Dropped Date",
+        "Payments Made", "# NSF",
         "Commission on Client", "Clawback Amount",
     ])
     for c in active_clients:
@@ -303,7 +303,8 @@ def export_agent(period_id, agent_id):
             t, c.crm_id or "", c.client_name, c.enrolled_date or "",
             f"{c.enrolled_debt:.2f}", c.status,
             c.first_payment_cleared_date, c.second_payment_cleared_date or "",
-            c.payments_made, c.nsf_count, c.dropped_date or "",
+            c.dropped_date or "",
+            c.payments_made, c.nsf_count,
             f"{c.commission_on_client:.2f}", "",
         ])
     for c in clawback_clients:
@@ -311,7 +312,8 @@ def export_agent(period_id, agent_id):
             "Clawback", c.crm_id or "", c.client_name, c.enrolled_date or "",
             f"{c.enrolled_debt:.2f}", c.status,
             c.first_payment_cleared_date, c.second_payment_cleared_date or "",
-            c.payments_made, c.nsf_count, c.dropped_date or "",
+            c.dropped_date or "",
+            c.payments_made, c.nsf_count,
             "", f"-{c.clawback_amount:.2f}",
         ])
 

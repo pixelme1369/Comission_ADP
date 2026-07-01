@@ -81,6 +81,7 @@
         <th>Commission on Client</th>
         <th>1st Payment Cleared</th>
         <th>2nd Payment Cleared</th>
+        <th>Dropped Date</th>
         <th>Payments Made</th>
         <th># NSF</th>
         <th>Status</th>
@@ -98,6 +99,7 @@
         <td><strong>${{ "{:,.2f}".format(c.commission_on_client) }}</strong></td>
         <td>{{ c.first_payment_cleared_date }}</td>
         <td>{{ c.second_payment_cleared_date or '—' }}</td>
+        <td>{{ c.dropped_date or '—' }}</td>
         <td>{{ c.payments_made }}</td>
         <td>{% if c.nsf_count >= 3 %}<span class="badge badge-orange">{{ c.nsf_count }}</span>{% else %}{{ c.nsf_count }}{% endif %}</td>
         <td>{{ c.status }}</td>
@@ -105,7 +107,7 @@
         <td>{{ c.phone }}</td>
       </tr>
       {% else %}
-      <tr><td colspan="12" class="muted" style="padding:1rem;">No cleared clients this period.</td></tr>
+      <tr><td colspan="13" class="muted" style="padding:1rem;">No cleared clients this period.</td></tr>
       {% endfor %}
     </tbody>
   </table>
