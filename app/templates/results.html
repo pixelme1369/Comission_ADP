@@ -134,10 +134,48 @@
             <span class="badge badge-purple">{{ a.pending_units }}</span>
           {% else %}—{% endif %}
         </td>
-        <td class="notes-cell">{{ a.notes }}</td>
+        <td>
+          {% if a.notes %}
+            {% set note_items = a.notes.split('|') %}
+            <button class="notes-btn" onclick="openNotes(this)"
+                    data-notes="{{ a.notes | replace('&', '&amp;') | replace('"', '&quot;') }}">
+              {{ note_items | length }} note{{ 's' if note_items | length > 1 else '' }}
+            </button>
+          {% else %}
+            <span class="muted">—</span>
+          {% endif %}
+        </td>
       </tr>
       {% endfor %}
     </tbody>
   </table>
 </div>
+
+<!-- Notes popup modal -->
+<div id="notes-modal" class="notes-modal-overlay" onclick="closeNotes(event)">
+  <div class="notes-modal">
+    <div class="notes-modal-header">
+      <span class="notes-modal-title">Notes</span>
+      <button class="notes-modal-close" onclick="document.getElementById('notes-modal').classList.remove('open')">✕</button>
+    </div>
+    <ul class="notes-list" id="notes-list"></ul>
+  </div>
+</div>
+
+<script>
+function openNotes(btn) {
+  var raw = btn.getAttribute('data-notes');
+  var items = raw.split('|').map(s => s.trim()).filter(Boolean);
+  var list = document.getElementById('notes-list');
+  list.innerHTML = items.map(function(item) {
+    return '<li>' + item.replace(/&amp;/g,'&').replace(/&quot;/g,'"') + '</li>';
+  }).join('');
+  document.getElementById('notes-modal').classList.add('open');
+}
+function closeNotes(e) {
+  if (e.target === document.getElementById('notes-modal')) {
+    document.getElementById('notes-modal').classList.remove('open');
+  }
+}
+</script>
 {% endblock %}
