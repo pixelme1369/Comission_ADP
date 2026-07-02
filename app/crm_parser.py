@@ -194,7 +194,10 @@ def parse_crm_and_calculate(file_bytes: bytes, filename: str, already_cleared_cr
         if cleared_date and not dropped_date and not is_pending_cancellation:
             unit_status = "cleared"
         elif cleared_date and not dropped_date and is_pending_cancellation:
-            unit_status = "pending"
+            if payments_made >= safe_threshold:
+                unit_status = "cleared"  # safe threshold reached — commission protected even if cancelled
+            else:
+                unit_status = "pending"
         elif cleared_date and dropped_date and same_month:
             unit_status = "same_month_cancel"
         elif cleared_date and dropped_date and not same_month and payments_made >= safe_threshold:

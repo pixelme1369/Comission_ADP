@@ -18,10 +18,29 @@
   <main class="container">
     {% with messages = get_flashed_messages(with_categories=true) %}
       {% if messages %}
+        {% set errors = messages | selectattr('0', 'equalto', 'error') | list %}
+        {% set successes = messages | selectattr('0', 'equalto', 'success') | list %}
         <div class="flash-container">
-          {% for category, message in messages %}
-            <div class="flash flash-{{ category }}">{{ message }}</div>
+          {% for category, message in successes %}
+            <div class="flash flash-success">{{ message }}</div>
           {% endfor %}
+          {% if errors %}
+            {% if errors | length == 1 %}
+              <div class="flash flash-error">{{ errors[0][1] }}</div>
+            {% else %}
+              <div class="flash flash-error flash-collapsible">
+                <div class="flash-summary" onclick="this.parentElement.classList.toggle('open')">
+                  ⚠ {{ errors | length }} warnings — click to view
+                  <span class="flash-chevron">▾</span>
+                </div>
+                <ul class="flash-detail-list">
+                  {% for _, message in errors %}
+                    <li>{{ message }}</li>
+                  {% endfor %}
+                </ul>
+              </div>
+            {% endif %}
+          {% endif %}
         </div>
       {% endif %}
     {% endwith %}
