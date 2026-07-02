@@ -167,6 +167,8 @@ def parse_crm_and_calculate(file_bytes: bytes, filename: str, already_cleared_cr
             payments_made = 0
 
         pay_freq = get(raw_row, "pay freq.")
+        if not pay_freq.strip():
+            row_errors.append(f"Row {row_num} ({agent}): Pay Freq. is blank — clawback threshold defaulted to 3, please review")
         safe_threshold = _safe_payment_threshold(pay_freq)
 
         is_pending_cancellation = status.strip().lower() == "pending affiliate cancellation"
@@ -266,7 +268,9 @@ def parse_crm_and_calculate(file_bytes: bytes, filename: str, already_cleared_cr
         key = (c["agent_name"], c["cleared_period"])
         if c["unit_status"] == "cleared":
             cleared_buckets[key].append(c)
-        elif c["unit_status"] in ("same_month_cancel", "clawback", "safe_cancel"):
+        elif c["unit_status"] == "clawback":
+            # Only clawback clients count toward cancel rate
+            # same_month_cancel and safe_cancel are excluded
             cancel_buckets[key].append(c)
 
     # ---------------------------------------------------------------
@@ -284,7 +288,9 @@ def parse_crm_and_calculate(file_bytes: bytes, filename: str, already_cleared_cr
 
         units_cleared = len(cleared)
         total_cleared_debt = sum(c["enrolled_debt"] for c in cleared)
-        total_for_rate = units_cleared + len(cancelled) + len(pending)
+        # Cancel rate = clawback clients / (cleared + clawback clients)
+        # Same-month cancels, safe cancels, and pending are excluded from both sides
+        total_for_rate = units_cleared + len(cancelled)
         cancel_rate_pct = (len(cancelled) / total_for_rate * 100) if total_for_rate > 0 else 0.0
         nsf_flagged = any(c["nsf_count"] >= NSF_FLAG_THRESHOLD
                           for c in cleared + cancelled + pending)
