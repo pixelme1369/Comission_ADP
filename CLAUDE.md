@@ -60,12 +60,14 @@ The tier table in `calculator.py` must match exactly:
 
 Commission for a cleared month is **paid on the 25th of the following month** (`_payment_date_for_period` in `crm_parser.py`).
 
+Checked in this order — the payments-made safe threshold is evaluated before the payout-date check:
+
 | Scenario | Classification |
 |---|---|
-| Cleared Month A, dropped before payment date | `same_month_cancel` — never paid, excluded, no clawback |
-| Cleared Month A, dropped on/after payment date, payments < threshold | `clawback` — commission already sent, deduct from dropped month |
-| Cleared Month A, dropped any time, payments >= threshold | `safe_cancel` — no clawback ever |
 | Cleared and dropped same calendar month | `same_month_cancel` — no clawback |
+| Cleared Month A, dropped any time, payments >= threshold | `safe_cancel` — no clawback ever, even if dropped before the payout date |
+| Cleared Month A, dropped before payment date, payments < threshold | `same_month_cancel` — never paid, excluded, no clawback |
+| Cleared Month A, dropped on/after payment date, payments < threshold | `clawback` — commission already sent, deduct from dropped month |
 
 **Safe payment threshold** (from `Pay Freq.` column):
 | Pay Freq. | Payments needed to be safe |
