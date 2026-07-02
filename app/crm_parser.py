@@ -31,6 +31,16 @@ from app.calculator import calculate_agent_commission, TIERS, CANCELLATION_PENAL
 
 NSF_FLAG_THRESHOLD = 3
 
+# Minimum payments before clawback protection kicks in, by payment frequency
+def _safe_payment_threshold(pay_freq: str) -> int:
+    """Return the number of payments that protects against clawback."""
+    freq = (pay_freq or "").strip().lower()
+    if freq == "biweekly":
+        return 4
+    if freq == "monthly":
+        return 2
+    return 3  # fallback for unknown / missing (old files)
+
 CRM_REQUIRED_COLUMNS = {
     "sales rep",
     "1st payment cleared date",
@@ -156,6 +166,11 @@ def parse_crm_and_calculate(file_bytes: bytes, filename: str, already_cleared_cr
         except ValueError:
             payments_made = 0
 
+        pay_freq = get(raw_row, "pay freq.")
+        if not pay_freq.strip():
+            row_errors.append(f"Row {row_num} ({agent}): Pay Freq. is blank — clawback threshold defaulted to 3, please review")
+        safe_threshold = _safe_payment_threshold(pay_freq)
+
         is_pending_cancellation = status.strip().lower() == "pending affiliate cancellation"
         cleared_period = _period_of(cleared_date)
         dropped_period = _period_of(dropped_date)
@@ -179,9 +194,9 @@ def parse_crm_and_calculate(file_bytes: bytes, filename: str, already_cleared_cr
         elif cleared_date and dropped_date and not same_month and dropped_before_payment:
             # Dropped before the 25th payout — commission was never sent, just exclude
             unit_status = "same_month_cancel"
-        elif cleared_date and dropped_date and not same_month and payments_made >= 3:
+        elif cleared_date and dropped_date and not same_month and payments_made >= safe_threshold:
             unit_status = "safe_cancel"
-        elif cleared_date and dropped_date and not same_month and payments_made < 3:
+        elif cleared_date and dropped_date and not same_month and payments_made < safe_threshold:
             unit_status = "clawback"
         else:
             unit_status = "not_yet_cleared"
@@ -202,6 +217,7 @@ def parse_crm_and_calculate(file_bytes: bytes, filename: str, already_cleared_cr
             "first_payment_cleared_date": get(raw_row, "1st payment cleared date"),
             "second_payment_cleared_date": get(raw_row, "2nd payment cleared date"),
             "dropped_date": get(raw_row, "dropped date"),
+            "pay_freq": pay_freq,
             "payments_made": payments_made,
             "nsf_count": nsf_count,
             "enrolled_debt": enrolled_debt,
@@ -252,7 +268,9 @@ def parse_crm_and_calculate(file_bytes: bytes, filename: str, already_cleared_cr
         key = (c["agent_name"], c["cleared_period"])
         if c["unit_status"] == "cleared":
             cleared_buckets[key].append(c)
-        elif c["unit_status"] in ("same_month_cancel", "clawback", "safe_cancel"):
+        elif c["unit_status"] == "clawback":
+            # Only clawback clients count toward cancel rate
+            # same_month_cancel and safe_cancel are excluded
             cancel_buckets[key].append(c)
 
     # ---------------------------------------------------------------
@@ -270,7 +288,9 @@ def parse_crm_and_calculate(file_bytes: bytes, filename: str, already_cleared_cr
 
         units_cleared = len(cleared)
         total_cleared_debt = sum(c["enrolled_debt"] for c in cleared)
-        total_for_rate = units_cleared + len(cancelled) + len(pending)
+        # Cancel rate = clawback clients / (cleared + clawback clients)
+        # Same-month cancels, safe cancels, and pending are excluded from both sides
+        total_for_rate = units_cleared + len(cancelled)
         cancel_rate_pct = (len(cancelled) / total_for_rate * 100) if total_for_rate > 0 else 0.0
         nsf_flagged = any(c["nsf_count"] >= NSF_FLAG_THRESHOLD
                           for c in cleared + cancelled + pending)

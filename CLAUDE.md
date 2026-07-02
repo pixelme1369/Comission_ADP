@@ -53,6 +53,7 @@ The tier table in `calculator.py` must match exactly:
 - **60 units = Tier 5** (upper bound inclusive); 61+ = Tier 6
 - Cancellation rate **> 20%** (strict) drops one tier; exactly 20% does not trigger penalty
 - Cancellation rate **< 10%** flags `quality_bonus_eligible = True` — display-only, not auto-paid
+- **Cancel rate formula:** clawback clients ÷ (cleared + clawback clients). Same-month cancels, safe cancels, and pending clients are excluded from both numerator and denominator.
 - Commission vs draw: if `gross_commission > hourly_draw`, agent gets commission; otherwise agent keeps the draw (no repayment required). `hourly_draw` defaults to 0.0 in CRM flow (draw feature not yet wired for CRM uploads).
 
 ## Clawback Rules
@@ -62,9 +63,18 @@ Commission for a cleared month is **paid on the 25th of the following month** (`
 | Scenario | Classification |
 |---|---|
 | Cleared Month A, dropped before payment date | `same_month_cancel` — never paid, excluded, no clawback |
-| Cleared Month A, dropped on/after payment date, payments < 3 | `clawback` — commission already sent, deduct from dropped month |
-| Cleared Month A, dropped any time, payments >= 3 | `safe_cancel` — no clawback ever |
+| Cleared Month A, dropped on/after payment date, payments < threshold | `clawback` — commission already sent, deduct from dropped month |
+| Cleared Month A, dropped any time, payments >= threshold | `safe_cancel` — no clawback ever |
 | Cleared and dropped same calendar month | `same_month_cancel` — no clawback |
+
+**Safe payment threshold** (from `Pay Freq.` column):
+| Pay Freq. | Payments needed to be safe |
+|---|---|
+| Monthly | 2 |
+| Biweekly | 4 |
+| Missing / unknown | 3 (legacy fallback) |
+
+Implemented in `_safe_payment_threshold(pay_freq)` in `crm_parser.py`.
 
 **Tier recalculation on clawback:** if removing the cancelled unit drops the agent's tier for the original cleared month, the clawback = full commission difference on all that month's debt (not just the one client's share).
 
