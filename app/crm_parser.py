@@ -8,11 +8,17 @@ For each client row:
   - If 1st Payment Cleared Date filled + Dropped Date filled + same month
     → SAME_MONTH_CANCEL: excluded from commission, NOT a clawback (never paid)
 
-  - If 1st Payment Cleared Date filled + Dropped Date filled + different month + Payments Made < 3
-    → CLAWBACK: commission was paid in cleared month, must be deducted in dropped month
+  - If 1st Payment Cleared Date filled + Dropped Date filled + different month + Payments Made
+    hits the safe threshold for their Pay Freq. (Monthly=2, Biweekly=4, unknown=3) before dropping
+    → SAFE_CANCEL: no clawback, regardless of whether the drop happened before or after the payout date
 
-  - If 1st Payment Cleared Date filled + Dropped Date filled + different month + Payments Made >= 3
-    → SAFE_CANCEL: 3+ payments made, no clawback
+  - If 1st Payment Cleared Date filled + Dropped Date filled + different month + never hit the safe
+    threshold + dropped before the 25th payout date
+    → SAME_MONTH_CANCEL: commission was never sent, excluded, not a clawback
+
+  - If 1st Payment Cleared Date filled + Dropped Date filled + different month + never hit the safe
+    threshold + dropped on/after the payout date
+    → CLAWBACK: commission was paid in the cleared month, must be deducted in the dropped month
 
   - If 1st Payment Cleared Date filled + Status == Pending Affiliate Cancellation
     → PENDING: not paid yet
@@ -194,12 +200,13 @@ def parse_crm_and_calculate(file_bytes: bytes, filename: str, already_cleared_cr
                 unit_status = "pending"
         elif cleared_date and dropped_date and same_month:
             unit_status = "same_month_cancel"
-        elif cleared_date and dropped_date and not same_month and dropped_before_payment:
-            # Dropped before the 25th payout — commission was never sent, just exclude
-            unit_status = "same_month_cancel"
         elif cleared_date and dropped_date and not same_month and payments_made >= safe_threshold:
+            # Enough payments already cleared before the drop — safe regardless of payout-date timing
             unit_status = "safe_cancel"
-        elif cleared_date and dropped_date and not same_month and payments_made < safe_threshold:
+        elif cleared_date and dropped_date and not same_month and dropped_before_payment:
+            # Dropped before the 25th payout, never hit the safe threshold — commission was never sent, just exclude
+            unit_status = "same_month_cancel"
+        elif cleared_date and dropped_date and not same_month:
             unit_status = "clawback"
         else:
             unit_status = "not_yet_cleared"

@@ -60,12 +60,14 @@ The tier table in `calculator.py` must match exactly:
 
 Commission for a cleared month is **paid on the 25th of the following month** (`_payment_date_for_period` in `crm_parser.py`).
 
+Checked in this order — the payments-made safe threshold is evaluated before the payout-date check:
+
 | Scenario | Classification |
 |---|---|
-| Cleared Month A, dropped before payment date | `same_month_cancel` — never paid, excluded, no clawback |
-| Cleared Month A, dropped on/after payment date, payments < threshold | `clawback` — commission already sent, deduct from dropped month |
-| Cleared Month A, dropped any time, payments >= threshold | `safe_cancel` — no clawback ever |
 | Cleared and dropped same calendar month | `same_month_cancel` — no clawback |
+| Cleared Month A, dropped any time, payments >= threshold | `safe_cancel` — no clawback ever, even if dropped before the payout date |
+| Cleared Month A, dropped before payment date, payments < threshold | `same_month_cancel` — never paid, excluded, no clawback |
+| Cleared Month A, dropped on/after payment date, payments < threshold | `clawback` — commission already sent, deduct from dropped month |
 
 **Safe payment threshold** (from `Pay Freq.` column):
 | Pay Freq. | Payments needed to be safe |
@@ -74,21 +76,25 @@ Commission for a cleared month is **paid on the 25th of the following month** (`
 | Biweekly | 4 |
 | Missing / unknown | 3 (legacy fallback) |
 
-Implemented in `_safe_payment_threshold(pay_freq)` in `crm_parser.py`.
+Implemented in `_safe_payment_threshold(pay_freq)` in `crm_parser.py`. Also applies to clients still marked "Pending Affiliate Cancellation": if they've already hit the safe threshold, they're classified as `cleared` instead of held in `pending`.
 
 **Tier recalculation on clawback:** if removing the cancelled unit drops the agent's tier for the original cleared month, the clawback = full commission difference on all that month's debt (not just the one client's share).
 
 ## Client Classification (`crm_parser.py`)
 
 ```
-cleared          → 1st Payment Cleared Date filled, no Dropped Date, not Pending Affiliate Cancellation
-pending          → 1st Payment Cleared Date filled, no Dropped Date, status == "Pending Affiliate Cancellation"
-same_month_cancel → cleared and dropped same calendar month, OR dropped before the 25th payout date,
-                    OR was pending then cancelled (commission never paid — no clawback)
-clawback         → cleared Month A, dropped Month B (on/after payment date), payments_made < 3,
-                    AND commission was actually paid (client was in cleared_buckets this file OR
-                    crm_id exists as is_cleared=True in DB from a prior upload)
-safe_cancel      → cleared Month A, dropped any time, payments_made >= 3
+cleared          → 1st Payment Cleared Date filled, no Dropped Date, not Pending Affiliate Cancellation,
+                    OR still Pending Affiliate Cancellation but payments_made already hit the safe threshold
+pending          → 1st Payment Cleared Date filled, no Dropped Date, status == "Pending Affiliate Cancellation",
+                    payments_made below the safe threshold
+same_month_cancel → cleared and dropped same calendar month, OR dropped before the 25th payout date
+                    without hitting the safe threshold, OR was pending then cancelled (commission never
+                    paid — no clawback)
+clawback         → cleared Month A, dropped Month B (on/after payment date), payments_made below the
+                    safe threshold, AND commission was actually paid (client was in cleared_buckets this
+                    file OR crm_id exists as is_cleared=True in DB from a prior upload)
+safe_cancel      → cleared Month A, dropped any time, payments_made >= safe threshold (see Safe payment
+                    threshold table above)
 not_yet_cleared  → no 1st Payment Cleared Date (skipped entirely)
 late_activation  → was pending in cleared month (crm_id never in DB as is_cleared), now active,
                     cleared_period < latest period in file → commission credited in latest period
