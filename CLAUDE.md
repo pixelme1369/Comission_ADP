@@ -62,9 +62,18 @@ Commission for a cleared month is **paid on the 25th of the following month** (`
 | Scenario | Classification |
 |---|---|
 | Cleared Month A, dropped before payment date | `same_month_cancel` — never paid, excluded, no clawback |
-| Cleared Month A, dropped on/after payment date, payments < 3 | `clawback` — commission already sent, deduct from dropped month |
-| Cleared Month A, dropped any time, payments >= 3 | `safe_cancel` — no clawback ever |
+| Cleared Month A, dropped on/after payment date, payments < threshold | `clawback` — commission already sent, deduct from dropped month |
+| Cleared Month A, dropped any time, payments >= threshold | `safe_cancel` — no clawback ever |
 | Cleared and dropped same calendar month | `same_month_cancel` — no clawback |
+
+**Safe payment threshold** (from `Pay Freq.` column):
+| Pay Freq. | Payments needed to be safe |
+|---|---|
+| Monthly | 2 |
+| Biweekly | 4 |
+| Missing / unknown | 3 (legacy fallback) |
+
+Implemented in `_safe_payment_threshold(pay_freq)` in `crm_parser.py`.
 
 **Tier recalculation on clawback:** if removing the cancelled unit drops the agent's tier for the original cleared month, the clawback = full commission difference on all that month's debt (not just the one client's share).
 

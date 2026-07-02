@@ -76,6 +76,7 @@ class ClientRecord(db.Model):
     second_payment_cleared_date = db.Column(db.String(50))
     dropped_date = db.Column(db.String(50))
 
+    pay_freq = db.Column(db.String(50))   # "Monthly", "Biweekly", etc.
     payments_made = db.Column(db.Integer, default=0)
     nsf_count = db.Column(db.Integer, default=0)
     enrolled_debt = db.Column(db.Float, default=0.0)
