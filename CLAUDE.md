@@ -53,6 +53,7 @@ The tier table in `calculator.py` must match exactly:
 - **60 units = Tier 5** (upper bound inclusive); 61+ = Tier 6
 - Cancellation rate **> 20%** (strict) drops one tier; exactly 20% does not trigger penalty
 - Cancellation rate **< 10%** flags `quality_bonus_eligible = True` — display-only, not auto-paid
+- **Cancel rate formula:** clawback clients ÷ (cleared + clawback clients). Same-month cancels, safe cancels, and pending clients are excluded from both numerator and denominator.
 - Commission vs draw: if `gross_commission > hourly_draw`, agent gets commission; otherwise agent keeps the draw (no repayment required). `hourly_draw` defaults to 0.0 in CRM flow (draw feature not yet wired for CRM uploads).
 
 ## Clawback Rules
