@@ -84,6 +84,7 @@
         <th>2nd Payment Cleared</th>
         <th>Dropped Date</th>
         <th>Payments Made</th>
+        <th>Pay Freq.</th>
         <th># NSF</th>
         <th>Status</th>
         <th>Email</th>
@@ -114,13 +115,14 @@
         <td>{{ c.second_payment_cleared_date or '—' }}</td>
         <td>{{ c.dropped_date or '—' }}</td>
         <td>{{ c.payments_made }}</td>
+        <td>{{ c.pay_freq or '—' }}</td>
         <td>{% if c.nsf_count >= 3 %}<span class="badge badge-orange">{{ c.nsf_count }}</span>{% else %}{{ c.nsf_count }}{% endif %}</td>
         <td>{{ c.status }}</td>
         <td>{{ c.email }}</td>
         <td>{{ c.phone }}</td>
       </tr>
       {% else %}
-      <tr><td colspan="14" class="muted" style="padding:1rem;">No cleared clients this period.</td></tr>
+      <tr><td colspan="15" class="muted" style="padding:1rem;">No cleared clients this period.</td></tr>
       {% endfor %}
     </tbody>
   </table>
@@ -141,6 +143,7 @@
         <th>Enrolled Debt</th>
         <th>1st Payment Cleared</th>
         <th>Payments Made</th>
+        <th>Pay Freq.</th>
         <th>Status</th>
         <th>Email</th>
         <th>Phone</th>
@@ -155,6 +158,7 @@
         <td>${{ "{:,.2f}".format(c.enrolled_debt) }}</td>
         <td>{{ c.first_payment_cleared_date }}</td>
         <td>{{ c.payments_made }}</td>
+        <td>{{ c.pay_freq or '—' }}</td>
         <td><span class="badge badge-purple">{{ c.status }}</span></td>
         <td>{{ c.email }}</td>
         <td>{{ c.phone }}</td>
@@ -180,6 +184,7 @@
         <th>Originally Cleared</th>
         <th>Dropped Date</th>
         <th>Payments Made</th>
+        <th>Pay Freq.</th>
         <th>Clawback Amount</th>
         <th>Email</th>
         <th>Phone</th>
@@ -195,6 +200,7 @@
         <td>{{ c.first_payment_cleared_date }}</td>
         <td>{{ c.dropped_date }}</td>
         <td>{{ c.payments_made }}</td>
+        <td>{{ c.pay_freq or '—' }}</td>
         <td><strong style="color:#991b1b;">-${{ "{:,.2f}".format(c.clawback_amount) }}</strong></td>
         <td>{{ c.email }}</td>
         <td>{{ c.phone }}</td>
@@ -221,6 +227,7 @@
         <th>1st Payment Cleared</th>
         <th>Dropped Date</th>
         <th>Payments Made</th>
+        <th>Pay Freq.</th>
         <th>Email</th>
       </tr>
     </thead>
@@ -234,6 +241,7 @@
         <td>{{ c.first_payment_cleared_date }}</td>
         <td>{{ c.dropped_date }}</td>
         <td>{{ c.payments_made }}</td>
+        <td>{{ c.pay_freq or '—' }}</td>
         <td>{{ c.email }}</td>
       </tr>
       {% endfor %}

@@ -372,7 +372,7 @@ def export_agent(period_id, agent_id):
     writer.writerow([
         "Type", "ID", "Client Name", "Enrolled Date", "Enrolled Debt", "Status",
         "1st Payment Cleared Date", "2nd Payment Cleared Date", "Dropped Date",
-        "Payments Made", "# NSF",
+        "Payments Made", "Pay Freq.", "# NSF",
         "Commission on Client", "Clawback Amount", "Cordoba Payout",
     ])
     for c in active_clients:
@@ -382,7 +382,7 @@ def export_agent(period_id, agent_id):
             f"{c.enrolled_debt:.2f}", c.status,
             c.first_payment_cleared_date, c.second_payment_cleared_date or "",
             c.dropped_date or "",
-            c.payments_made, c.nsf_count,
+            c.payments_made, c.pay_freq or "", c.nsf_count,
             f"{c.commission_on_client:.2f}", "",
             ("Yes" if c.cordoba_paid else "No") if c.is_cleared else "",
         ])
@@ -392,7 +392,7 @@ def export_agent(period_id, agent_id):
             f"{c.enrolled_debt:.2f}", c.status,
             c.first_payment_cleared_date, c.second_payment_cleared_date or "",
             c.dropped_date or "",
-            c.payments_made, c.nsf_count,
+            c.payments_made, c.pay_freq or "", c.nsf_count,
             "", f"-{c.clawback_amount:.2f}", "",
         ])
 
