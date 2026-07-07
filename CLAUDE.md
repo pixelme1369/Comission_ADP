@@ -98,7 +98,9 @@ Checked in this order — the payments-made safe threshold is evaluated before t
 
 Implemented in `_safe_payment_threshold(pay_freq)` in `crm_parser.py`. Also applies to clients still marked "Pending Affiliate Cancellation": if they've already hit the safe threshold, they're classified as `cleared` instead of held in `pending`.
 
-**Tier recalculation on clawback:** if removing the cancelled unit drops the agent's tier for the original cleared month, the clawback = full commission difference on all that month's debt (not just the one client's share).
+**Tier recalculation on clawback:** if removing the cancelled unit drops the agent's tier for the original cleared month, the clawback = full commission difference on all that month's debt (not just the one client's share). If the tier is unchanged, the clawback is just that client's share (`enrolled_debt × orig_rate`). If the agent has no commission result at all for the original cleared month (e.g. they had 0 net cleared units there after other cancels), the clawback falls back to a flat `enrolled_debt × 1%` (lowest tier rate).
+
+Clawbacks are summed per `(agent, dropped_month)` and deducted from the agent's commission in the month the client **dropped**, not the month they cleared (`net_commission = max(0, gross_commission - clawback_amount)`). If the agent has no cleared units in the dropped month, a zero-unit period entry is created just to carry the clawback.
 
 ## Client Classification (`crm_parser.py`)
 
