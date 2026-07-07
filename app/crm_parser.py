@@ -247,25 +247,35 @@ def parse_crm_and_calculate(file_bytes: bytes, filename: str, already_cleared_cr
     # cleared_period is earlier than the latest period in this file,
     # they were pending before and just became active. Credit their
     # commission in the latest period instead of their cleared month.
+    #
+    # Only meaningful when already_cleared_crm_ids reflects real prior
+    # history. On a brand-new database (first-ever upload, or right after
+    # a schema-change wipe) that set is empty, and this heuristic can't
+    # distinguish "genuinely cleared last month" from "was pending, just
+    # went active" — it would misclassify EVERY older client in a
+    # multi-month full-history file as a late activation and collapse
+    # their commission into the most recent month. Skip it entirely in
+    # that case; every client is simply credited in their own cleared month.
     # ---------------------------------------------------------------
     if already_cleared_crm_ids is None:
         already_cleared_crm_ids = set()
 
-    all_cleared_periods = [c["cleared_period"] for c in all_clients if c["cleared_period"]]
-    latest_period = max(all_cleared_periods) if all_cleared_periods else None
+    if already_cleared_crm_ids:
+        all_cleared_periods = [c["cleared_period"] for c in all_clients if c["cleared_period"]]
+        latest_period = max(all_cleared_periods) if all_cleared_periods else None
 
-    for c in all_clients:
-        if (
-            c["unit_status"] == "cleared"
-            and c["crm_id"]
-            and c["crm_id"] not in already_cleared_crm_ids
-            and c["cleared_period"]
-            and latest_period
-            and c["cleared_period"] < latest_period
-        ):
-            c["original_cleared_period"] = c["cleared_period"]
-            c["cleared_period"] = latest_period
-            c["is_late_activation"] = True
+        for c in all_clients:
+            if (
+                c["unit_status"] == "cleared"
+                and c["crm_id"]
+                and c["crm_id"] not in already_cleared_crm_ids
+                and c["cleared_period"]
+                and latest_period
+                and c["cleared_period"] < latest_period
+            ):
+                c["original_cleared_period"] = c["cleared_period"]
+                c["cleared_period"] = latest_period
+                c["is_late_activation"] = True
 
     # ---------------------------------------------------------------
     # Step 1: Build per-agent per-period cleared unit counts
