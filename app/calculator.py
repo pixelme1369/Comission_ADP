@@ -20,6 +20,41 @@ def get_tier(units: int) -> tuple:
     raise ValueError(f"Units {units} out of valid range (must be >= 1)")
 
 
+def get_adjusted_rate(units: int, cancellation_rate_pct: float) -> tuple:
+    """Return (adjusted_tier_num, tier_rate) applying the cancellation penalty."""
+    if units <= 0:
+        return 0, 0.0
+    raw_tier, _, _ = get_tier(units)
+    penalty = cancellation_rate_pct > CANCELLATION_PENALTY_THRESHOLD
+    adj_tier = max(1, raw_tier - 1) if penalty else raw_tier
+    adj_rate = TIERS[adj_tier - 1][2]
+    return adj_tier, adj_rate
+
+
+def calculate_clawback_delta(orig_units: int, orig_debt: float, orig_commission: float,
+                              orig_cancellation_rate: float, client_debt: float) -> float:
+    """
+    Recalculate an agent's original cleared-month tier with one client's debt removed,
+    and return the commission dollar amount that must be clawed back.
+    """
+    if orig_units <= 1:
+        return round(orig_commission, 2)
+
+    new_units = orig_units - 1
+    new_debt = orig_debt - client_debt
+    _, new_rate = get_adjusted_rate(new_units, orig_cancellation_rate)
+    _, orig_rate = get_adjusted_rate(orig_units, orig_cancellation_rate)
+
+    if new_rate != orig_rate:
+        # Tier dropped — clawback is the full difference on all of that month's debt
+        cb = orig_commission - (new_rate * new_debt)
+    else:
+        # Same tier — clawback is just this client's share
+        cb = client_debt * orig_rate
+
+    return max(0.0, round(cb, 2))
+
+
 def calculate_agent_commission(
     agent_name: str,
     units_cleared: int,

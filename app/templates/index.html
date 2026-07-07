@@ -37,6 +37,27 @@
       <button type="submit" class="btn btn-secondary">Upload Manual CSV</button>
     </form>
   </div>
+
+  <!-- Cordoba Payout Upload -->
+  <div class="card upload-card">
+    <h2>Upload Cordoba Payout</h2>
+    <p class="muted" style="margin-bottom:1rem;">
+      Upload Cordoba's weekly payout export (.xlsx) to reconcile which files you're paying agent
+      commission on have actually been funded by Cordoba, and to pull in any chargebacks Cordoba
+      sent us.
+    </p>
+    <form method="POST" action="{{ url_for('main.upload_cordoba_payout') }}" enctype="multipart/form-data">
+      <div class="form-group">
+        <label for="cordoba_file">Cordoba Payout XLSX</label>
+        <input type="file" id="cordoba_file" name="cordoba_file" accept=".xlsx" required>
+      </div>
+      <div class="form-hint">
+        Expects tabs named <code>First Pays</code>, <code>EPF</code>, and <code>Chargebacks</code>,
+        matched to your clients by ID.
+      </div>
+      <button type="submit" class="btn btn-secondary">Upload Cordoba Payout</button>
+    </form>
+  </div>
 </div>
 
 {% if periods %}

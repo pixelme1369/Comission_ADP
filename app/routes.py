@@ -2,17 +2,24 @@ import csv
 import io
 from flask import Blueprint, render_template, request, redirect, url_for, flash, Response
 from app import db
-from app.models import CommissionPeriod, AgentCommission, ClientRecord
+from app.calculator import calculate_clawback_delta
+from app.models import CommissionPeriod, AgentCommission, ClientRecord, CordobaPaidClient, CordobaChargeback
 from app.csv_parser import parse_and_calculate
 from app.crm_parser import parse_crm_and_calculate
+from app.cordoba_parser import parse_cordoba_payout
 
 bp = Blueprint("main", __name__)
 
 ALLOWED_EXTENSIONS = {"csv"}
+ALLOWED_XLSX_EXTENSIONS = {"xlsx"}
 
 
 def _allowed_file(filename):
     return "." in filename and filename.rsplit(".", 1)[1].lower() in ALLOWED_EXTENSIONS
+
+
+def _allowed_xlsx_file(filename):
+    return "." in filename and filename.rsplit(".", 1)[1].lower() in ALLOWED_XLSX_EXTENSIONS
 
 
 @bp.route("/")
@@ -80,6 +87,8 @@ def upload_crm():
     already_cleared_crm_ids = {
         r.crm_id for r in ClientRecord.query.filter_by(is_cleared=True).all() if r.crm_id
     }
+    # Collect crm_ids Cordoba has already confirmed paying (from a prior weekly payout upload)
+    already_cordoba_paid_ids = {p.crm_id for p in CordobaPaidClient.query.all()}
     period_results = parse_crm_and_calculate(file_bytes, file.filename, already_cleared_crm_ids)
 
     saved_period_ids = []
@@ -163,6 +172,7 @@ def upload_crm():
                     commission_on_client=cr.get("commission_on_client", 0.0),
                     is_late_activation=cr.get("is_late_activation", False),
                     original_cleared_period=cr.get("original_cleared_period"),
+                    cordoba_paid=cr.get("crm_id") in already_cordoba_paid_ids,
                 )
                 db.session.add(rec)
 
@@ -212,6 +222,137 @@ def upload_crm():
     return redirect(url_for("main.history"))
 
 
+def _get_or_create_holding_agent_commission(agent_name, period_label):
+    """
+    Find (or create) the AgentCommission row for an agent/period so a Cordoba-based
+    clawback has somewhere to show up, even if the agent had zero cleared units that
+    month according to CRM data. Mirrors the zero-unit holding entry the CRM parser
+    itself creates for its own clawbacks.
+    """
+    period = CommissionPeriod.query.filter_by(period_label=period_label).first()
+    if not period:
+        period = CommissionPeriod(period_label=period_label, filename="(Cordoba payout only)", total_agents=0)
+        db.session.add(period)
+        db.session.flush()
+
+    agent = AgentCommission.query.filter_by(period_id=period.id, agent_name=agent_name).first()
+    if not agent:
+        agent = AgentCommission(
+            period_id=period.id, agent_name=agent_name,
+            units_cleared=0, total_cleared_debt=0.0, cancellation_rate=0.0, hourly_draw=0.0,
+            raw_tier=0, adjusted_tier=0, tier_rate=0.0, gross_commission=0.0,
+            payout=0.0, payout_type="none", source="cordoba",
+            notes="No cleared units this period from CRM data — this row only carries a "
+                  "Cordoba-reported chargeback.",
+        )
+        db.session.add(agent)
+        db.session.flush()
+        period.total_agents = AgentCommission.query.filter_by(period_id=period.id).count()
+
+    return agent
+
+
+@bp.route("/upload-cordoba-payout", methods=["POST"])
+def upload_cordoba_payout():
+    """
+    Upload Cordoba's weekly payout export (.xlsx: First Pays, EPF, Chargebacks tabs).
+
+    Checks OUR existing commission data against Cordoba's data (not the reverse):
+      - First Pays / EPF rows flip ClientRecord.cordoba_paid = True for any client we
+        already have on file, and are remembered in CordobaPaidClient so future CRM
+        uploads for the same client come in already marked paid.
+      - Chargebacks rows are matched to our ClientRecord by crm_id to find which agent
+        to attribute them to, then recorded as a separate CordobaChargeback amount
+        (shown alongside, not merged into, the app's own predicted clawback).
+    """
+    file = request.files.get("cordoba_file")
+    if not file or file.filename == "":
+        flash("No file selected.", "error")
+        return redirect(url_for("main.index"))
+    if not _allowed_xlsx_file(file.filename):
+        flash("Only .xlsx files are accepted for Cordoba payout uploads.", "error")
+        return redirect(url_for("main.index"))
+
+    file_bytes = file.read()
+    parsed = parse_cordoba_payout(file_bytes)
+
+    for err in parsed["errors"]:
+        flash(err, "error")
+
+    # 1. Remember every paid ID we haven't seen before (First Pays + EPF)
+    new_paid_count = 0
+    for row in parsed["paid_ids"]:
+        crm_id = row["crm_id"]
+        if not crm_id or CordobaPaidClient.query.filter_by(crm_id=crm_id).first():
+            continue
+        db.session.add(CordobaPaidClient(
+            crm_id=crm_id, client_name=row.get("client_name"), source=row["source"],
+            uploaded_filename=file.filename,
+        ))
+        new_paid_count += 1
+
+    # 2. Flip cordoba_paid = True on every existing ClientRecord matching a paid ID
+    all_paid_ids = {row["crm_id"] for row in parsed["paid_ids"] if row["crm_id"]}
+    if all_paid_ids:
+        ClientRecord.query.filter(
+            ClientRecord.crm_id.in_(all_paid_ids), ClientRecord.cordoba_paid.is_(False)
+        ).update({"cordoba_paid": True}, synchronize_session=False)
+
+    # 3. Process chargebacks — match to our own ClientRecord to find the agent + original
+    #    cleared-period commission, then compute the clawback via the same tier-delta rule
+    #    used elsewhere in the app.
+    matched_count = 0
+    unmatched_count = 0
+    for row in parsed["chargebacks"]:
+        crm_id = row["crm_id"]
+        if not crm_id or CordobaChargeback.query.filter_by(crm_id=crm_id).first():
+            continue  # already recorded from a prior weekly upload
+
+        client_record = ClientRecord.query.filter_by(crm_id=crm_id, is_cleared=True).first()
+
+        cb_row = CordobaChargeback(
+            crm_id=crm_id,
+            client_name=row.get("client_name"),
+            marketing_payout_debt=row.get("marketing_payout_debt", 0.0),
+            orig_period=row.get("orig_period"),
+            target_period=row.get("target_period"),
+            chargeback_date=row.get("chargeback_date"),
+            dropped_date=row.get("dropped_date"),
+            uploaded_filename=file.filename,
+        )
+
+        if client_record and client_record.agent_commission:
+            ac = client_record.agent_commission
+            cb_row.agent_name = client_record.agent_name
+            cb_row.matched = True
+            cb_row.clawback_based_on_payout_amount = calculate_clawback_delta(
+                orig_units=ac.units_cleared,
+                orig_debt=ac.total_cleared_debt,
+                orig_commission=ac.gross_commission,
+                orig_cancellation_rate=ac.cancellation_rate,
+                client_debt=row.get("marketing_payout_debt", 0.0),
+            )
+            matched_count += 1
+
+            # Make sure the target period has somewhere to show this deduction, even if
+            # this agent has zero cleared units that month from CRM data.
+            if cb_row.target_period:
+                _get_or_create_holding_agent_commission(client_record.agent_name, cb_row.target_period)
+        else:
+            unmatched_count += 1
+
+        db.session.add(cb_row)
+
+    db.session.commit()
+
+    msg = f"Cordoba payout processed: {new_paid_count} newly confirmed paid file(s), " \
+          f"{matched_count} chargeback(s) matched to an agent"
+    if unmatched_count:
+        msg += f", {unmatched_count} chargeback(s) had no matching client on file (check the ID)"
+    flash(msg + ".", "success")
+    return redirect(url_for("main.index"))
+
+
 @bp.route("/period/<int:period_id>")
 def period_detail(period_id):
     period = CommissionPeriod.query.get_or_404(period_id)
@@ -225,6 +366,23 @@ def period_detail(period_id):
     nsf_count = sum(1 for a in agents if a.nsf_flagged)
     pending_count = sum(1 for a in agents if a.pending_units > 0)
 
+    # Cordoba payout reconciliation, per agent: how many cleared files are confirmed
+    # paid by Cordoba, plus any chargebacks Cordoba sent us for this period.
+    cordoba_stats = {}
+    total_payout_clawback = 0.0
+    for a in agents:
+        cleared_clients = [c for c in a.clients if c.is_cleared]
+        paid_count = sum(1 for c in cleared_clients if c.cordoba_paid)
+        payout_clawback = db.session.query(db.func.sum(CordobaChargeback.clawback_based_on_payout_amount)).filter_by(
+            target_period=period.period_label, agent_name=a.agent_name, matched=True
+        ).scalar() or 0.0
+        cordoba_stats[a.id] = {
+            "paid": paid_count,
+            "total": len(cleared_clients),
+            "payout_clawback": payout_clawback,
+        }
+        total_payout_clawback += payout_clawback
+
     return render_template(
         "results.html",
         period=period,
@@ -236,6 +394,8 @@ def period_detail(period_id):
         penalty_count=penalty_count,
         nsf_count=nsf_count,
         pending_count=pending_count,
+        cordoba_stats=cordoba_stats,
+        total_payout_clawback=total_payout_clawback,
     )
 
 
@@ -247,12 +407,17 @@ def agent_detail(period_id, agent_id):
     clawback_clients = [c for c in clients if c.clawback_applied]
     active_clients = [c for c in clients if not c.clawback_applied]
 
+    payout_chargebacks = CordobaChargeback.query.filter_by(
+        target_period=period.period_label, agent_name=agent.agent_name, matched=True
+    ).all()
+
     return render_template(
         "agent_detail.html",
         period=period,
         agent=agent,
         clients=active_clients,
         clawback_clients=clawback_clients,
+        payout_chargebacks=payout_chargebacks,
     )
 
 
@@ -267,15 +432,22 @@ def export_period(period_id):
         "Agent Name", "Units Cleared", "Cleared Debt", "Cancel Rate %",
         "Raw Tier", "Adjusted Tier", "Rate %",
         "Gross Commission", "Clawback", "Net Commission",
+        "Cordoba Paid", "Clawback Based on Payout",
         "Quality Bonus Eligible", "Cancel Penalty Applied",
         "NSF Flagged", "Pending Units", "Pending Debt", "Notes",
     ])
     for a in agents:
+        cleared_clients = [c for c in a.clients if c.is_cleared]
+        paid_count = sum(1 for c in cleared_clients if c.cordoba_paid)
+        payout_clawback = db.session.query(db.func.sum(CordobaChargeback.clawback_based_on_payout_amount)).filter_by(
+            target_period=period.period_label, agent_name=a.agent_name, matched=True
+        ).scalar() or 0.0
         writer.writerow([
             a.agent_name, a.units_cleared, f"{a.total_cleared_debt:.2f}",
             f"{a.cancellation_rate:.1f}",
             a.raw_tier, a.adjusted_tier, f"{a.tier_rate*100:.2f}",
             f"{a.gross_commission:.2f}", f"{a.clawback_amount:.2f}", f"{a.net_commission:.2f}",
+            f"{paid_count}/{len(cleared_clients)}", f"{payout_clawback:.2f}",
             "Yes" if a.quality_bonus_eligible else "No",
             "Yes" if a.cancellation_penalty_applied else "No",
             "Yes" if a.nsf_flagged else "No",
@@ -298,13 +470,17 @@ def export_agent(period_id, agent_id):
     clawback_clients = [c for c in clients if c.clawback_applied]
     active_clients = [c for c in clients if not c.clawback_applied]
 
+    payout_chargebacks = CordobaChargeback.query.filter_by(
+        target_period=period.period_label, agent_name=agent.agent_name, matched=True
+    ).all()
+
     output = io.StringIO()
     writer = csv.writer(output)
     writer.writerow([
         "Type", "ID", "Client Name", "Enrolled Date", "Enrolled Debt", "Status",
         "1st Payment Cleared Date", "2nd Payment Cleared Date", "Dropped Date",
         "Payments Made", "# NSF",
-        "Commission on Client", "Clawback Amount",
+        "Commission on Client", "Clawback Amount", "Cordoba Paid",
     ])
     for c in active_clients:
         t = "Cleared" if c.is_cleared else ("Pending" if c.is_pending else "Cancelled")
@@ -315,6 +491,7 @@ def export_agent(period_id, agent_id):
             c.dropped_date or "",
             c.payments_made, c.nsf_count,
             f"{c.commission_on_client:.2f}", "",
+            ("Yes" if c.cordoba_paid else "No") if c.is_cleared else "",
         ])
     for c in clawback_clients:
         writer.writerow([
@@ -323,7 +500,15 @@ def export_agent(period_id, agent_id):
             c.first_payment_cleared_date, c.second_payment_cleared_date or "",
             c.dropped_date or "",
             c.payments_made, c.nsf_count,
-            "", f"-{c.clawback_amount:.2f}",
+            "", f"-{c.clawback_amount:.2f}", "",
+        ])
+    for c in payout_chargebacks:
+        writer.writerow([
+            "Clawback Based on Payout", c.crm_id or "", c.client_name, "",
+            f"{c.marketing_payout_debt:.2f}", "",
+            "", "", c.dropped_date or "",
+            "", "",
+            "", f"-{c.clawback_based_on_payout_amount:.2f}", "",
         ])
 
     return Response(
