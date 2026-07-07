@@ -79,6 +79,7 @@
         <th>Enrolled Date</th>
         <th>Enrolled Debt</th>
         <th>Commission on Client</th>
+        <th>Cordoba Payout</th>
         <th>1st Payment Cleared</th>
         <th>2nd Payment Cleared</th>
         <th>Dropped Date</th>
@@ -102,6 +103,13 @@
         <td>{{ c.enrolled_date or '—' }}</td>
         <td>${{ "{:,.2f}".format(c.enrolled_debt) }}</td>
         <td><strong>${{ "{:,.2f}".format(c.commission_on_client) }}</strong></td>
+        <td>
+          {% if c.cordoba_paid %}
+            <span class="badge badge-green">Yes</span>
+          {% else %}
+            <span class="badge badge-amber">No</span>
+          {% endif %}
+        </td>
         <td>{{ c.first_payment_cleared_date }}</td>
         <td>{{ c.second_payment_cleared_date or '—' }}</td>
         <td>{{ c.dropped_date or '—' }}</td>
@@ -112,7 +120,7 @@
         <td>{{ c.phone }}</td>
       </tr>
       {% else %}
-      <tr><td colspan="13" class="muted" style="padding:1rem;">No cleared clients this period.</td></tr>
+      <tr><td colspan="14" class="muted" style="padding:1rem;">No cleared clients this period.</td></tr>
       {% endfor %}
     </tbody>
   </table>

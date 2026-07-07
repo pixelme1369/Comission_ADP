@@ -2,17 +2,23 @@ import csv
 import io
 from flask import Blueprint, render_template, request, redirect, url_for, flash, Response
 from app import db
-from app.models import CommissionPeriod, AgentCommission, ClientRecord
+from app.models import CommissionPeriod, AgentCommission, ClientRecord, CordobaPaidClient
 from app.csv_parser import parse_and_calculate
 from app.crm_parser import parse_crm_and_calculate
+from app.cordoba_parser import parse_cordoba_payout
 
 bp = Blueprint("main", __name__)
 
 ALLOWED_EXTENSIONS = {"csv"}
+ALLOWED_XLSX_EXTENSIONS = {"xlsx"}
 
 
 def _allowed_file(filename):
     return "." in filename and filename.rsplit(".", 1)[1].lower() in ALLOWED_EXTENSIONS
+
+
+def _allowed_xlsx_file(filename):
+    return "." in filename and filename.rsplit(".", 1)[1].lower() in ALLOWED_XLSX_EXTENSIONS
 
 
 @bp.route("/")
@@ -80,6 +86,8 @@ def upload_crm():
     already_cleared_crm_ids = {
         r.crm_id for r in ClientRecord.query.filter_by(is_cleared=True).all() if r.crm_id
     }
+    # Collect crm_ids Cordoba has already confirmed paying (from a prior payout upload)
+    already_cordoba_paid_ids = {p.crm_id for p in CordobaPaidClient.query.all()}
     period_results = parse_crm_and_calculate(file_bytes, file.filename, already_cleared_crm_ids)
 
     saved_period_ids = []
@@ -163,6 +171,7 @@ def upload_crm():
                     commission_on_client=cr.get("commission_on_client", 0.0),
                     is_late_activation=cr.get("is_late_activation", False),
                     original_cleared_period=cr.get("original_cleared_period"),
+                    cordoba_paid=cr.get("crm_id") in already_cordoba_paid_ids,
                 )
                 db.session.add(rec)
 
@@ -210,6 +219,66 @@ def upload_crm():
     if len(saved_period_ids) == 1:
         return redirect(url_for("main.period_detail", period_id=saved_period_ids[0][0]))
     return redirect(url_for("main.history"))
+
+
+def _process_cordoba_file(file):
+    """
+    Check OUR existing ClientRecord IDs against Cordoba's First Pays / EPF tabs (not the
+    reverse) — for every client we already have on file whose ID shows up in either tab,
+    flip cordoba_paid = True. Chargebacks tab is intentionally ignored.
+    """
+    file_bytes = file.read()
+    parsed = parse_cordoba_payout(file_bytes)
+
+    for err in parsed["errors"]:
+        flash(f"{file.filename}: {err}", "error")
+
+    incoming_ids = {row["crm_id"] for row in parsed["paid_ids"] if row["crm_id"]}
+    if not incoming_ids:
+        return 0
+
+    already_known_ids = {
+        p.crm_id for p in CordobaPaidClient.query.filter(CordobaPaidClient.crm_id.in_(incoming_ids)).all()
+    }
+
+    new_count = 0
+    seen_this_file = set()
+    for row in parsed["paid_ids"]:
+        crm_id = row["crm_id"]
+        if not crm_id or crm_id in already_known_ids or crm_id in seen_this_file:
+            continue
+        seen_this_file.add(crm_id)
+        db.session.add(CordobaPaidClient(
+            crm_id=crm_id, client_name=row.get("client_name"), source=row["source"],
+            uploaded_filename=file.filename,
+        ))
+        new_count += 1
+
+    ClientRecord.query.filter(
+        ClientRecord.crm_id.in_(incoming_ids), ClientRecord.cordoba_paid.is_(False)
+    ).update({"cordoba_paid": True}, synchronize_session=False)
+
+    db.session.commit()
+    return new_count
+
+
+@bp.route("/upload-cordoba-payout", methods=["POST"])
+def upload_cordoba_payout():
+    """Upload one or more Cordoba payout files (.xlsx); only First Pays/EPF are checked."""
+    files = [f for f in request.files.getlist("cordoba_file") if f and f.filename]
+    if not files:
+        flash("No file selected.", "error")
+        return redirect(url_for("main.index"))
+
+    bad_names = [f.filename for f in files if not _allowed_xlsx_file(f.filename)]
+    if bad_names:
+        flash(f"Only .xlsx files are accepted for Cordoba payout uploads: {', '.join(bad_names)}", "error")
+        return redirect(url_for("main.index"))
+
+    new_total = sum(_process_cordoba_file(file) for file in files)
+    file_word = "file" if len(files) == 1 else f"{len(files)} files"
+    flash(f"Cordoba payout processed ({file_word}): {new_total} newly confirmed paid client(s).", "success")
+    return redirect(url_for("main.index"))
 
 
 @bp.route("/period/<int:period_id>")
@@ -304,7 +373,7 @@ def export_agent(period_id, agent_id):
         "Type", "ID", "Client Name", "Enrolled Date", "Enrolled Debt", "Status",
         "1st Payment Cleared Date", "2nd Payment Cleared Date", "Dropped Date",
         "Payments Made", "# NSF",
-        "Commission on Client", "Clawback Amount",
+        "Commission on Client", "Clawback Amount", "Cordoba Payout",
     ])
     for c in active_clients:
         t = "Cleared" if c.is_cleared else ("Pending" if c.is_pending else "Cancelled")
@@ -315,6 +384,7 @@ def export_agent(period_id, agent_id):
             c.dropped_date or "",
             c.payments_made, c.nsf_count,
             f"{c.commission_on_client:.2f}", "",
+            ("Yes" if c.cordoba_paid else "No") if c.is_cleared else "",
         ])
     for c in clawback_clients:
         writer.writerow([
@@ -323,7 +393,7 @@ def export_agent(period_id, agent_id):
             c.first_payment_cleared_date, c.second_payment_cleared_date or "",
             c.dropped_date or "",
             c.payments_made, c.nsf_count,
-            "", f"-{c.clawback_amount:.2f}",
+            "", f"-{c.clawback_amount:.2f}", "",
         ])
 
     return Response(
