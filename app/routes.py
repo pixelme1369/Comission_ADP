@@ -359,25 +359,21 @@ def export_period(period_id):
     )
 
 
-@bp.route("/period/<int:period_id>/agent/<int:agent_id>/export")
-def export_agent(period_id, agent_id):
-    period = CommissionPeriod.query.get_or_404(period_id)
-    agent = AgentCommission.query.get_or_404(agent_id)
-    clients = ClientRecord.query.filter_by(agent_commission_id=agent_id).all()
+CLIENT_EXPORT_COLUMNS = [
+    "Type", "ID", "Client Name", "Enrolled Date", "Enrolled Debt", "Status",
+    "1st Payment Cleared Date", "2nd Payment Cleared Date", "Dropped Date",
+    "Payments Made", "Pay Freq.", "# NSF",
+    "Commission on Client", "Clawback Amount", "Cordoba Payout",
+]
+
+
+def _client_export_rows(clients):
     clawback_clients = [c for c in clients if c.clawback_applied]
     active_clients = [c for c in clients if not c.clawback_applied]
-
-    output = io.StringIO()
-    writer = csv.writer(output)
-    writer.writerow([
-        "Type", "ID", "Client Name", "Enrolled Date", "Enrolled Debt", "Status",
-        "1st Payment Cleared Date", "2nd Payment Cleared Date", "Dropped Date",
-        "Payments Made", "Pay Freq.", "# NSF",
-        "Commission on Client", "Clawback Amount", "Cordoba Payout",
-    ])
+    rows = []
     for c in active_clients:
         t = "Cleared" if c.is_cleared else ("Pending" if c.is_pending else "Cancelled")
-        writer.writerow([
+        rows.append([
             t, c.crm_id or "", c.client_name, c.enrolled_date or "",
             f"{c.enrolled_debt:.2f}", c.status,
             c.first_payment_cleared_date, c.second_payment_cleared_date or "",
@@ -387,7 +383,7 @@ def export_agent(period_id, agent_id):
             ("Yes" if c.cordoba_paid else "No") if c.is_cleared else "",
         ])
     for c in clawback_clients:
-        writer.writerow([
+        rows.append([
             "Clawback", c.crm_id or "", c.client_name, c.enrolled_date or "",
             f"{c.enrolled_debt:.2f}", c.status,
             c.first_payment_cleared_date, c.second_payment_cleared_date or "",
@@ -395,11 +391,45 @@ def export_agent(period_id, agent_id):
             c.payments_made, c.pay_freq or "", c.nsf_count,
             "", f"-{c.clawback_amount:.2f}", "",
         ])
+    return rows
+
+
+@bp.route("/period/<int:period_id>/agent/<int:agent_id>/export")
+def export_agent(period_id, agent_id):
+    period = CommissionPeriod.query.get_or_404(period_id)
+    agent = AgentCommission.query.get_or_404(agent_id)
+    clients = ClientRecord.query.filter_by(agent_commission_id=agent_id).all()
+
+    output = io.StringIO()
+    writer = csv.writer(output)
+    writer.writerow(CLIENT_EXPORT_COLUMNS)
+    for row in _client_export_rows(clients):
+        writer.writerow(row)
 
     return Response(
         output.getvalue(),
         mimetype="text/csv",
         headers={"Content-Disposition": f"attachment; filename={agent.agent_name.replace(' ','_')}_{period.period_label}.csv"},
+    )
+
+
+@bp.route("/period/<int:period_id>/export-all-agents")
+def export_all_agents(period_id):
+    period = CommissionPeriod.query.get_or_404(period_id)
+    agents = AgentCommission.query.filter_by(period_id=period_id).order_by(AgentCommission.agent_name).all()
+
+    output = io.StringIO()
+    writer = csv.writer(output)
+    writer.writerow(["Agent Name"] + CLIENT_EXPORT_COLUMNS)
+    for agent in agents:
+        clients = ClientRecord.query.filter_by(agent_commission_id=agent.id).all()
+        for row in _client_export_rows(clients):
+            writer.writerow([agent.agent_name] + row)
+
+    return Response(
+        output.getvalue(),
+        mimetype="text/csv",
+        headers={"Content-Disposition": f"attachment; filename=all_agents_client_details_{period.period_label}.csv"},
     )
 
 
