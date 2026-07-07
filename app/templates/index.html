@@ -44,12 +44,12 @@
     <p class="muted" style="margin-bottom:1rem;">
       Upload Cordoba's weekly payout export (.xlsx) to reconcile which files you're paying agent
       commission on have actually been funded by Cordoba, and to pull in any chargebacks Cordoba
-      sent us.
+      sent us. You can select multiple weekly files at once — each is processed in order.
     </p>
     <form method="POST" action="{{ url_for('main.upload_cordoba_payout') }}" enctype="multipart/form-data">
       <div class="form-group">
-        <label for="cordoba_file">Cordoba Payout XLSX</label>
-        <input type="file" id="cordoba_file" name="cordoba_file" accept=".xlsx" required>
+        <label for="cordoba_file">Cordoba Payout XLSX (one or more)</label>
+        <input type="file" id="cordoba_file" name="cordoba_file" accept=".xlsx" multiple required>
       </div>
       <div class="form-hint">
         Expects tabs named <code>First Pays</code>, <code>EPF</code>, and <code>Chargebacks</code>,

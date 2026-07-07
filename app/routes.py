@@ -266,10 +266,10 @@ def _get_or_create_holding_agent_commission(agent_name, period_label):
     return agent
 
 
-@bp.route("/upload-cordoba-payout", methods=["POST"])
-def upload_cordoba_payout():
+def _process_cordoba_file(file):
     """
-    Upload Cordoba's weekly payout export (.xlsx: First Pays, EPF, Chargebacks tabs).
+    Process a single Cordoba weekly payout file (.xlsx: First Pays, EPF, Chargebacks
+    tabs) and commit it. Returns a dict of counts for the flash summary.
 
     Checks OUR existing commission data against Cordoba's data (not the reverse):
       - First Pays / EPF rows flip ClientRecord.cordoba_paid = True for any client we
@@ -279,19 +279,11 @@ def upload_cordoba_payout():
         to attribute them to, then recorded as a separate CordobaChargeback amount
         (shown alongside, not merged into, the app's own predicted clawback).
     """
-    file = request.files.get("cordoba_file")
-    if not file or file.filename == "":
-        flash("No file selected.", "error")
-        return redirect(url_for("main.index"))
-    if not _allowed_xlsx_file(file.filename):
-        flash("Only .xlsx files are accepted for Cordoba payout uploads.", "error")
-        return redirect(url_for("main.index"))
-
     file_bytes = file.read()
     parsed = parse_cordoba_payout(file_bytes)
 
     for err in parsed["errors"]:
-        flash(err, "error")
+        flash(f"{file.filename}: {err}", "error")
 
     # 1. Remember every paid ID we haven't seen before (First Pays + EPF) — batched lookup
     #    to avoid one query per row on a file that can easily have 200+ rows.
@@ -404,12 +396,40 @@ def upload_cordoba_payout():
 
     db.session.commit()
 
-    msg = f"Cordoba payout processed: {new_paid_count} newly confirmed paid file(s), " \
-          f"{matched_count} chargeback(s) matched to an agent"
-    if deferred_count:
-        msg += f" ({deferred_count} won't show until that month's commission data is uploaded)"
-    if unmatched_count:
-        msg += f", {unmatched_count} chargeback(s) had no matching client on file (check the ID)"
+    return {
+        "new_paid": new_paid_count,
+        "matched": matched_count,
+        "unmatched": unmatched_count,
+        "deferred": deferred_count,
+    }
+
+
+@bp.route("/upload-cordoba-payout", methods=["POST"])
+def upload_cordoba_payout():
+    """Upload one or more Cordoba weekly payout files, processed in order."""
+    files = [f for f in request.files.getlist("cordoba_file") if f and f.filename]
+    if not files:
+        flash("No file selected.", "error")
+        return redirect(url_for("main.index"))
+
+    bad_names = [f.filename for f in files if not _allowed_xlsx_file(f.filename)]
+    if bad_names:
+        flash(f"Only .xlsx files are accepted for Cordoba payout uploads: {', '.join(bad_names)}", "error")
+        return redirect(url_for("main.index"))
+
+    totals = {"new_paid": 0, "matched": 0, "unmatched": 0, "deferred": 0}
+    for file in files:
+        result = _process_cordoba_file(file)
+        for key in totals:
+            totals[key] += result[key]
+
+    file_word = "file" if len(files) == 1 else f"{len(files)} files"
+    msg = f"Cordoba payout processed ({file_word}): {totals['new_paid']} newly confirmed paid file(s), " \
+          f"{totals['matched']} chargeback(s) matched to an agent"
+    if totals["deferred"]:
+        msg += f" ({totals['deferred']} won't show until that month's commission data is uploaded)"
+    if totals["unmatched"]:
+        msg += f", {totals['unmatched']} chargeback(s) had no matching client on file (check the ID)"
     flash(msg + ".", "success")
     return redirect(url_for("main.index"))
 
