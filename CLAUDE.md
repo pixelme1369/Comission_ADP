@@ -38,6 +38,13 @@ This is a Flask + SQLAlchemy web app for calculating agent commissions at Americ
    reverse) — any match flips `ClientRecord.cordoba_paid = True`, remembered forever in
    `CordobaPaidClient` (`crm_id` unique) so a CRM upload processed *after* the Cordoba file still
    comes in pre-flagged. The flag never flips back to `False`.
+   **The bulk update that flips this must NOT filter on `cordoba_paid.is_(False)`** — a row can
+   end up `NULL` instead of `False` if it was ever inserted while this column didn't exist on the
+   `ClientRecord` model (this actually happened once, during a revert-then-reapply cycle of this
+   feature), and `NULL IS False` is never true in SQL, so that filter would silently skip those
+   rows forever with no error. Just unconditionally set every matching crm_id to `True`; re-setting
+   an already-`True` row is harmless. The column also has `server_default=db.text("0")` now as a
+   second line of defense so a fresh table never produces `NULL` rows in the first place.
 4. Shown as a per-client "Cordoba Payout" Yes/No column on the agent detail page's Cleared
    Clients table (and in that page's CSV export) — purely informational, does not affect tier,
    units, or commission math.

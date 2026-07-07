@@ -235,7 +235,7 @@ def _process_cordoba_file(file):
 
     incoming_ids = {row["crm_id"] for row in parsed["paid_ids"] if row["crm_id"]}
     if not incoming_ids:
-        return 0
+        return 0, 0
 
     already_known_ids = {
         p.crm_id for p in CordobaPaidClient.query.filter(CordobaPaidClient.crm_id.in_(incoming_ids)).all()
@@ -254,12 +254,18 @@ def _process_cordoba_file(file):
         ))
         new_count += 1
 
-    ClientRecord.query.filter(
-        ClientRecord.crm_id.in_(incoming_ids), ClientRecord.cordoba_paid.is_(False)
-    ).update({"cordoba_paid": True}, synchronize_session=False)
+    # Deliberately not filtering on the current cordoba_paid value here (e.g. "IS False").
+    # A row can end up with NULL instead of False if it was ever inserted while this
+    # column didn't exist in the model (this happened once, see CLAUDE.md) — "IS False"
+    # would silently skip NULL rows forever since NULL isn't equal to False in SQL.
+    # Just unconditionally set every matching ID to True; re-setting an already-True row
+    # is harmless.
+    flipped = ClientRecord.query.filter(ClientRecord.crm_id.in_(incoming_ids)).update(
+        {"cordoba_paid": True}, synchronize_session=False
+    )
 
     db.session.commit()
-    return new_count
+    return new_count, flipped
 
 
 @bp.route("/upload-cordoba-payout", methods=["POST"])
@@ -275,9 +281,15 @@ def upload_cordoba_payout():
         flash(f"Only .xlsx files are accepted for Cordoba payout uploads: {', '.join(bad_names)}", "error")
         return redirect(url_for("main.index"))
 
-    new_total = sum(_process_cordoba_file(file) for file in files)
+    results = [_process_cordoba_file(file) for file in files]
+    new_total = sum(r[0] for r in results)
+    flipped_total = sum(r[1] for r in results)
     file_word = "file" if len(files) == 1 else f"{len(files)} files"
-    flash(f"Cordoba payout processed ({file_word}): {new_total} newly confirmed paid client(s).", "success")
+    flash(
+        f"Cordoba payout processed ({file_word}): {new_total} newly recorded ID(s) in the ledger, "
+        f"{flipped_total} client record(s) marked Cordoba Payout = Yes.",
+        "success",
+    )
     return redirect(url_for("main.index"))
 
 
