@@ -30,19 +30,12 @@ This is a Flask + SQLAlchemy web app for calculating agent commissions at Americ
 2. `csv_parser.py` validates and calls `calculator.py` per row
 3. Saves `CommissionPeriod` + `AgentCommission` rows (no `ClientRecord` rows)
 
-**Cordoba payout reconciliation flow (funder payout check):**
-1. User uploads Cordoba's weekly payout export (.xlsx) → `POST /upload-cordoba-payout` (routes.py)
-2. `cordoba_parser.py` reads the `First Pays`, `EPF`, and `Chargebacks` tabs
-3. Checks OUR existing commission data against Cordoba's data (not the reverse) — matches by `ID` / `Contact ID` against `ClientRecord.crm_id`
-4. See "Cordoba Payout Reconciliation" section below for full details
-
 **Key files:**
-- `app/calculator.py` — pure commission logic, no Flask deps. All tier/penalty/bonus rules live here, plus `get_adjusted_rate`/`calculate_clawback_delta` (shared tier-delta math used by the Cordoba reconciliation flow).
+- `app/calculator.py` — pure commission logic, no Flask deps. All tier/penalty/bonus rules live here.
 - `app/csv_parser.py` — validates manual CSV columns/types, calls the calculator, returns errors or results
 - `app/crm_parser.py` — parses the full-history CRM export, classifies clients, calculates commissions and clawbacks in one pass, returns one dict per period
-- `app/cordoba_parser.py` — reads the Cordoba weekly payout .xlsx (First Pays / EPF / Chargebacks tabs), returns raw normalized rows; no DB access
-- `app/models.py` — `CommissionPeriod`, `AgentCommission`, `ClientRecord`, `CordobaPaidClient`, `CordobaChargeback`
-- `app/routes.py` — routes: `/`, `/upload`, `/upload-crm`, `/upload-cordoba-payout`, `/period/<id>`, `/period/<id>/agent/<id>`, `/period/<id>/export`, `/period/<id>/agent/<id>/export`, `/period/<id>/delete`, `/history`
+- `app/models.py` — three tables: `CommissionPeriod`, `AgentCommission`, `ClientRecord`
+- `app/routes.py` — routes: `/`, `/upload`, `/upload-crm`, `/period/<id>`, `/period/<id>/agent/<id>`, `/period/<id>/export`, `/period/<id>/agent/<id>/export`, `/period/<id>/delete`, `/history`
 
 ## Commission Business Rules (April 2026 Plan)
 
@@ -118,6 +111,15 @@ When a client was "Pending Affiliate Cancellation" in their cleared month and la
 - This means the tier for the latest period is recalculated including the late activation client
 - `ClientRecord` stores `is_late_activation=True` and `original_cleared_period` for display
 
+**Guarded against a fresh/empty database:** the whole late-activation block is skipped when
+`already_cleared_crm_ids` is empty. Without this guard, uploading a multi-month full-history CRM
+file for the very first time (or right after `instance/commissions.db` is deleted for a schema
+change) has no prior history to check "crm_id not in that set" against — every single client is
+"not in the set", so every client whose cleared month isn't the most recent one in the file gets
+wrongly reclassified as a late activation and collapsed into the latest period. This actually
+happened once: deleting the db, then re-uploading a several-months-wide CRM export, merged every
+historical month into one inflated period. Do NOT remove this guard.
+
 ## Clawback Guard (Pending → Cancelled)
 
 If a client goes from "Pending Affiliate Cancellation" directly to cancelled (never became active):
@@ -149,68 +151,6 @@ agent_name, units_cleared, total_cleared_debt, cancellation_rate, hourly_draw, p
 - Uploading a period that already exists in the DB is blocked — delete it first
 
 A sample CSV is at `app/static/sample.csv`.
-
-## Cordoba Payout Reconciliation
-
-Cordoba is the funder — they pay us, and we only owe an agent commission on a file once
-Cordoba has actually paid us for it. The user uploads Cordoba's weekly payout export
-(.xlsx with `First Pays`, `EPF`, and `Chargebacks` tabs) via the "Upload Cordoba Payout"
-card on the index page. Matching is always **ID-based** (`ID` / `Contact ID` columns in
-Cordoba's file == `ClientRecord.crm_id`), never by agent name — Cordoba's file has no
-concept of our internal agents, only the marketing company.
-
-**First Pays / EPF tabs → `cordoba_paid` flag (one-time, ever-funded):**
-- Any client ID appearing in either tab is remembered forever in `CordobaPaidClient`
-  (so a CRM upload processed *after* the Cordoba file still comes in already flagged).
-- `ClientRecord.cordoba_paid` is flipped `True` (never back to `False`) for any existing
-  client record matching that ID, regardless of which period it's in.
-- This is purely informational — it does NOT change tier, units, or which files count
-  as cleared. Shown as "20/23" on the agent's row in `results.html` (cleared units that
-  are Cordoba-paid, out of total cleared units that period) and as a per-file Yes/No
-  badge on `agent_detail.html`'s Cleared Clients table.
-
-**Chargebacks tab → `CordobaChargeback` (separate from the CRM-predicted clawback):**
-- Kept in its own column/table, never merged into `AgentCommission.clawback_amount` /
-  `ClientRecord.clawback_amount` (which come from the CRM export's own dropped-date
-  logic) — the two are shown side by side so discrepancies are visible, not silently
-  reconciled. (Deliberate: this was an explicit product decision, not an oversight —
-  `total_net`/`net_commission` are NOT reduced by the Cordoba-based clawback either.)
-- Target period (which month's report gets the deduction) = the month of the
-  **Marketing Payment Chargeback** date column, NOT the Dropped Date.
-- Agent is resolved by preferring `ClientRecord.query.filter_by(crm_id=..., is_cleared=True)`
-  and using ITS `agent_commission` relationship — this gives the correct original
-  period/units/debt/commission to recalculate against (handles late-activation
-  reassignment automatically, since `orig_period` is read from `ac.period.period_label`,
-  the period actually credited, not the raw "1st Payment Cleared Date" from Cordoba's
-  file). If no `is_cleared=True` record exists for that crm_id (e.g. the CRM data already
-  showed the client cancelled the first time we ever saw them, so they went straight to a
-  `clawback`/`same_month_cancel` ClientRecord and never had an `is_cleared=True` row), falls
-  back to any ClientRecord for that crm_id to at least resolve the agent, and prices the
-  clawback at the lowest tier rate (`client_debt * 0.01`) — the same graceful-degradation
-  rule `crm_parser.py` itself uses when it can't find the original period's commission record.
-- Dollar amount (when an original record is found) uses `Marketing Payout Debt` (not our
-  stored `enrolled_debt`) run through `calculate_clawback_delta()` in `calculator.py` —
-  same tier-drop-recalculation rule as the CRM-native clawback. Note this deliberately
-  trusts Cordoba's debt figure over our own; if the two differ, the clawback $ amount
-  reflects Cordoba's number.
-- If no `ClientRecord` at all matches the ID, the row is stored with `matched=False` and
-  skipped from all totals. Unlike a matched row, an unmatched one is NOT permanently
-  skipped on future uploads — the next Cordoba upload will retry matching it (useful if
-  the CRM data for that client hadn't been uploaded yet).
-- If the matched agent has an existing `AgentCommission` row for the target period,
-  `_get_or_create_holding_agent_commission()` in `routes.py` attaches to it (creating a
-  zero-unit holding row, `source="cordoba"`, if the agent had no other activity that
-  month). It deliberately **never creates a new `CommissionPeriod`** — if that period
-  hasn't been uploaded via CRM/manual data yet, the chargeback is still recorded (and
-  will start showing once that period exists) but has nowhere to render until then. This
-  is intentional: auto-creating the period would collide with the "period already
-  exists" duplicate-upload guard in `upload_crm`/`upload` once the real data for that
-  month is finally uploaded, permanently blocking it.
-- Each `crm_id` is only ever recorded once in `CordobaChargeback` (unique constraint) —
-  re-uploading an overlapping weekly file won't double-count the same chargeback. Known
-  limitation: this also means a client who is charged back, later reinstated, and
-  charged back a second time under the same crm_id will not get a second recorded
-  chargeback.
 
 ## UI Notes
 

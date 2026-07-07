@@ -79,7 +79,6 @@
         <th>Enrolled Date</th>
         <th>Enrolled Debt</th>
         <th>Commission on Client</th>
-        <th>Cordoba Paid</th>
         <th>1st Payment Cleared</th>
         <th>2nd Payment Cleared</th>
         <th>Dropped Date</th>
@@ -103,13 +102,6 @@
         <td>{{ c.enrolled_date or '—' }}</td>
         <td>${{ "{:,.2f}".format(c.enrolled_debt) }}</td>
         <td><strong>${{ "{:,.2f}".format(c.commission_on_client) }}</strong></td>
-        <td>
-          {% if c.cordoba_paid %}
-            <span class="badge badge-green">Yes</span>
-          {% else %}
-            <span class="badge badge-amber">No</span>
-          {% endif %}
-        </td>
         <td>{{ c.first_payment_cleared_date }}</td>
         <td>{{ c.second_payment_cleared_date or '—' }}</td>
         <td>{{ c.dropped_date or '—' }}</td>
@@ -120,7 +112,7 @@
         <td>{{ c.phone }}</td>
       </tr>
       {% else %}
-      <tr><td colspan="14" class="muted" style="padding:1rem;">No cleared clients this period.</td></tr>
+      <tr><td colspan="13" class="muted" style="padding:1rem;">No cleared clients this period.</td></tr>
       {% endfor %}
     </tbody>
   </table>
@@ -198,46 +190,6 @@
         <td><strong style="color:#991b1b;">-${{ "{:,.2f}".format(c.clawback_amount) }}</strong></td>
         <td>{{ c.email }}</td>
         <td>{{ c.phone }}</td>
-      </tr>
-      {% endfor %}
-    </tbody>
-  </table>
-</div>
-{% endif %}
-
-<!-- Clawback Based on Cordoba Payout -->
-{% if payout_chargebacks %}
-<h2 style="margin-top:1.5rem;">Clawback Based on Cordoba Payout ({{ payout_chargebacks|length }})</h2>
-<p class="muted" style="margin-bottom:0.75rem;">
-  These clients were charged back to us by Cordoba this period, per their weekly payout file.
-  Kept separate from the "Clawbacks Applied This Period" table above (which is calculated from
-  the CRM export) so the two can be compared.
-</p>
-<div class="table-wrapper">
-  <table class="data-table">
-    <thead>
-      <tr>
-        <th>ID</th>
-        <th>Client Name</th>
-        <th>Enrolled Date</th>
-        <th>Marketing Payout Debt</th>
-        <th>Originally Cleared</th>
-        <th>Chargeback Date</th>
-        <th>Dropped Date</th>
-        <th>Clawback Based on Payout</th>
-      </tr>
-    </thead>
-    <tbody>
-      {% for c in payout_chargebacks %}
-      <tr class="row-red">
-        <td class="muted">{{ c.crm_id or '—' }}</td>
-        <td>{{ c.client_name }}</td>
-        <td>{{ c.enrolled_date or '—' }}</td>
-        <td>${{ "{:,.2f}".format(c.marketing_payout_debt) }}</td>
-        <td>{{ c.orig_period or '—' }}</td>
-        <td>{{ c.chargeback_date or '—' }}</td>
-        <td>{{ c.dropped_date or '—' }}</td>
-        <td><strong style="color:#991b1b;">-${{ "{:,.2f}".format(c.clawback_based_on_payout_amount) }}</strong></td>
       </tr>
       {% endfor %}
     </tbody>
