@@ -118,6 +118,15 @@ When a client was "Pending Affiliate Cancellation" in their cleared month and la
 - This means the tier for the latest period is recalculated including the late activation client
 - `ClientRecord` stores `is_late_activation=True` and `original_cleared_period` for display
 
+**Guarded against a fresh/empty database:** the whole late-activation block is skipped when
+`already_cleared_crm_ids` is empty. Without this guard, uploading a multi-month full-history CRM
+file for the very first time (or right after `instance/commissions.db` is deleted for a schema
+change) has no prior history to check "crm_id not in that set" against — every single client is
+"not in the set", so every client whose cleared month isn't the most recent one in the file gets
+wrongly reclassified as a late activation and collapsed into the latest period. This actually
+happened once: deleting the db to pick up a new column, then re-uploading a several-months-wide
+CRM export, merged every historical month into one inflated period. Do NOT remove this guard.
+
 ## Clawback Guard (Pending → Cancelled)
 
 If a client goes from "Pending Affiliate Cancellation" directly to cancelled (never became active):
