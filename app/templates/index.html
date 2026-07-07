@@ -37,6 +37,26 @@
       <button type="submit" class="btn btn-secondary">Upload Manual CSV</button>
     </form>
   </div>
+
+  <!-- Cordoba Payout Upload -->
+  <div class="card upload-card">
+    <h2>Upload Cordoba Payout</h2>
+    <p class="muted" style="margin-bottom:1rem;">
+      Upload Cordoba's payout export (.xlsx) to check which client files Cordoba has
+      confirmed paying, by ID, against the First Pays and EPF tabs. You can select
+      multiple files at once.
+    </p>
+    <form method="POST" action="{{ url_for('main.upload_cordoba_payout') }}" enctype="multipart/form-data">
+      <div class="form-group">
+        <label for="cordoba_file">Cordoba Payout XLSX (one or more)</label>
+        <input type="file" id="cordoba_file" name="cordoba_file" accept=".xlsx" multiple required>
+      </div>
+      <div class="form-hint">
+        Matched by ID against the <code>First Pays</code> and <code>EPF</code> tabs only.
+      </div>
+      <button type="submit" class="btn btn-secondary">Upload Cordoba Payout</button>
+    </form>
+  </div>
 </div>
 
 {% if periods %}

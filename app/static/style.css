@@ -74,7 +74,7 @@ body {
 .highlight-purple .card-value { color: #6b21a8; }
 
 /* Upload grid */
-.upload-grid { display: grid; grid-template-columns: 1fr 1fr; gap: 1.25rem; margin-bottom: 1.5rem; }
+.upload-grid { display: grid; grid-template-columns: repeat(auto-fit, minmax(280px, 1fr)); gap: 1.25rem; margin-bottom: 1.5rem; }
 @media (max-width: 720px) { .upload-grid { grid-template-columns: 1fr; } }
 .upload-card h2 { font-size: 1rem; margin-bottom: 0.5rem; }
 

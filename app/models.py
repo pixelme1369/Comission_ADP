@@ -97,3 +97,24 @@ class ClientRecord(db.Model):
     # Late activation: client was pending in their cleared month, became active later
     is_late_activation = db.Column(db.Boolean, default=False)
     original_cleared_period = db.Column(db.String(10), nullable=True)  # YYYY-MM they originally cleared
+
+    # Cordoba (funder) payout confirmation: has Cordoba's First Pays/EPF tabs ever
+    # listed this client's ID? See CordobaPaidClient below.
+    cordoba_paid = db.Column(db.Boolean, default=False)
+
+
+class CordobaPaidClient(db.Model):
+    """
+    Ledger of every client ID that has ever appeared in a Cordoba payout file's First
+    Pays or EPF tab. Kept separate from ClientRecord so a CRM upload processed AFTER a
+    Cordoba file still comes in already flagged, and so re-uploading the same weekly
+    Cordoba file twice doesn't need special-casing.
+    """
+    __tablename__ = "cordoba_paid_client"
+
+    id = db.Column(db.Integer, primary_key=True)
+    crm_id = db.Column(db.String(50), unique=True, nullable=False, index=True)
+    client_name = db.Column(db.String(255))
+    source = db.Column(db.String(20))  # "first_pays" or "epf"
+    uploaded_filename = db.Column(db.String(255))
+    uploaded_at = db.Column(db.DateTime, default=lambda: datetime.now(timezone.utc))

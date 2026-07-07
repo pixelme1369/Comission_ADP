@@ -30,12 +30,25 @@ This is a Flask + SQLAlchemy web app for calculating agent commissions at Americ
 2. `csv_parser.py` validates and calls `calculator.py` per row
 3. Saves `CommissionPeriod` + `AgentCommission` rows (no `ClientRecord` rows)
 
+**Cordoba payout check (funder payout confirmation):**
+1. User uploads one or more Cordoba payout exports (.xlsx) → `POST /upload-cordoba-payout` (routes.py)
+2. `cordoba_parser.py` reads ONLY the `First Pays` and `EPF` tabs (the `Chargebacks` tab, if
+   present, is intentionally ignored — this feature is just a paid/not-paid check)
+3. Checks OUR existing `ClientRecord.crm_id` values against the IDs in those two tabs (not the
+   reverse) — any match flips `ClientRecord.cordoba_paid = True`, remembered forever in
+   `CordobaPaidClient` (`crm_id` unique) so a CRM upload processed *after* the Cordoba file still
+   comes in pre-flagged. The flag never flips back to `False`.
+4. Shown as a per-client "Cordoba Payout" Yes/No column on the agent detail page's Cleared
+   Clients table (and in that page's CSV export) — purely informational, does not affect tier,
+   units, or commission math.
+
 **Key files:**
 - `app/calculator.py` — pure commission logic, no Flask deps. All tier/penalty/bonus rules live here.
 - `app/csv_parser.py` — validates manual CSV columns/types, calls the calculator, returns errors or results
 - `app/crm_parser.py` — parses the full-history CRM export, classifies clients, calculates commissions and clawbacks in one pass, returns one dict per period
-- `app/models.py` — three tables: `CommissionPeriod`, `AgentCommission`, `ClientRecord`
-- `app/routes.py` — routes: `/`, `/upload`, `/upload-crm`, `/period/<id>`, `/period/<id>/agent/<id>`, `/period/<id>/export`, `/period/<id>/agent/<id>/export`, `/period/<id>/delete`, `/history`
+- `app/cordoba_parser.py` — reads the Cordoba payout .xlsx (First Pays / EPF tabs only), returns raw normalized rows; no DB access
+- `app/models.py` — `CommissionPeriod`, `AgentCommission`, `ClientRecord`, `CordobaPaidClient`
+- `app/routes.py` — routes: `/`, `/upload`, `/upload-crm`, `/upload-cordoba-payout`, `/period/<id>`, `/period/<id>/agent/<id>`, `/period/<id>/export`, `/period/<id>/agent/<id>/export`, `/period/<id>/delete`, `/history`
 
 ## Commission Business Rules (April 2026 Plan)
 
