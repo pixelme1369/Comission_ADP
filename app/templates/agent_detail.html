@@ -219,6 +219,7 @@
       <tr>
         <th>ID</th>
         <th>Client Name</th>
+        <th>Enrolled Date</th>
         <th>Marketing Payout Debt</th>
         <th>Originally Cleared</th>
         <th>Chargeback Date</th>
@@ -231,6 +232,7 @@
       <tr class="row-red">
         <td class="muted">{{ c.crm_id or '—' }}</td>
         <td>{{ c.client_name }}</td>
+        <td>{{ c.enrolled_date or '—' }}</td>
         <td>${{ "{:,.2f}".format(c.marketing_payout_debt) }}</td>
         <td>{{ c.orig_period or '—' }}</td>
         <td>{{ c.chargeback_date or '—' }}</td>
