@@ -127,6 +127,7 @@ class CordobaChargeback(db.Model):
     client_name = db.Column(db.String(255))
     agent_name = db.Column(db.String(255))  # resolved from our own ClientRecord, not Cordoba's file
     marketing_payout_debt = db.Column(db.Float, default=0.0)
+    enrolled_date = db.Column(db.String(50))
     orig_period = db.Column(db.String(10))    # YYYY-MM client originally cleared (commission paid)
     target_period = db.Column(db.String(10), index=True)  # YYYY-MM of the Marketing Payment Chargeback date
     chargeback_date = db.Column(db.String(50))

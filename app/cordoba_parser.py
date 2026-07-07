@@ -61,15 +61,17 @@ def _header_map(sheet) -> dict:
     return {str(h).strip().lower(): idx for idx, h in enumerate(header_row) if h}
 
 
-def _parse_currency(value) -> float:
+def _parse_currency(value):
+    """Returns (amount, was_malformed). was_malformed is True only for a non-blank value
+    that couldn't be parsed as a number (so blank cells aren't reported as errors)."""
     if value is None or value == "":
-        return 0.0
+        return 0.0, False
     if isinstance(value, (int, float)):
-        return float(value)
+        return float(value), False
     try:
-        return float(str(value).replace("$", "").replace(",", "").strip() or 0)
+        return float(str(value).replace("$", "").replace(",", "").strip() or 0), False
     except ValueError:
-        return 0.0
+        return 0.0, True
 
 
 def parse_cordoba_payout(file_bytes: bytes) -> dict:
@@ -78,7 +80,8 @@ def parse_cordoba_payout(file_bytes: bytes) -> dict:
     {
         "paid_ids": [ {"crm_id": str, "client_name": str, "source": "first_pays"|"epf"}, ... ],
         "chargebacks": [ {
-            "crm_id": str, "client_name": str, "marketing_payout_debt": float,
+            "crm_id": str, "client_name": str, "enrolled_date": "YYYY-MM-DD"|"",
+            "marketing_payout_debt": float,
             "orig_period": "YYYY-MM"|None, "target_period": "YYYY-MM"|None,
             "chargeback_date": "YYYY-MM-DD"|"", "dropped_date": "YYYY-MM-DD"|"",
         }, ... ],
@@ -142,10 +145,15 @@ def parse_cordoba_payout(file_bytes: bytes) -> dict:
                     continue
 
                 client_name = row[cols["full name"]] if "full name" in cols and cols["full name"] < len(row) else ""
-                debt = _parse_currency(row[cols["marketing payout debt"]])
+                enrolled_date = _parse_cell_date(row[cols["enrolled date"]]) if "enrolled date" in cols and cols["enrolled date"] < len(row) else None
+                debt, debt_malformed = _parse_currency(row[cols["marketing payout debt"]])
                 cleared_date = _parse_cell_date(row[cols["1st payment cleared date"]])
                 chargeback_date = _parse_cell_date(row[cols["marketing payment chargeback"]])
                 dropped_date = _parse_cell_date(row[cols["dropped date"]]) if "dropped date" in cols and cols["dropped date"] < len(row) else None
+
+                if debt_malformed:
+                    errors.append(f"Chargebacks row {row_num} (ID {crm_id}): invalid Marketing Payout "
+                                   "Debt value, using 0 — this clawback amount is likely wrong.")
 
                 if not chargeback_date:
                     errors.append(f"Chargebacks row {row_num} (ID {crm_id}): missing Marketing Payment "
@@ -155,6 +163,7 @@ def parse_cordoba_payout(file_bytes: bytes) -> dict:
                 chargebacks.append({
                     "crm_id": crm_id,
                     "client_name": client_name,
+                    "enrolled_date": _date_str(enrolled_date),
                     "marketing_payout_debt": debt,
                     "orig_period": _period_of(cleared_date),
                     "target_period": _period_of(chargeback_date),
