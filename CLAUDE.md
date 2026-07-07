@@ -30,12 +30,19 @@ This is a Flask + SQLAlchemy web app for calculating agent commissions at Americ
 2. `csv_parser.py` validates and calls `calculator.py` per row
 3. Saves `CommissionPeriod` + `AgentCommission` rows (no `ClientRecord` rows)
 
+**Cordoba payout reconciliation flow (funder payout check):**
+1. User uploads Cordoba's weekly payout export (.xlsx) → `POST /upload-cordoba-payout` (routes.py)
+2. `cordoba_parser.py` reads the `First Pays`, `EPF`, and `Chargebacks` tabs
+3. Checks OUR existing commission data against Cordoba's data (not the reverse) — matches by `ID` / `Contact ID` against `ClientRecord.crm_id`
+4. See "Cordoba Payout Reconciliation" section below for full details
+
 **Key files:**
-- `app/calculator.py` — pure commission logic, no Flask deps. All tier/penalty/bonus rules live here.
+- `app/calculator.py` — pure commission logic, no Flask deps. All tier/penalty/bonus rules live here, plus `get_adjusted_rate`/`calculate_clawback_delta` (shared tier-delta math used by the Cordoba reconciliation flow).
 - `app/csv_parser.py` — validates manual CSV columns/types, calls the calculator, returns errors or results
 - `app/crm_parser.py` — parses the full-history CRM export, classifies clients, calculates commissions and clawbacks in one pass, returns one dict per period
-- `app/models.py` — three tables: `CommissionPeriod`, `AgentCommission`, `ClientRecord`
-- `app/routes.py` — routes: `/`, `/upload`, `/upload-crm`, `/period/<id>`, `/period/<id>/agent/<id>`, `/period/<id>/export`, `/period/<id>/agent/<id>/export`, `/period/<id>/delete`, `/history`
+- `app/cordoba_parser.py` — reads the Cordoba weekly payout .xlsx (First Pays / EPF / Chargebacks tabs), returns raw normalized rows; no DB access
+- `app/models.py` — `CommissionPeriod`, `AgentCommission`, `ClientRecord`, `CordobaPaidClient`, `CordobaChargeback`
+- `app/routes.py` — routes: `/`, `/upload`, `/upload-crm`, `/upload-cordoba-payout`, `/period/<id>`, `/period/<id>/agent/<id>`, `/period/<id>/export`, `/period/<id>/agent/<id>/export`, `/period/<id>/delete`, `/history`
 
 ## Commission Business Rules (April 2026 Plan)
 
@@ -142,6 +149,48 @@ agent_name, units_cleared, total_cleared_debt, cancellation_rate, hourly_draw, p
 - Uploading a period that already exists in the DB is blocked — delete it first
 
 A sample CSV is at `app/static/sample.csv`.
+
+## Cordoba Payout Reconciliation
+
+Cordoba is the funder — they pay us, and we only owe an agent commission on a file once
+Cordoba has actually paid us for it. The user uploads Cordoba's weekly payout export
+(.xlsx with `First Pays`, `EPF`, and `Chargebacks` tabs) via the "Upload Cordoba Payout"
+card on the index page. Matching is always **ID-based** (`ID` / `Contact ID` columns in
+Cordoba's file == `ClientRecord.crm_id`), never by agent name — Cordoba's file has no
+concept of our internal agents, only the marketing company.
+
+**First Pays / EPF tabs → `cordoba_paid` flag (one-time, ever-funded):**
+- Any client ID appearing in either tab is remembered forever in `CordobaPaidClient`
+  (so a CRM upload processed *after* the Cordoba file still comes in already flagged).
+- `ClientRecord.cordoba_paid` is flipped `True` (never back to `False`) for any existing
+  client record matching that ID, regardless of which period it's in.
+- This is purely informational — it does NOT change tier, units, or which files count
+  as cleared. Shown as "20/23" on the agent's row in `results.html` (cleared units that
+  are Cordoba-paid, out of total cleared units that period) and as a per-file Yes/No
+  badge on `agent_detail.html`'s Cleared Clients table.
+
+**Chargebacks tab → `CordobaChargeback` (separate from the CRM-predicted clawback):**
+- Kept in its own column/table, never merged into `AgentCommission.clawback_amount` /
+  `ClientRecord.clawback_amount` (which come from the CRM export's own dropped-date
+  logic) — the two are shown side by side so discrepancies are visible, not silently
+  reconciled.
+- Target period (which month's report gets the deduction) = the month of the
+  **Marketing Payment Chargeback** date column, NOT the Dropped Date.
+- Agent is resolved by looking up `ClientRecord.query.filter_by(crm_id=..., is_cleared=True)`
+  and using ITS `agent_commission` relationship — this also gives the correct original
+  period/units/debt/commission to recalculate against (handles late-activation
+  reassignment automatically, since it uses what was actually credited, not the raw
+  "1st Payment Cleared Date" from Cordoba's file).
+- Dollar amount uses `Marketing Payout Debt` (not our stored `enrolled_debt`) run through
+  `calculate_clawback_delta()` in `calculator.py` — same tier-drop-recalculation rule as
+  the CRM-native clawback.
+- If no `ClientRecord` matches the ID, the row is stored with `matched=False` and skipped
+  from all totals (nothing to reconcile against yet — check the ID / upload the CRM data first).
+- If the matched agent has zero cleared units in the target month, `_get_or_create_holding_agent_commission()`
+  in `routes.py` creates a zero-unit `CommissionPeriod`/`AgentCommission` (`source="cordoba"`)
+  so the deduction still has somewhere to display.
+- Each `crm_id` is only ever recorded once in `CordobaChargeback` (unique constraint) —
+  re-uploading an overlapping weekly file won't double-count the same chargeback.
 
 ## UI Notes
 

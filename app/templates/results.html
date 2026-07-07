@@ -22,6 +22,12 @@
     <div class="card-label">Total Clawbacks</div>
   </div>
   {% endif %}
+  {% if total_payout_clawback > 0 %}
+  <div class="card summary-card highlight-red">
+    <div class="card-value">${{ "{:,.2f}".format(total_payout_clawback) }}</div>
+    <div class="card-label">Clawback Based on Cordoba Payout</div>
+  </div>
+  {% endif %}
   <div class="card summary-card highlight-green">
     <div class="card-value">${{ "{:,.2f}".format(total_net) }}</div>
     <div class="card-label">Total Commission Owed</div>
@@ -63,6 +69,7 @@
   <span class="legend-item legend-orange">NSF Flagged</span>
   <span class="legend-item legend-purple">Has Pending Units</span>
 </div>
+<p class="muted" style="margin-bottom:1rem;">"Cordoba Paid" shows how many of an agent's cleared files Cordoba has confirmed funding (from an uploaded Cordoba payout file), out of the agent's total cleared units this period.</p>
 
 <div class="table-wrapper">
   <table class="data-table sortable" id="results-table">
@@ -75,21 +82,24 @@
         <th data-col="4">Cleared Debt</th>
         <th data-col="5">Gross Commission</th>
         <th data-col="6">Clawback</th>
-        <th data-col="7">Net Commission</th>
-        <th data-col="8">Cancel Rate</th>
-        <th data-col="9">Quality Bonus</th>
-        <th data-col="10">NSF</th>
-        <th data-col="11">Pending</th>
+        <th data-col="7">Cordoba Paid</th>
+        <th data-col="8">Clawback (Cordoba)</th>
+        <th data-col="9">Net Commission</th>
+        <th data-col="10">Cancel Rate</th>
+        <th data-col="11">Quality Bonus</th>
+        <th data-col="12">NSF</th>
+        <th data-col="13">Pending</th>
         <th>Notes</th>
       </tr>
     </thead>
     <tbody>
       {% for a in agents %}
+      {% set cstat = cordoba_stats.get(a.id, {"paid": 0, "total": 0, "payout_clawback": 0.0}) %}
       <tr class="
         {% if a.nsf_flagged %}row-orange
         {% elif a.quality_bonus_eligible %}row-green{% endif %}
         {% if a.payout_type == 'draw' %}row-amber{% endif %}
-        {% if a.cancellation_penalty_applied or a.clawback_amount > 0 %}row-red{% endif %}
+        {% if a.cancellation_penalty_applied or a.clawback_amount > 0 or cstat.payout_clawback > 0 %}row-red{% endif %}
         {% if a.pending_units %}row-purple{% endif %}
       ">
         <td>
@@ -113,6 +123,18 @@
         <td>
           {% if a.clawback_amount > 0 %}
             <span style="color:#991b1b;font-weight:600;">-${{ "{:,.2f}".format(a.clawback_amount) }}</span>
+          {% else %}—{% endif %}
+        </td>
+        <td>
+          {% if cstat.total > 0 %}
+            <span class="{% if cstat.paid == cstat.total %}badge badge-green{% else %}badge badge-amber{% endif %}">
+              {{ cstat.paid }}/{{ cstat.total }}
+            </span>
+          {% else %}—{% endif %}
+        </td>
+        <td>
+          {% if cstat.payout_clawback > 0 %}
+            <span style="color:#991b1b;font-weight:600;">-${{ "{:,.2f}".format(cstat.payout_clawback) }}</span>
           {% else %}—{% endif %}
         </td>
         <td><strong>${{ "{:,.2f}".format(a.net_commission) }}</strong></td>
