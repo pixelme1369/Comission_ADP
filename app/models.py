@@ -100,7 +100,11 @@ class ClientRecord(db.Model):
 
     # Cordoba (funder) payout confirmation: has Cordoba's First Pays/EPF tabs ever
     # listed this client's ID? See CordobaPaidClient below.
-    cordoba_paid = db.Column(db.Boolean, default=False)
+    # server_default (not just default=) so any row inserted through a code path that
+    # doesn't set this explicitly still gets a real 0, not NULL — a plain Python-side
+    # default doesn't apply if the ORM model doesn't even define the column at insert
+    # time, which is exactly what caused every existing row to silently end up NULL once.
+    cordoba_paid = db.Column(db.Boolean, default=False, server_default=db.text("0"))
 
 
 class CordobaPaidClient(db.Model):
