@@ -57,6 +57,33 @@
       <button type="submit" class="btn btn-secondary">Upload Cordoba Payout</button>
     </form>
   </div>
+
+  <!-- Commission History Backfill -->
+  <div class="card upload-card">
+    <h2>Upload Commission History</h2>
+    <p class="muted" style="margin-bottom:1rem;">
+      Backfill past commission periods from a prior account manager's ledger (.xlsx) —
+      not a CRM export. Use this to record which clients agents were already paid on
+      before this app existed, so a Cordoba Chargebacks upload can find and claw those
+      back later. You can select multiple files at once.
+    </p>
+    <form method="POST" action="{{ url_for('main.upload_commission_history') }}" enctype="multipart/form-data">
+      <div class="form-group">
+        <label for="history_file">Commission History XLSX (one or more)</label>
+        <input type="file" id="history_file" name="history_file" accept=".xlsx" multiple required>
+      </div>
+      <div class="form-group">
+        <label for="history_year">Year</label>
+        <input type="number" id="history_year" name="history_year" placeholder="e.g. 2026" min="2000" max="2100" required>
+      </div>
+      <div class="form-hint">
+        Required columns: <code>Month, ID, Sales Rep, Enrolled Debt, To subtract</code> —
+        each row is either a paid unit (Enrolled Debt filled) or an already-applied
+        clawback (To subtract filled). The Month column has no year, so enter it above.
+      </div>
+      <button type="submit" class="btn btn-secondary">Upload Commission History</button>
+    </form>
+  </div>
 </div>
 
 {% if periods %}
