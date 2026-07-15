@@ -33,7 +33,7 @@ import io
 from collections import defaultdict
 from datetime import datetime
 
-from app.calculator import calculate_agent_commission, TIERS, CANCELLATION_PENALTY_THRESHOLD
+from app.calculator import calculate_agent_commission, calculate_clawback_amount
 
 NSF_FLAG_THRESHOLD = 3
 
@@ -88,23 +88,8 @@ def _parse_currency(value: str) -> float:
     return float(value.strip().replace("$", "").replace(",", "") or 0)
 
 
-def _get_adjusted_rate(units: int, cancel_rate_pct: float):
-    """Return (adjusted_tier_num, rate) applying cancellation penalty."""
-    if units <= 0:
-        return 0, 0.0
-    for i, (low, high, rate, _) in enumerate(TIERS, start=1):
-        if high is None or low <= units <= high:
-            raw_tier = i
-            break
-    else:
-        return 0, 0.0
-    penalty = cancel_rate_pct > CANCELLATION_PENALTY_THRESHOLD
-    adj_tier = max(1, raw_tier - 1) if penalty else raw_tier
-    _, _, adj_rate, _ = TIERS[adj_tier - 1]
-    return adj_tier, adj_rate
-
-
-def parse_crm_and_calculate(file_bytes: bytes, filename: str, already_cleared_crm_ids: set = None) -> list:
+def parse_crm_and_calculate(file_bytes: bytes, filename: str, already_cleared_crm_ids: set = None,
+                             already_charged_back_crm_ids: set = None) -> list:
     """
     Parse a full-history CRM export and return one dict per commission period found.
 
@@ -259,6 +244,8 @@ def parse_crm_and_calculate(file_bytes: bytes, filename: str, already_cleared_cr
     # ---------------------------------------------------------------
     if already_cleared_crm_ids is None:
         already_cleared_crm_ids = set()
+    if already_charged_back_crm_ids is None:
+        already_charged_back_crm_ids = set()
 
     if already_cleared_crm_ids:
         all_cleared_periods = [c["cleared_period"] for c in all_clients if c["cleared_period"]]
@@ -370,6 +357,11 @@ def parse_crm_and_calculate(file_bytes: bytes, filename: str, already_cleared_cr
         dropped_period = c["dropped_period"]
         orig_key = (agent_name, cleared_period)
 
+        if crm_id and crm_id in already_charged_back_crm_ids:
+            # Already clawed back via a Cordoba Chargebacks-tab upload — don't
+            # double-charge the agent when the CRM export later reflects the drop.
+            continue
+
         # Guard: only clawback if commission was actually paid on this client.
         # It was paid if the client was in the cleared bucket this file (commission
         # calculated now) OR was saved as is_cleared=True in a prior DB upload.
@@ -395,29 +387,13 @@ def parse_crm_and_calculate(file_bytes: bytes, filename: str, already_cleared_cr
             clawback_by_drop_period[(agent_name, dropped_period)].append(c)
             continue
 
-        orig_units = orig_result["units_cleared"]
-        orig_debt = orig_result["total_cleared_debt"]
-        orig_commission = orig_result["gross_commission"]
-        orig_cancel_rate = orig_result["cancellation_rate"]
-
-        if orig_units <= 1:
-            # Removing this unit leaves 0 — full commission clawed back
-            cb = orig_commission
-        else:
-            new_units = orig_units - 1
-            new_debt = orig_debt - c["enrolled_debt"]
-            _, new_rate = _get_adjusted_rate(new_units, orig_cancel_rate)
-            _, orig_rate = _get_adjusted_rate(orig_units, orig_cancel_rate)
-
-            if new_rate != orig_rate:
-                # Tier dropped — clawback is full difference on all Month A debt
-                new_commission = new_rate * new_debt
-                cb = orig_commission - new_commission
-            else:
-                # Same tier — clawback is just this client's share
-                cb = c["enrolled_debt"] * orig_rate
-
-        cb = max(0.0, round(cb, 2))
+        cb = calculate_clawback_amount(
+            orig_result["units_cleared"],
+            orig_result["total_cleared_debt"],
+            orig_result["gross_commission"],
+            orig_result["cancellation_rate"],
+            c["enrolled_debt"],
+        )
         c["clawback_amount"] = cb
         clawback_by_drop_period[(agent_name, dropped_period)].append(c)
 

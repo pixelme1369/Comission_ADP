@@ -122,3 +122,22 @@ class CordobaPaidClient(db.Model):
     source = db.Column(db.String(20))  # "first_pays" or "epf"
     uploaded_filename = db.Column(db.String(255))
     uploaded_at = db.Column(db.DateTime, default=lambda: datetime.now(timezone.utc))
+
+
+class CordobaChargedBackClient(db.Model):
+    """
+    Ledger of every client ID that has ever triggered an agent clawback via a Cordoba
+    payout file's Chargebacks tab. Kept forever so re-uploading the same Chargebacks
+    file (or a later CRM upload that reflects the same drop) never claws back the
+    agent a second time for the same client.
+    """
+    __tablename__ = "cordoba_charged_back_client"
+
+    id = db.Column(db.Integer, primary_key=True)
+    crm_id = db.Column(db.String(50), unique=True, nullable=False, index=True)
+    client_name = db.Column(db.String(255))
+    agent_name = db.Column(db.String(255))
+    clawback_amount = db.Column(db.Float, default=0.0)
+    dropped_period = db.Column(db.String(10))  # YYYY-MM
+    uploaded_filename = db.Column(db.String(255))
+    uploaded_at = db.Column(db.DateTime, default=lambda: datetime.now(timezone.utc))

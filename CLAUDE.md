@@ -32,12 +32,12 @@ This is a Flask + SQLAlchemy web app for calculating agent commissions at Americ
 
 **Cordoba payout check (funder payout confirmation):**
 1. User uploads one or more Cordoba payout exports (.xlsx) → `POST /upload-cordoba-payout` (routes.py)
-2. `cordoba_parser.py` reads ONLY the `First Pays` and `EPF` tabs (the `Chargebacks` tab, if
-   present, is intentionally ignored — this feature is just a paid/not-paid check)
-3. Checks OUR existing `ClientRecord.crm_id` values against the IDs in those two tabs (not the
-   reverse) — any match flips `ClientRecord.cordoba_paid = True`, remembered forever in
-   `CordobaPaidClient` (`crm_id` unique) so a CRM upload processed *after* the Cordoba file still
-   comes in pre-flagged. The flag never flips back to `False`.
+2. `cordoba_parser.py` reads the `First Pays`, `EPF`, and `Chargebacks` tabs
+3. **First Pays / EPF** (paid confirmation): checks OUR existing `ClientRecord.crm_id` values
+   against the IDs in those two tabs (not the reverse) — any match flips
+   `ClientRecord.cordoba_paid = True`, remembered forever in `CordobaPaidClient` (`crm_id` unique)
+   so a CRM upload processed *after* the Cordoba file still comes in pre-flagged. The flag never
+   flips back to `False`.
    **The bulk update that flips this must NOT filter on `cordoba_paid.is_(False)`** — a row can
    end up `NULL` instead of `False` if it was ever inserted while this column didn't exist on the
    `ClientRecord` model (this actually happened once, during a revert-then-reapply cycle of this
@@ -45,16 +45,34 @@ This is a Flask + SQLAlchemy web app for calculating agent commissions at Americ
    rows forever with no error. Just unconditionally set every matching crm_id to `True`; re-setting
    an already-`True` row is harmless. The column also has `server_default=db.text("0")` now as a
    second line of defense so a fresh table never produces `NULL` rows in the first place.
-4. Shown as a per-client "Cordoba Payout" Yes/No column on the agent detail page's Cleared
+   Shown as a per-client "Cordoba Payout" Yes/No column on the agent detail page's Cleared
    Clients table (and in that page's CSV export) — purely informational, does not affect tier,
    units, or commission math.
+4. **Chargebacks** (agent clawback trigger): the tab has no agent/rep column, so
+   `routes.py::_apply_cordoba_chargebacks` cross-references each charged-back `ID` against OUR OWN
+   `ClientRecord` history — `ClientRecord.query.filter_by(crm_id=..., is_cleared=True)` — to find
+   which agent was actually paid on that client. If none is found (we never recorded the client as
+   cleared/commissioned), it's skipped and listed in a flash message — nothing to claw back.
+   If found, the agent's commission is clawed back **unconditionally**, regardless of the
+   safe-payment-threshold that protects agents in the CRM-driven clawback flow — in practice
+   Cordoba stops charging back once an agent-protecting threshold is hit anyway, so no
+   threshold check is applied on this path. The clawback amount reuses
+   `calculator.calculate_clawback_amount` (same tier-recalculation rule as the CRM flow — see
+   Clawback Rules below) and is deducted from the agent's commission in the client's **Dropped
+   Date month** from the Chargebacks row, creating a zero-unit `CommissionPeriod`/`AgentCommission`
+   holding entry if that month doesn't exist yet (`routes.py::_get_or_create_agent_period_row`,
+   mirrors the CRM flow's Step 4). Each `crm_id` is recorded forever in
+   `CordobaChargedBackClient` (`crm_id` unique) so re-uploading the same Chargebacks file, or a
+   later CRM upload that reflects the same drop, never claws the agent back twice — `crm_parser.py`
+   is passed this ledger as `already_charged_back_crm_ids` and skips computing a clawback for any
+   `crm_id` already in it.
 
 **Key files:**
-- `app/calculator.py` — pure commission logic, no Flask deps. All tier/penalty/bonus rules live here.
+- `app/calculator.py` — pure commission logic, no Flask deps. All tier/penalty/bonus rules live here, including `calculate_clawback_amount` (shared by both the CRM-driven and Cordoba-chargeback-driven clawback paths).
 - `app/csv_parser.py` — validates manual CSV columns/types, calls the calculator, returns errors or results
 - `app/crm_parser.py` — parses the full-history CRM export, classifies clients, calculates commissions and clawbacks in one pass, returns one dict per period
-- `app/cordoba_parser.py` — reads the Cordoba payout .xlsx (First Pays / EPF tabs only), returns raw normalized rows; no DB access
-- `app/models.py` — `CommissionPeriod`, `AgentCommission`, `ClientRecord`, `CordobaPaidClient`
+- `app/cordoba_parser.py` — reads the Cordoba payout .xlsx (First Pays / EPF / Chargebacks tabs), returns raw normalized rows; no DB access
+- `app/models.py` — `CommissionPeriod`, `AgentCommission`, `ClientRecord`, `CordobaPaidClient`, `CordobaChargedBackClient`
 - `app/routes.py` — routes: `/`, `/upload`, `/upload-crm`, `/upload-cordoba-payout`, `/period/<id>`, `/period/<id>/agent/<id>`, `/period/<id>/export`, `/period/<id>/agent/<id>/export`, `/period/<id>/delete`, `/history`
 
 ## Commission Business Rules (April 2026 Plan)
@@ -101,6 +119,8 @@ Implemented in `_safe_payment_threshold(pay_freq)` in `crm_parser.py`. Also appl
 **Tier recalculation on clawback:** if removing the cancelled unit drops the agent's tier for the original cleared month, the clawback = full commission difference on all that month's debt (not just the one client's share). If the tier is unchanged, the clawback is just that client's share (`enrolled_debt × orig_rate`). If the agent has no commission result at all for the original cleared month (e.g. they had 0 net cleared units there after other cancels), the clawback falls back to a flat `enrolled_debt × 1%` (lowest tier rate).
 
 Clawbacks are summed per `(agent, dropped_month)` and deducted from the agent's commission in the month the client **dropped**, not the month they cleared (`net_commission = max(0, gross_commission - clawback_amount)`). If the agent has no cleared units in the dropped month, a zero-unit period entry is created just to carry the clawback.
+
+**Second, independent clawback trigger — Cordoba chargebacks:** everything above describes clawbacks detected from the CRM export itself (a Dropped Date appearing in a later CRM upload). A client can also get clawed back because Cordoba's Chargebacks tab shows they took the marketing payout back from the company — see "Cordoba payout check" above. That path skips the safe-payment-threshold table entirely (claws back unconditionally whenever we previously paid the agent) but reuses the same tier-recalculation math (`calculator.calculate_clawback_amount`) and the same "deduct from dropped month" mechanic. The two paths share a dedup guard (`CordobaChargedBackClient` ledger passed into `crm_parser.py` as `already_charged_back_crm_ids`) so the same client is never clawed back twice.
 
 ## Client Classification (`crm_parser.py`)
 
