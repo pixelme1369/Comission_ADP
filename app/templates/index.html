@@ -77,8 +77,9 @@
         <input type="number" id="history_year" name="history_year" placeholder="e.g. 2026" min="2000" max="2100" required>
       </div>
       <div class="form-hint">
-        Required columns: <code>Month, ID, Sales Rep, Enrolled Debt, To subtract</code> —
-        each row is either a paid unit (Enrolled Debt filled) or an already-applied
+        Required columns: <code>Month, ID, Sales Rep, To subtract</code>, plus a debt column
+        named either <code>Enrolled Debt</code> or <code>Marketing Payout Debt</code> —
+        each row is either a paid unit (debt column filled) or an already-applied
         clawback (To subtract filled). The Month column has no year, so enter it above.
       </div>
       <button type="submit" class="btn btn-secondary">Upload Commission History</button>

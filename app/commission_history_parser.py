@@ -1,13 +1,14 @@
 """
 Parses a historical commission ledger (.xlsx or .csv) handed down from a prior account
 manager — NOT a CRM export. One row per client per month already paid (or clawed back) by
-that manager, format: Month, ID, Sales Rep, Full Name, Enrolled Debt, To subtract,
-Payments Made, Units, Status, Marketing Campaign.
+that manager, format: Month, ID, Sales Rep, Full Name, Enrolled Debt (or Marketing Payout
+Debt — either header name is accepted), To subtract, Payments Made, Units, Status,
+Marketing Campaign.
 
 Each row is exactly one of two things (never both, per the source file):
-  - Enrolled Debt filled  → a unit the agent was actually paid commission on that month
-  - "To subtract" filled  → a clawback dollar amount already deducted from the agent
-    that month (the negative number is the deduction; Enrolled Debt is blank on these
+  - the debt column filled  → a unit the agent was actually paid commission on that month
+  - "To subtract" filled    → a clawback dollar amount already deducted from the agent
+    that month (the negative number is the deduction; the debt column is blank on these
     rows since the original enrolled debt isn't repeated here)
 
 There's no Dropped Date, Pay Freq, or payout-date logic to apply here — the prior
@@ -26,7 +27,11 @@ from collections import defaultdict
 
 from app.calculator import calculate_agent_commission
 
-REQUIRED_COLUMNS = {"month", "id", "sales rep", "enrolled debt", "to subtract"}
+REQUIRED_COLUMNS = {"month", "id", "sales rep", "to subtract"}
+
+# Some ledgers call the debt column "Enrolled Debt", others "Marketing Payout Debt" —
+# accept whichever one is actually present in the file's header row.
+DEBT_COLUMN_ALIASES = ("enrolled debt", "marketing payout debt")
 
 MONTH_NUMBERS = {
     "january": 1, "february": 2, "march": 3, "april": 4, "may": 5, "june": 6,
@@ -127,6 +132,12 @@ def parse_commission_history(file_bytes: bytes, filename: str, year: int) -> dic
     if missing:
         return {"periods": [], "errors": [f"Missing column(s): {', '.join(sorted(missing))}"]}
 
+    debt_col = next((name for name in DEBT_COLUMN_ALIASES if name in cols), None)
+    if debt_col is None:
+        return {"periods": [], "errors": [
+            f"Missing column(s): {' or '.join(DEBT_COLUMN_ALIASES)}"
+        ]}
+
     def cell(row, name):
         idx = cols.get(name)
         return row[idx] if idx is not None and idx < len(row) else None
@@ -151,7 +162,7 @@ def parse_commission_history(file_bytes: bytes, filename: str, year: int) -> dic
             continue
 
         period_label = f"{year}-{month_num:02d}"
-        enrolled_debt = _parse_number(cell(row, "enrolled debt"))
+        enrolled_debt = _parse_number(cell(row, debt_col))
         to_subtract = _parse_number(cell(row, "to subtract"))
 
         base = {
@@ -171,7 +182,7 @@ def parse_commission_history(file_bytes: bytes, filename: str, year: int) -> dic
             base["enrolled_debt"] = debt_by_id.get(crm_id, 0.0)
             buckets[(period_label, agent_name)]["clawback"].append(base)
         else:
-            row_errors.append(f"Row {row_num} ({agent_name}): neither Enrolled Debt nor "
+            row_errors.append(f"Row {row_num} ({agent_name}): neither {debt_col.title()} nor "
                                "To subtract is filled — skipped")
 
     periods = defaultdict(list)  # period_label -> [agent result dicts]
