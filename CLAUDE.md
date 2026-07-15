@@ -53,7 +53,13 @@ This is a Flask + SQLAlchemy web app for calculating agent commissions at Americ
    `ClientRecord` history — `ClientRecord.query.filter_by(crm_id=..., is_cleared=True)` — to find
    which agent was actually paid on that client. If none is found (we never recorded the client as
    cleared/commissioned), it's skipped and listed in a flash message — nothing to claw back.
-   If found, the agent's commission is clawed back **unconditionally**, regardless of the
+   **Second gate:** the `crm_id` must also appear in the `CordobaPaidClient` ledger (built from
+   every First Pays/EPF upload ever processed, not just this file) — i.e. Cordoba must have
+   actually confirmed paying us on it at some point. A chargeback logically can't exist without
+   a prior payment, so in practice this only catches data gaps (the original payout confirmation
+   was never uploaded here), and those are skipped with their own flash message rather than
+   clawed back on faith.
+   If both checks pass, the agent's commission is clawed back **unconditionally**, regardless of the
    safe-payment-threshold that protects agents in the CRM-driven clawback flow — in practice
    Cordoba stops charging back once an agent-protecting threshold is hit anyway, so no
    threshold check is applied on this path. The clawback amount reuses
