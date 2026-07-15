@@ -67,13 +67,39 @@ This is a Flask + SQLAlchemy web app for calculating agent commissions at Americ
    is passed this ledger as `already_charged_back_crm_ids` and skips computing a clawback for any
    `crm_id` already in it.
 
+**Commission history backfill (pre-app paid history):**
+1. User uploads one or more prior account manager ledgers (.xlsx, NOT a CRM export) + a `Year`
+   form field → `POST /upload-commission-history` (routes.py)
+2. `commission_history_parser.py` reads the single sheet, format: `Month, ID, Sales Rep,
+   Full Name, Enrolled Debt, To subtract, Payments Made, Units, Status, Marketing Campaign`.
+   The `Month` column has no year, hence the separate `Year` field — the whole file is assumed
+   to be one calendar year.
+3. Each row is exactly one of two things (never both, per the source format): **Enrolled Debt**
+   filled means the agent was actually paid commission on that client that month; **To
+   subtract** filled (Enrolled Debt blank) means a clawback dollar amount the prior manager
+   already deducted from the agent that month. The dollar amount on "To subtract" rows is used
+   **as-is** — it is not recomputed through `calculate_clawback_amount`, since we don't have
+   enough history from this file alone to redo that math accurately.
+4. Rows are grouped by `(Month+Year, Sales Rep)` and run through the same
+   `calculate_agent_commission` tier math as every other flow, to reconstruct a real
+   `CommissionPeriod` + `AgentCommission` + `ClientRecord` (`is_cleared=True` for paid rows) for
+   each month — **exactly the same DB shape the CRM flow produces**. This is deliberate: it
+   means `_apply_cordoba_chargebacks`'s lookup (`ClientRecord.query.filter_by(crm_id=...,
+   is_cleared=True)`) needs zero changes to find these backfilled clients later — a Cordoba
+   Chargebacks-tab upload can claw back an agent for a client paid before this app ever existed,
+   as long as that client's month has been backfilled this way.
+5. Same "period already exists" guard as every other upload flow — a month already present in
+   the DB is skipped (with a flash message) rather than double-counted; delete it first to
+   re-import.
+
 **Key files:**
 - `app/calculator.py` — pure commission logic, no Flask deps. All tier/penalty/bonus rules live here, including `calculate_clawback_amount` (shared by both the CRM-driven and Cordoba-chargeback-driven clawback paths).
 - `app/csv_parser.py` — validates manual CSV columns/types, calls the calculator, returns errors or results
 - `app/crm_parser.py` — parses the full-history CRM export, classifies clients, calculates commissions and clawbacks in one pass, returns one dict per period
 - `app/cordoba_parser.py` — reads the Cordoba payout .xlsx (First Pays / EPF / Chargebacks tabs), returns raw normalized rows; no DB access
+- `app/commission_history_parser.py` — reads a prior account manager's ledger .xlsx (not a CRM export) to backfill pre-app commission history; no DB access
 - `app/models.py` — `CommissionPeriod`, `AgentCommission`, `ClientRecord`, `CordobaPaidClient`, `CordobaChargedBackClient`
-- `app/routes.py` — routes: `/`, `/upload`, `/upload-crm`, `/upload-cordoba-payout`, `/period/<id>`, `/period/<id>/agent/<id>`, `/period/<id>/export`, `/period/<id>/agent/<id>/export`, `/period/<id>/delete`, `/history`
+- `app/routes.py` — routes: `/`, `/upload`, `/upload-crm`, `/upload-cordoba-payout`, `/upload-commission-history`, `/period/<id>`, `/period/<id>/agent/<id>`, `/period/<id>/export`, `/period/<id>/agent/<id>/export`, `/period/<id>/delete`, `/history`
 
 ## Commission Business Rules (April 2026 Plan)
 

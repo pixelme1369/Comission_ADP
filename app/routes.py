@@ -8,6 +8,7 @@ from app.models import (
 from app.csv_parser import parse_and_calculate
 from app.crm_parser import parse_crm_and_calculate, _parse_date, _period_of
 from app.cordoba_parser import parse_cordoba_payout
+from app.commission_history_parser import parse_commission_history
 from app.calculator import calculate_clawback_amount
 
 bp = Blueprint("main", __name__)
@@ -461,6 +462,126 @@ def upload_cordoba_payout():
             "error",
         )
     return redirect(url_for("main.index"))
+
+
+def _save_commission_history_period(period_label, results, filename, already_cordoba_paid_ids):
+    """Save one month's worth of parsed historical-ledger results as a real
+    CommissionPeriod + AgentCommission + ClientRecord rows, same shape the CRM flow
+    produces, so this history is indistinguishable from a real upload for the purposes
+    of Cordoba chargeback matching (_apply_cordoba_chargebacks looks up
+    ClientRecord.is_cleared=True by crm_id, regardless of which upload flow created it)."""
+    period = CommissionPeriod(period_label=period_label, filename=filename, total_agents=len(results))
+    db.session.add(period)
+    db.session.flush()
+
+    for r in results:
+        cleared_clients = r.pop("_cleared_clients", [])
+        clawback_clients = r.pop("_clawback_clients", [])
+
+        agent_obj = AgentCommission(period_id=period.id, **r)
+        db.session.add(agent_obj)
+        db.session.flush()
+
+        for cr in cleared_clients:
+            db.session.add(ClientRecord(
+                period_id=period.id,
+                agent_commission_id=agent_obj.id,
+                crm_id=cr.get("crm_id"),
+                agent_name=cr["agent_name"],
+                client_name=cr.get("client_name"),
+                status=cr.get("status"),
+                payments_made=cr.get("payments_made", 0),
+                enrolled_debt=cr.get("enrolled_debt", 0.0),
+                is_cleared=True,
+                is_pending=False,
+                is_cancelled=False,
+                commission_on_client=round(cr.get("enrolled_debt", 0.0) * agent_obj.tier_rate, 2),
+                cordoba_paid=cr.get("crm_id") in already_cordoba_paid_ids,
+            ))
+
+        for cr in clawback_clients:
+            db.session.add(ClientRecord(
+                period_id=period.id,
+                agent_commission_id=agent_obj.id,
+                crm_id=cr.get("crm_id"),
+                agent_name=cr["agent_name"],
+                client_name=cr.get("client_name"),
+                status=cr.get("status"),
+                payments_made=cr.get("payments_made", 0),
+                enrolled_debt=cr.get("enrolled_debt", 0.0),
+                is_cleared=False,
+                is_pending=False,
+                is_cancelled=True,
+                commission_on_client=0.0,
+                clawback_applied=True,
+                clawback_period_id=period.id,
+                clawback_amount=cr.get("clawback_amount", 0.0),
+            ))
+
+    return period
+
+
+@bp.route("/upload-commission-history", methods=["POST"])
+def upload_commission_history():
+    """Backfill past commission history from a prior account manager's ledger (.xlsx,
+    NOT a CRM export — see commission_history_parser.py for the expected columns).
+    Recreates real CommissionPeriod/AgentCommission/ClientRecord rows for those months
+    so a later Cordoba Chargebacks-tab upload can find and claw back agents who were
+    paid on a client before this app existed."""
+    files = [f for f in request.files.getlist("history_file") if f and f.filename]
+    if not files:
+        flash("No file selected.", "error")
+        return redirect(url_for("main.index"))
+
+    bad_names = [f.filename for f in files if not _allowed_xlsx_file(f.filename)]
+    if bad_names:
+        flash(f"Only .xlsx files are accepted for commission history uploads: {', '.join(bad_names)}", "error")
+        return redirect(url_for("main.index"))
+
+    year_raw = (request.form.get("history_year") or "").strip()
+    if not year_raw.isdigit():
+        flash("Please enter a valid year for the commission history file (the Month column has no year).", "error")
+        return redirect(url_for("main.index"))
+    year = int(year_raw)
+
+    already_cordoba_paid_ids = {p.crm_id for p in CordobaPaidClient.query.all()}
+
+    saved_period_ids = []
+    total_periods_skipped = 0
+
+    for file in files:
+        file_bytes = file.read()
+        parsed = parse_commission_history(file_bytes, file.filename, year)
+
+        for err in parsed["errors"]:
+            flash(f"{file.filename}: {err}", "error")
+
+        for period_data in parsed["periods"]:
+            period_label = period_data["period_label"]
+            existing = CommissionPeriod.query.filter_by(period_label=period_label).first()
+            if existing:
+                flash(
+                    f"Period {period_label} already exists (uploaded {existing.uploaded_at.strftime('%Y-%m-%d')}). "
+                    "Delete it first before re-importing history for that month.", "error",
+                )
+                total_periods_skipped += 1
+                continue
+
+            period = _save_commission_history_period(
+                period_label, period_data["results"], file.filename, already_cordoba_paid_ids
+            )
+            saved_period_ids.append(period.id)
+
+        db.session.commit()
+
+    if saved_period_ids:
+        flash(f"Commission history import: {len(saved_period_ids)} month(s) backfilled.", "success")
+    if total_periods_skipped:
+        flash(f"{total_periods_skipped} month(s) skipped because a period already existed.", "error")
+
+    if len(saved_period_ids) == 1:
+        return redirect(url_for("main.period_detail", period_id=saved_period_ids[0]))
+    return redirect(url_for("main.history"))
 
 
 @bp.route("/period/<int:period_id>")
