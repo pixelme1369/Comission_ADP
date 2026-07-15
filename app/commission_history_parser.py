@@ -1,7 +1,7 @@
 """
-Parses a historical commission ledger (.xlsx) handed down from a prior account manager —
-NOT a CRM export. One row per client per month already paid (or clawed back) by that
-manager, format: Month, ID, Sales Rep, Full Name, Enrolled Debt, To subtract,
+Parses a historical commission ledger (.xlsx or .csv) handed down from a prior account
+manager — NOT a CRM export. One row per client per month already paid (or clawed back) by
+that manager, format: Month, ID, Sales Rep, Full Name, Enrolled Debt, To subtract,
 Payments Made, Units, Status, Marketing Campaign.
 
 Each row is exactly one of two things (never both, per the source file):
@@ -20,6 +20,8 @@ The Month column has no year, so the caller supplies one — the whole file is a
 to be a single calendar year.
 """
 
+import csv
+import io
 from collections import defaultdict
 
 from app.calculator import calculate_agent_commission
@@ -39,7 +41,11 @@ def _clean_id(value) -> str:
         return ""
     if isinstance(value, float):
         return str(int(value)) if value.is_integer() else str(value)
-    return str(value).strip()
+    s = str(value).strip()
+    # CSV round-trips of Excel data often turn an ID like 1181065497 into "1181065497.0"
+    if s.endswith(".0") and s[:-2].isdigit():
+        return s[:-2]
+    return s
 
 
 def _parse_number(value):
@@ -53,9 +59,37 @@ def _parse_number(value):
         return None
 
 
-def _header_map(sheet) -> dict:
+def _header_map_from_row(header_row) -> dict:
+    return {str(h).strip().lower(): idx for idx, h in enumerate(header_row) if h and str(h).strip()}
+
+
+def _read_rows(file_bytes: bytes, filename: str):
+    """Returns (cols, data_rows) where data_rows is an iterable of index-able rows,
+    for either a .csv or .xlsx file. Raises ValueError on an unreadable file."""
+    is_csv = (filename or "").lower().endswith(".csv")
+
+    if is_csv:
+        text = file_bytes.decode("utf-8-sig", errors="replace")
+        all_rows = list(csv.reader(io.StringIO(text)))
+        if not all_rows:
+            raise ValueError("File is empty.")
+        cols = _header_map_from_row(all_rows[0])
+        return cols, all_rows[1:]
+
+    import openpyxl
+    try:
+        workbook = openpyxl.load_workbook(io.BytesIO(file_bytes), data_only=True)
+    except Exception:
+        raise ValueError("Could not read the file — expected an .xlsx workbook or .csv file.")
+    sheet = workbook[workbook.sheetnames[0]]
     header_row = next(sheet.iter_rows(min_row=1, max_row=1, values_only=True), ())
-    return {str(h).strip().lower(): idx for idx, h in enumerate(header_row) if h}
+    cols = _header_map_from_row(header_row)
+    data_rows = list(sheet.iter_rows(min_row=2, values_only=True))
+    return cols, data_rows
+
+
+def _row_is_blank(row) -> bool:
+    return not row or all(v is None or (isinstance(v, str) and not v.strip()) for v in row)
 
 
 def _zero_unit_result(agent_name: str) -> dict:
@@ -84,18 +118,10 @@ def parse_commission_history(file_bytes: bytes, filename: str, year: int) -> dic
     net_commission, source, and internal "_cleared_clients"/"_clawback_clients" lists of
     ClientRecord-shaped dicts for the caller to save.
     """
-    import openpyxl
-    import io
-
-    errors = []
-
     try:
-        workbook = openpyxl.load_workbook(io.BytesIO(file_bytes), data_only=True)
-    except Exception:
-        return {"periods": [], "errors": ["Could not read the file — expected an .xlsx workbook."]}
-
-    sheet = workbook[workbook.sheetnames[0]]
-    cols = _header_map(sheet)
+        cols, data_rows = _read_rows(file_bytes, filename)
+    except ValueError as e:
+        return {"periods": [], "errors": [str(e)]}
 
     missing = REQUIRED_COLUMNS - set(cols.keys())
     if missing:
@@ -111,8 +137,8 @@ def parse_commission_history(file_bytes: bytes, filename: str, year: int) -> dic
     debt_by_id = {}
     row_errors = []
 
-    for row_num, row in enumerate(sheet.iter_rows(min_row=2, values_only=True), start=2):
-        if row is None or all(v is None for v in row):
+    for row_num, row in enumerate(data_rows, start=2):
+        if _row_is_blank(row):
             continue
 
         month_name = str(cell(row, "month") or "").strip().lower()
@@ -184,5 +210,5 @@ def parse_commission_history(file_bytes: bytes, filename: str, year: int) -> dic
 
     return {
         "periods": [{"period_label": label, "results": results} for label, results in periods.items()],
-        "errors": errors + row_errors,
+        "errors": row_errors,
     }

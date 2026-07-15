@@ -68,10 +68,13 @@ This is a Flask + SQLAlchemy web app for calculating agent commissions at Americ
    `crm_id` already in it.
 
 **Commission history backfill (pre-app paid history):**
-1. User uploads one or more prior account manager ledgers (.xlsx, NOT a CRM export) + a `Year`
-   form field → `POST /upload-commission-history` (routes.py)
-2. `commission_history_parser.py` reads the single sheet, format: `Month, ID, Sales Rep,
+1. User uploads one or more prior account manager ledgers (.xlsx or .csv, NOT a CRM export) + a
+   `Year` form field → `POST /upload-commission-history` (routes.py)
+2. `commission_history_parser.py` reads the single sheet/file, format: `Month, ID, Sales Rep,
    Full Name, Enrolled Debt, To subtract, Payments Made, Units, Status, Marketing Campaign`.
+   `.xlsx` is read via openpyxl (first sheet); `.csv` is read via the stdlib `csv` module —
+   dispatched purely on file extension (`_read_rows` in the parser). Both paths converge on the
+   same header-lowercased column lookup and row-classification logic below.
    The `Month` column has no year, hence the separate `Year` field — the whole file is assumed
    to be one calendar year.
 3. Each row is exactly one of two things (never both, per the source format): **Enrolled Debt**

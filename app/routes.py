@@ -15,6 +15,7 @@ bp = Blueprint("main", __name__)
 
 ALLOWED_EXTENSIONS = {"csv"}
 ALLOWED_XLSX_EXTENSIONS = {"xlsx"}
+ALLOWED_HISTORY_EXTENSIONS = {"xlsx", "csv"}
 
 
 def _allowed_file(filename):
@@ -23,6 +24,10 @@ def _allowed_file(filename):
 
 def _allowed_xlsx_file(filename):
     return "." in filename and filename.rsplit(".", 1)[1].lower() in ALLOWED_XLSX_EXTENSIONS
+
+
+def _allowed_history_file(filename):
+    return "." in filename and filename.rsplit(".", 1)[1].lower() in ALLOWED_HISTORY_EXTENSIONS
 
 
 @bp.route("/")
@@ -523,8 +528,8 @@ def _save_commission_history_period(period_label, results, filename, already_cor
 
 @bp.route("/upload-commission-history", methods=["POST"])
 def upload_commission_history():
-    """Backfill past commission history from a prior account manager's ledger (.xlsx,
-    NOT a CRM export — see commission_history_parser.py for the expected columns).
+    """Backfill past commission history from a prior account manager's ledger (.xlsx or
+    .csv, NOT a CRM export — see commission_history_parser.py for the expected columns).
     Recreates real CommissionPeriod/AgentCommission/ClientRecord rows for those months
     so a later Cordoba Chargebacks-tab upload can find and claw back agents who were
     paid on a client before this app existed."""
@@ -533,9 +538,9 @@ def upload_commission_history():
         flash("No file selected.", "error")
         return redirect(url_for("main.index"))
 
-    bad_names = [f.filename for f in files if not _allowed_xlsx_file(f.filename)]
+    bad_names = [f.filename for f in files if not _allowed_history_file(f.filename)]
     if bad_names:
-        flash(f"Only .xlsx files are accepted for commission history uploads: {', '.join(bad_names)}", "error")
+        flash(f"Only .xlsx or .csv files are accepted for commission history uploads: {', '.join(bad_names)}", "error")
         return redirect(url_for("main.index"))
 
     year_raw = (request.form.get("history_year") or "").strip()

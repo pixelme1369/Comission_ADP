@@ -62,15 +62,15 @@
   <div class="card upload-card">
     <h2>Upload Commission History</h2>
     <p class="muted" style="margin-bottom:1rem;">
-      Backfill past commission periods from a prior account manager's ledger (.xlsx) —
-      not a CRM export. Use this to record which clients agents were already paid on
-      before this app existed, so a Cordoba Chargebacks upload can find and claw those
-      back later. You can select multiple files at once.
+      Backfill past commission periods from a prior account manager's ledger (.xlsx or
+      .csv) — not a CRM export. Use this to record which clients agents were already
+      paid on before this app existed, so a Cordoba Chargebacks upload can find and
+      claw those back later. You can select multiple files at once.
     </p>
     <form method="POST" action="{{ url_for('main.upload_commission_history') }}" enctype="multipart/form-data">
       <div class="form-group">
-        <label for="history_file">Commission History XLSX (one or more)</label>
-        <input type="file" id="history_file" name="history_file" accept=".xlsx" multiple required>
+        <label for="history_file">Commission History XLSX or CSV (one or more)</label>
+        <input type="file" id="history_file" name="history_file" accept=".xlsx,.csv" multiple required>
       </div>
       <div class="form-group">
         <label for="history_year">Year</label>
