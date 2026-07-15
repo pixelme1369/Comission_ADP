@@ -71,17 +71,15 @@ This is a Flask + SQLAlchemy web app for calculating agent commissions at Americ
 1. User uploads one or more prior account manager ledgers (.xlsx or .csv, NOT a CRM export) + a
    `Year` form field → `POST /upload-commission-history` (routes.py)
 2. `commission_history_parser.py` reads the single sheet/file, format: `Month, ID, Sales Rep,
-   Full Name, <debt column>, To subtract, Payments Made, Units, Status, Marketing Campaign`.
-   The debt column is matched by name against either `Enrolled Debt` or `Marketing Payout Debt`
-   (`DEBT_COLUMN_ALIASES`) — different prior ledgers have used both names for the same thing.
+   Full Name, Enrolled Debt, To subtract, Payments Made, Units, Status, Marketing Campaign`.
    `.xlsx` is read via openpyxl (first sheet); `.csv` is read via the stdlib `csv` module —
    dispatched purely on file extension (`_read_rows` in the parser). Both paths converge on the
    same header-lowercased column lookup and row-classification logic below.
    The `Month` column has no year, hence the separate `Year` field — the whole file is assumed
    to be one calendar year.
-3. Each row is exactly one of two things (never both, per the source format): **the debt
-   column** filled means the agent was actually paid commission on that client that month; **To
-   subtract** filled (debt column blank) means a clawback dollar amount the prior manager
+3. Each row is exactly one of two things (never both, per the source format): **Enrolled Debt**
+   filled means the agent was actually paid commission on that client that month; **To
+   subtract** filled (Enrolled Debt blank) means a clawback dollar amount the prior manager
    already deducted from the agent that month. The dollar amount on "To subtract" rows is used
    **as-is** — it is not recomputed through `calculate_clawback_amount`, since we don't have
    enough history from this file alone to redo that math accurately.
