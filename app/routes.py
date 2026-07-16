@@ -300,6 +300,12 @@ def _apply_cordoba_paid_flags(file, parsed):
     return new_count, flipped
 
 
+def _client_label(client_name, crm_id):
+    """'Eddie Ramos (ID 1181065497)' — skip messages must carry the ID so a client
+    can be cross-checked against the CRM export directly."""
+    return f"{client_name} (ID {crm_id})" if client_name else crm_id
+
+
 def _get_or_create_agent_period_row(period_label, agent_name, filename):
     """Find (or create a zero-unit) AgentCommission row to carry a clawback that has
     no cleared units of its own in this period — mirrors the CRM-clawback holding entry."""
@@ -388,7 +394,7 @@ def _apply_cordoba_chargebacks(file, parsed):
 
         if crm_id in already_clawed_elsewhere:
             # Agent was already deducted for this client (CRM upload or history import).
-            skipped_already_clawed.append(row.get("client_name") or crm_id)
+            skipped_already_clawed.append(_client_label(row.get("client_name"), crm_id))
             continue
 
         client_rec = (
@@ -397,13 +403,13 @@ def _apply_cordoba_chargebacks(file, parsed):
         )
         if not client_rec:
             # We never recorded this client as cleared/commissioned — nothing to claw back.
-            skipped_not_commissioned.append(row.get("client_name") or crm_id)
+            skipped_not_commissioned.append(_client_label(row.get("client_name"), crm_id))
             continue
 
         if crm_id not in confirmed_paid_ids:
             # Cordoba's own First Pays/EPF tabs never confirmed paying us on this ID —
             # don't claw back an agent for a payout we can't verify we received.
-            skipped_not_confirmed_paid.append(row.get("client_name") or crm_id)
+            skipped_not_confirmed_paid.append(_client_label(row.get("client_name"), crm_id))
             continue
 
         agent_name = client_rec.agent_name
