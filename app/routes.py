@@ -333,11 +333,26 @@ def _apply_cordoba_chargebacks(file, parsed):
         p.crm_id for p in
         CordobaPaidClient.query.filter(CordobaPaidClient.crm_id.in_(incoming_ids)).all()
     }
+    # Third gate — never claw back a client who was ALREADY clawed back through any
+    # other path: a CRM upload that reflected the drop (clawback_applied ClientRecord),
+    # or a prior manager's "To subtract" row from a commission-history import (which
+    # also creates a clawback_applied ClientRecord). Without this, the Cordoba
+    # Chargebacks tab arriving AFTER the CRM export already clawed the agent back
+    # would deduct the same client a second time — the CordobaChargedBackClient
+    # ledger above only guards the Cordoba-first ordering.
+    already_clawed_elsewhere = {
+        r[0] for r in
+        db.session.query(ClientRecord.crm_id).filter(
+            ClientRecord.crm_id.in_(incoming_ids),
+            ClientRecord.clawback_applied.is_(True),
+        )
+    }
 
     applied_count = 0
     total_clawed_back = 0.0
     skipped_not_commissioned = []
     skipped_not_confirmed_paid = []
+    skipped_already_clawed = []
     seen_this_file = set()
 
     for row in chargebacks:
@@ -345,6 +360,11 @@ def _apply_cordoba_chargebacks(file, parsed):
         if not crm_id or crm_id in already_charged_back or crm_id in seen_this_file:
             continue
         seen_this_file.add(crm_id)
+
+        if crm_id in already_clawed_elsewhere:
+            # Agent was already deducted for this client (CRM upload or history import).
+            skipped_already_clawed.append(row.get("client_name") or crm_id)
+            continue
 
         client_rec = (
             ClientRecord.query.filter_by(crm_id=crm_id, is_cleared=True)
@@ -424,7 +444,8 @@ def _apply_cordoba_chargebacks(file, parsed):
         applied_count += 1
         total_clawed_back += cb
 
-    return applied_count, round(total_clawed_back, 2), skipped_not_commissioned, skipped_not_confirmed_paid
+    return (applied_count, round(total_clawed_back, 2),
+            skipped_not_commissioned, skipped_not_confirmed_paid, skipped_already_clawed)
 
 
 def _process_cordoba_file(file):
@@ -437,12 +458,12 @@ def _process_cordoba_file(file):
         flash(f"{file.filename}: {err}", "error")
 
     new_count, flipped = _apply_cordoba_paid_flags(file, parsed)
-    clawback_count, clawback_total, skipped_not_commissioned, skipped_not_confirmed_paid = (
-        _apply_cordoba_chargebacks(file, parsed)
-    )
+    (clawback_count, clawback_total, skipped_not_commissioned,
+     skipped_not_confirmed_paid, skipped_already_clawed) = _apply_cordoba_chargebacks(file, parsed)
 
     db.session.commit()
-    return new_count, flipped, clawback_count, clawback_total, skipped_not_commissioned, skipped_not_confirmed_paid
+    return (new_count, flipped, clawback_count, clawback_total,
+            skipped_not_commissioned, skipped_not_confirmed_paid, skipped_already_clawed)
 
 
 @bp.route("/upload-cordoba-payout", methods=["POST"])
@@ -466,6 +487,7 @@ def upload_cordoba_payout():
     clawback_amount_total = sum(r[3] for r in results)
     skipped_not_commissioned = [name for r in results for name in r[4]]
     skipped_not_confirmed_paid = [name for r in results for name in r[5]]
+    skipped_already_clawed = [name for r in results for name in r[6]]
 
     file_word = "file" if len(files) == 1 else f"{len(files)} files"
     flash(
@@ -490,6 +512,8 @@ def upload_cordoba_payout():
     _flash_skipped(skipped_not_commissioned, "were never recorded as commissioned here — no clawback applied")
     _flash_skipped(skipped_not_confirmed_paid,
                    "were never confirmed paid via a First Pays/EPF upload — no clawback applied")
+    _flash_skipped(skipped_already_clawed,
+                   "were already clawed back via a CRM upload or history import — not deducted twice")
     return redirect(url_for("main.index"))
 
 
