@@ -114,4 +114,16 @@
 {% else %}
 <p class="muted">No commission periods uploaded yet.</p>
 {% endif %}
+
+<h2>Danger Zone</h2>
+<div class="card">
+  <p class="muted" style="margin-bottom:1rem;">
+    Permanently deletes every commission period, agent commission, client record, and
+    Cordoba payout/chargeback ledger entry. This cannot be undone.
+  </p>
+  <form method="POST" action="{{ url_for('main.reset_all') }}"
+        onsubmit="return confirm('This will permanently delete ALL commission data — every period, agent, client, and Cordoba record. This cannot be undone.\n\nAre you absolutely sure?')">
+    <button type="submit" class="btn btn-danger">Reset All Data</button>
+  </form>
+</div>
 {% endblock %}
