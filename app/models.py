@@ -56,11 +56,14 @@ class ClientRecord(db.Model):
     __tablename__ = "client_record"
 
     id = db.Column(db.Integer, primary_key=True)
-    period_id = db.Column(db.Integer, db.ForeignKey("commission_period.id"), nullable=False)
-    agent_commission_id = db.Column(db.Integer, db.ForeignKey("agent_commission.id"), nullable=True)
+    period_id = db.Column(db.Integer, db.ForeignKey("commission_period.id"), nullable=False, index=True)
+    agent_commission_id = db.Column(db.Integer, db.ForeignKey("agent_commission.id"), nullable=True, index=True)
 
     # CRM identifiers
-    crm_id = db.Column(db.String(50))
+    # crm_id is indexed: the Cordoba chargeback flow looks clients up by it one at a
+    # time, and every upload builds ID sets from it. (Indexes only apply to a freshly
+    # created DB — db.create_all() doesn't alter existing tables.)
+    crm_id = db.Column(db.String(50), index=True)
     agent_name = db.Column(db.String(255))
     client_name = db.Column(db.String(255))
     email = db.Column(db.String(255))

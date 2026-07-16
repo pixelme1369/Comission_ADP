@@ -270,6 +270,7 @@ def parse_crm_and_calculate(file_bytes: bytes, filename: str, already_cleared_cr
     # ---------------------------------------------------------------
     cleared_buckets = defaultdict(list)   # (agent, period) → cleared clients
     cancel_buckets = defaultdict(list)    # (agent, period) → cancelled clients (for cancel rate)
+    pending_buckets = defaultdict(list)   # (agent, period) → pending clients
 
     for c in all_clients:
         key = (c["agent_name"], c["cleared_period"])
@@ -277,8 +278,16 @@ def parse_crm_and_calculate(file_bytes: bytes, filename: str, already_cleared_cr
             cleared_buckets[key].append(c)
         elif c["unit_status"] == "clawback":
             # Only clawback clients count toward cancel rate
-            # same_month_cancel and safe_cancel are excluded
+            # same_month_cancel and safe_cancel are excluded.
+            #
+            # POLICY (confirmed by owner, July 2026): a client counted here stays in the
+            # cancellation rate even if Step 3 later determines the agent was never paid
+            # on them (pending → cancelled) and charges no clawback. An enrolled client
+            # who cancelled counts against the agent's quality rate regardless of whether
+            # commission ever went out. Do NOT "fix" this by excluding them from the rate.
             cancel_buckets[key].append(c)
+        elif c["unit_status"] == "pending":
+            pending_buckets[key].append(c)
 
     # ---------------------------------------------------------------
     # Step 2: Calculate base commission per agent per cleared period
@@ -288,10 +297,7 @@ def parse_crm_and_calculate(file_bytes: bytes, filename: str, already_cleared_cr
 
     for (agent_name, period_label), cleared in cleared_buckets.items():
         cancelled = cancel_buckets.get((agent_name, period_label), [])
-        pending = [c for c in all_clients
-                   if c["agent_name"] == agent_name
-                   and c["cleared_period"] == period_label
-                   and c["unit_status"] == "pending"]
+        pending = pending_buckets.get((agent_name, period_label), [])
 
         units_cleared = len(cleared)
         total_cleared_debt = sum(c["enrolled_debt"] for c in cleared)
