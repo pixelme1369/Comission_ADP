@@ -33,26 +33,6 @@ def _clean_date(value):
     return str(value).strip() or None
 
 
-def _clean_currency(value) -> float:
-    if value is None or value == "":
-        return 0.0
-    if isinstance(value, (int, float)):
-        return float(value)
-    try:
-        return float(str(value).replace("$", "").replace(",", "").strip() or 0)
-    except ValueError:
-        return 0.0
-
-
-def _clean_int(value) -> int:
-    if value is None or value == "":
-        return 0
-    try:
-        return int(value)
-    except (ValueError, TypeError):
-        return 0
-
-
 def _sheet_by_name(workbook, wanted_lower: str):
     for name in workbook.sheetnames:
         if name.strip().lower() == wanted_lower:
@@ -66,6 +46,11 @@ def _header_map(sheet) -> dict:
 
 
 def _parse_chargebacks(workbook, errors: list) -> list:
+    """Owner policy (confirmed July 2026): only the 'ID' column matters here — it's
+    cross-referenced against our own ClientRecord history in routes.py. Every other
+    column (client debt, dates, payments made, ...) is ignored; the agent, the client's
+    debt, and the dropped-date-to-place-the-deduction all come from OUR OWN records,
+    not this file. 'Full Name' is read only to make skip/flash messages readable."""
     sheet = _sheet_by_name(workbook, "chargebacks")
     if sheet is None:
         return []
@@ -73,9 +58,6 @@ def _parse_chargebacks(workbook, errors: list) -> list:
     cols = _header_map(sheet)
     if "id" not in cols:
         errors.append("Chargebacks tab is missing an 'ID' column.")
-        return []
-    if "dropped date" not in cols:
-        errors.append("Chargebacks tab is missing a 'Dropped Date' column.")
         return []
 
     def cell(row, key):
@@ -92,13 +74,6 @@ def _parse_chargebacks(workbook, errors: list) -> list:
         rows.append({
             "crm_id": crm_id,
             "client_name": cell(row, "full name") or "",
-            "status": cell(row, "status") or "",
-            "marketing_payout_debt": _clean_currency(cell(row, "marketing payout debt")),
-            "first_payment_cleared_date": _clean_date(cell(row, "1st payment cleared date")),
-            "pay_freq": cell(row, "pay freq.") or "",
-            "payments_made": _clean_int(cell(row, "payments made")),
-            "dropped_date": _clean_date(cell(row, "dropped date")),
-            "chargeback_date": _clean_date(cell(row, "marketing payment chargeback")),
         })
     return rows
 
@@ -108,10 +83,7 @@ def parse_cordoba_payout(file_bytes: bytes) -> dict:
     Returns:
     {
         "paid_ids": [ {"crm_id": str, "client_name": str, "source": "first_pays"|"epf"}, ... ],
-        "chargebacks": [ {"crm_id": str, "client_name": str, "status": str,
-                           "marketing_payout_debt": float, "first_payment_cleared_date": str|None,
-                           "pay_freq": str, "payments_made": int, "dropped_date": str|None,
-                           "chargeback_date": str|None}, ... ],
+        "chargebacks": [ {"crm_id": str, "client_name": str}, ... ],
         "epf_rows": [ {"crm_id": str, "client_name": str, "cleared_date": str|None}, ... ],
         "errors": [str, ...],
     }

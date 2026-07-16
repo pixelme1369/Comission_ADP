@@ -323,7 +323,7 @@ def _apply_cordoba_chargebacks(file, parsed):
     chargebacks = parsed.get("chargebacks", [])
     incoming_ids = {row["crm_id"] for row in chargebacks if row["crm_id"]}
     if not incoming_ids:
-        return 0, 0.0, [], []
+        return 0, 0.0, [], [], [], []
 
     already_charged_back = {
         c.crm_id for c in
@@ -353,6 +353,7 @@ def _apply_cordoba_chargebacks(file, parsed):
     skipped_not_commissioned = []
     skipped_not_confirmed_paid = []
     skipped_already_clawed = []
+    skipped_no_dropped_date = []
     seen_this_file = set()
 
     for row in chargebacks:
@@ -381,8 +382,20 @@ def _apply_cordoba_chargebacks(file, parsed):
             skipped_not_confirmed_paid.append(_client_label(row.get("client_name"), crm_id))
             continue
 
+        # Owner policy (confirmed July 2026): the Chargebacks tab's own Dropped Date
+        # column is not used — only OUR OWN CRM-recorded dropped_date places the
+        # deduction. If we don't have one yet (the drop hasn't shown up in a CRM
+        # upload), there's nowhere to put the clawback yet — skip until it does.
+        dropped_dt = _parse_date(client_rec.dropped_date or "")
+        dropped_period = _period_of(dropped_dt)
+        if not dropped_period:
+            skipped_no_dropped_date.append(_client_label(row.get("client_name"), crm_id))
+            continue
+
         agent_name = client_rec.agent_name
-        client_debt = client_rec.enrolled_debt or row.get("marketing_payout_debt", 0.0)
+        # Owner policy: the Chargebacks tab's Marketing Payout Debt column is not used —
+        # client debt comes only from our own CRM-recorded Enrolled Debt.
+        client_debt = client_rec.enrolled_debt or 0.0
         orig_agent_row = client_rec.agent_commission
 
         if orig_agent_row and orig_agent_row.units_cleared > 0:
@@ -399,11 +412,6 @@ def _apply_cordoba_chargebacks(file, parsed):
 
         if cb <= 0:
             continue
-
-        dropped_date = row.get("dropped_date") or client_rec.dropped_date
-        dropped_dt = _parse_date(dropped_date or "")
-        orig_period_label = db.session.get(CommissionPeriod, client_rec.period_id).period_label
-        dropped_period = _period_of(dropped_dt) or orig_period_label
 
         period, agent_row = _get_or_create_agent_period_row(dropped_period, agent_name, file.filename)
 
@@ -424,9 +432,9 @@ def _apply_cordoba_chargebacks(file, parsed):
             status="Cordoba Chargeback",
             enrolled_date=client_rec.enrolled_date,
             first_payment_cleared_date=client_rec.first_payment_cleared_date,
-            dropped_date=dropped_date,
+            dropped_date=client_rec.dropped_date,
             pay_freq=client_rec.pay_freq,
-            payments_made=row.get("payments_made") or client_rec.payments_made,
+            payments_made=client_rec.payments_made,
             enrolled_debt=client_debt,
             is_cleared=False,
             is_pending=False,
@@ -446,7 +454,8 @@ def _apply_cordoba_chargebacks(file, parsed):
         total_clawed_back += cb
 
     return (applied_count, round(total_clawed_back, 2),
-            skipped_not_commissioned, skipped_not_confirmed_paid, skipped_already_clawed)
+            skipped_not_commissioned, skipped_not_confirmed_paid, skipped_already_clawed,
+            skipped_no_dropped_date)
 
 
 def _apply_epf_rows(file, parsed):
@@ -526,13 +535,14 @@ def _process_cordoba_file(file):
 
     new_count, flipped = _apply_cordoba_paid_flags(file, parsed)
     (clawback_count, clawback_total, skipped_not_commissioned,
-     skipped_not_confirmed_paid, skipped_already_clawed) = _apply_cordoba_chargebacks(file, parsed)
+     skipped_not_confirmed_paid, skipped_already_clawed,
+     skipped_no_dropped_date) = _apply_cordoba_chargebacks(file, parsed)
     epf_counts = _apply_epf_rows(file, parsed)
 
     db.session.commit()
     return (new_count, flipped, clawback_count, clawback_total,
             skipped_not_commissioned, skipped_not_confirmed_paid, skipped_already_clawed,
-            epf_counts)
+            epf_counts, skipped_no_dropped_date)
 
 
 @bp.route("/upload-cordoba-payout", methods=["POST"])
@@ -561,6 +571,7 @@ def upload_cordoba_payout():
     epf_skipped_commissioned = sum(r[7][1] for r in results)
     epf_unmatched = sum(r[7][2] for r in results)
     epf_missing_date = sum(r[7][3] for r in results)
+    skipped_no_dropped_date = [name for r in results for name in r[8]]
 
     file_word = "file" if len(files) == 1 else f"{len(files)} files"
     flash(
@@ -597,6 +608,9 @@ def upload_cordoba_payout():
                    "were never confirmed paid via a First Pays/EPF upload — no clawback applied")
     _flash_skipped(skipped_already_clawed,
                    "were already clawed back via a CRM upload or history import — not deducted twice")
+    _flash_skipped(skipped_no_dropped_date,
+                   "have no Dropped Date recorded in our own CRM data yet — upload a CRM export "
+                   "reflecting the drop, then re-upload this Chargebacks file")
     return redirect(url_for("main.index"))
 
 
