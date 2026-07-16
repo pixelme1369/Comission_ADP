@@ -5,7 +5,6 @@ from app import db
 from app.models import (
     CommissionPeriod, AgentCommission, ClientRecord, CordobaPaidClient, CordobaChargedBackClient,
 )
-from app.csv_parser import parse_and_calculate
 from app.crm_parser import parse_crm_and_calculate, _parse_date, _period_of
 from app.cordoba_parser import parse_cordoba_payout
 from app.commission_history_parser import parse_commission_history
@@ -67,49 +66,6 @@ def _new_client_record(period_id, agent_commission_id, cr, **overrides):
 def index():
     recent_periods = CommissionPeriod.query.order_by(CommissionPeriod.uploaded_at.desc()).limit(12).all()
     return render_template("index.html", periods=recent_periods)
-
-
-@bp.route("/upload", methods=["POST"])
-def upload():
-    file = request.files.get("csv_file")
-    if not file or file.filename == "":
-        flash("No file selected.", "error")
-        return redirect(url_for("main.index"))
-    if not _allowed_file(file.filename):
-        flash("Only .csv files are accepted.", "error")
-        return redirect(url_for("main.index"))
-
-    file_bytes = file.read()
-    parsed = parse_and_calculate(file_bytes, file.filename)
-
-    if parsed["errors"]:
-        for err in parsed["errors"]:
-            flash(err, "error")
-        return redirect(url_for("main.index"))
-
-    period_label = parsed["period_label"]
-    existing = CommissionPeriod.query.filter_by(period_label=period_label).first()
-    if existing:
-        flash(
-            f"Period {period_label} already exists (uploaded {existing.uploaded_at.strftime('%Y-%m-%d')}). "
-            "Delete it first before re-uploading.", "error",
-        )
-        return redirect(url_for("main.index"))
-
-    period = CommissionPeriod(period_label=period_label, filename=file.filename,
-                               total_agents=len(parsed["results"]))
-    db.session.add(period)
-    db.session.flush()
-
-    for r in parsed["results"]:
-        r.setdefault("clawback_amount", 0.0)
-        r.setdefault("net_commission", r.get("gross_commission", 0.0))
-        agent = AgentCommission(period_id=period.id, **r)
-        db.session.add(agent)
-
-    db.session.commit()
-    flash(f"Successfully processed {len(parsed['results'])} agents for period {period_label}.", "success")
-    return redirect(url_for("main.period_detail", period_id=period.id))
 
 
 @bp.route("/upload-crm", methods=["POST"])

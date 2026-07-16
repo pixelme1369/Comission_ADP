@@ -172,19 +172,6 @@ A unit is **cancelled** when `Dropped Date` has a date.
 
 ---
 
-## CSV Format (Manual Upload)
-
-If you want to manually enter pre-aggregated data instead of uploading a CRM file:
-
-```
-agent_name, units_cleared, total_cleared_debt, cancellation_rate, hourly_draw, period
-```
-
-- `cancellation_rate`: percentage as a number (e.g. `18.5` = 18.5%)
-- `period`: format `YYYY-MM` (e.g. `2026-05`)
-
----
-
 ## Exporting Results
 
 - **Period export**: Click "Export CSV" on any results page to download all agents for that period

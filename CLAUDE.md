@@ -23,6 +23,8 @@ python -m pytest tests/ -q
 
 The suite locks in every commission business rule (tier boundaries, penalty/bonus thresholds, clawback math, CRM classification, Cordoba chargeback dedup, history import). **Run it after any change to `calculator.py`, `crm_parser.py`, `commission_history_parser.py`, or `routes.py` — a failing test means the money math changed.** Owner-confirmed policies are marked as such in the test docstrings; do not "fix" a failing policy test without owner sign-off.
 
+The manual pre-aggregated CSV upload flow (`/upload`, `csv_parser.py`) was removed at the owner's request in July 2026 — the CRM export flow is the only way to create periods from current data. Do not re-add it.
+
 ## Architecture
 
 This is a Flask + SQLAlchemy web app for calculating agent commissions at American Debt Protection.
@@ -32,11 +34,6 @@ This is a Flask + SQLAlchemy web app for calculating agent commissions at Americ
 2. `crm_parser.py` reads every client row, classifies each one, groups by agent + month, computes commissions and clawbacks entirely in-memory
 3. Results are saved to SQLite as `CommissionPeriod` + `AgentCommission` + `ClientRecord` rows (one period per calendar month found in the file)
 4. User is redirected to `/period/<id>` or `/history` if multiple periods were created
-
-**Manual upload flow (fallback):**
-1. User uploads a pre-aggregated CSV → `POST /upload`
-2. `csv_parser.py` validates and calls `calculator.py` per row
-3. Saves `CommissionPeriod` + `AgentCommission` rows (no `ClientRecord` rows)
 
 **Cordoba payout check (funder payout confirmation):**
 1. User uploads one or more Cordoba payout exports (.xlsx) → `POST /upload-cordoba-payout` (routes.py)
@@ -118,12 +115,11 @@ This is a Flask + SQLAlchemy web app for calculating agent commissions at Americ
 
 **Key files:**
 - `app/calculator.py` — pure commission logic, no Flask deps. All tier/penalty/bonus rules live here, including `calculate_clawback_amount` (shared by both the CRM-driven and Cordoba-chargeback-driven clawback paths).
-- `app/csv_parser.py` — validates manual CSV columns/types, calls the calculator, returns errors or results
 - `app/crm_parser.py` — parses the full-history CRM export, classifies clients, calculates commissions and clawbacks in one pass, returns one dict per period
 - `app/cordoba_parser.py` — reads the Cordoba payout .xlsx (First Pays / EPF / Chargebacks tabs), returns raw normalized rows; no DB access
 - `app/commission_history_parser.py` — reads a prior account manager's ledger .xlsx (not a CRM export) to backfill pre-app commission history; no DB access
 - `app/models.py` — `CommissionPeriod`, `AgentCommission`, `ClientRecord`, `CordobaPaidClient`, `CordobaChargedBackClient`
-- `app/routes.py` — routes: `/`, `/upload`, `/upload-crm`, `/upload-cordoba-payout`, `/upload-commission-history`, `/period/<id>`, `/period/<id>/agent/<id>`, `/period/<id>/export`, `/period/<id>/agent/<id>/export`, `/period/<id>/delete`, `/history`
+- `app/routes.py` — routes: `/`, `/upload-crm`, `/upload-cordoba-payout`, `/upload-commission-history`, `/period/<id>`, `/period/<id>/agent/<id>`, `/period/<id>/export`, `/period/<id>/agent/<id>/export`, `/period/<id>/delete`, `/history`
 
 ## Commission Business Rules (April 2026 Plan)
 
@@ -143,7 +139,7 @@ The tier table in `calculator.py` must match exactly:
 - Cancellation rate **< 10%** flags `quality_bonus_eligible = True` — display-only, not auto-paid
 - **Cancel rate formula:** clawback clients ÷ (cleared + clawback clients). Same-month cancels, safe cancels, and pending clients are excluded from both numerator and denominator.
 - **OWNER POLICY (confirmed July 2026):** a client counted as `clawback` at classification time stays in the cancellation rate **even if** the paid-guard later determines the agent was never paid on them (pending → cancelled) and charges no clawback. An enrolled client who cancelled counts against the agent's quality rate regardless of whether commission ever went out. Do NOT "fix" this by recomputing the rate after reclassification — it is intentional (locked in by `tests/test_crm_parser.py::TestCancellationRatePolicy`).
-- Commission vs draw: if `gross_commission > hourly_draw`, agent gets commission; otherwise agent keeps the draw (no repayment required). `hourly_draw` defaults to 0.0 in CRM flow (draw feature not yet wired for CRM uploads).
+- Commission vs draw: if `gross_commission > hourly_draw`, agent gets commission; otherwise agent keeps the draw (no repayment required). `hourly_draw` is always 0.0 today — the draw logic lives in `calculator.py` (and is tested) but no upload flow supplies a draw value since the manual CSV flow was removed.
 
 ## Clawback Rules
 
@@ -231,21 +227,6 @@ Sales Rep, 1st Payment Cleared Date, Dropped Date, Status, Enrolled Debt, # NSF
 ```
 
 Optional columns stored in `ClientRecord`: ID, Full Name, Email, Home Phone, Stage, Submitted Date, Enrolled Date, 1st Payment Date, 2nd Payment Cleared Date, Payments Made.
-
-## Manual CSV Format
-
-One period per file. Required columns (order-independent):
-
-```
-agent_name, units_cleared, total_cleared_debt, cancellation_rate, hourly_draw, period
-```
-
-- `cancellation_rate`: percentage as a float (e.g. `18.5` = 18.5%)
-- `period`: `YYYY-MM` format, must be consistent across all rows
-- Duplicate agent names within the same period are rejected
-- Uploading a period that already exists in the DB is blocked — delete it first
-
-A sample CSV is at `app/static/sample.csv`.
 
 ## UI Notes
 
