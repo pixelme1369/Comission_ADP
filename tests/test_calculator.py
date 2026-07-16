@@ -10,6 +10,40 @@ from app.calculator import (
 )
 
 
+class TestFixedRateOverride:
+    """Alex Tambouly has a fixed 2% rate negotiated directly with the CEO — confirmed
+    by owner July 2026. It bypasses the tier table and the cancellation penalty
+    entirely, and is reused for his clawback math. Do not "fix" this without owner
+    sign-off; other agents must be completely unaffected."""
+
+    def test_alex_gets_flat_two_percent_regardless_of_units(self):
+        r = calculate_agent_commission("Alex Tambouly", 5, 100_000.0, 0.0)
+        assert r["tier_rate"] == pytest.approx(0.02)
+        assert r["gross_commission"] == pytest.approx(2_000.0)
+
+    def test_alex_rate_is_case_and_whitespace_insensitive(self):
+        r = calculate_agent_commission("  alex TAMBOULY  ", 5, 100_000.0, 0.0)
+        assert r["tier_rate"] == pytest.approx(0.02)
+
+    def test_alex_not_dropped_by_cancellation_penalty(self):
+        r = calculate_agent_commission("Alex Tambouly", 25, 500_000.0, 50.0)
+        assert r["cancellation_penalty_applied"] is False
+        assert r["tier_rate"] == pytest.approx(0.02)
+        assert r["gross_commission"] == pytest.approx(10_000.0)
+
+    def test_other_agents_unaffected(self):
+        r = calculate_agent_commission("A", 25, 500_000.0, 0.0)
+        assert r["tier_rate"] == pytest.approx(0.0125)
+
+    def test_alex_clawback_uses_fixed_rate_not_tier_recalc(self):
+        # 25 units -> 24 units would normally stay Tier 2 either way, but for a
+        # fixed-rate agent there's no tier to recalc at all — always his flat rate.
+        cb = calculate_clawback_amount(
+            25, 500_000.0, 10_000.0, 0.0, 30_000.0, agent_name="Alex Tambouly",
+        )
+        assert cb == pytest.approx(600.0)  # 30,000 x 2%
+
+
 class TestTierTable:
     @pytest.mark.parametrize("units,tier,rate", [
         (1, 1, 0.0100), (20, 1, 0.0100),

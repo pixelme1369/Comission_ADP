@@ -145,6 +145,17 @@ The tier table in `calculator.py` must match exactly:
 - **OWNER POLICY (confirmed July 2026):** a client counted as `clawback` at classification time stays in the cancellation rate **even if** the paid-guard later determines the agent was never paid on them (pending → cancelled) and charges no clawback. An enrolled client who cancelled counts against the agent's quality rate regardless of whether commission ever went out. Do NOT "fix" this by recomputing the rate after reclassification — it is intentional (locked in by `tests/test_crm_parser.py::TestCancellationRatePolicy`).
 - Commission vs draw: if `gross_commission > hourly_draw`, agent gets commission; otherwise agent keeps the draw (no repayment required). `hourly_draw` defaults to 0.0 in CRM flow (draw feature not yet wired for CRM uploads).
 
+**Per-agent fixed-rate override (OWNER POLICY, confirmed July 2026):** Alex Tambouly has a
+fixed **2% rate** negotiated directly with the CEO, outside the standard tier plan. Configured
+in `calculator.AGENT_FIXED_RATES` (matched case/whitespace-insensitively via `get_fixed_rate`).
+When an agent has a fixed rate: it applies **unconditionally** — the tier table is not consulted
+and the cancellation-rate tier-drop penalty never applies, no matter how high the cancellation
+rate is. The fixed rate is also reused for that agent's clawback math (`calculate_clawback_amount`
+and the flat-rate fallback path) instead of the normal tier-recalculation rule, so a clawed-back
+client's rate always matches what the agent was actually paid. Locked in by
+`tests/test_calculator.py::TestFixedRateOverride`. Do not "fix" or remove this without owner
+sign-off, and do not let it affect any other agent's math.
+
 ## Clawback Rules
 
 Commission for a cleared month is **paid on the 25th of the following month** (`_payment_date_for_period` in `crm_parser.py`).

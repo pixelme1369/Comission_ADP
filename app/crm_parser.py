@@ -33,7 +33,7 @@ import io
 from collections import defaultdict
 from datetime import datetime
 
-from app.calculator import calculate_agent_commission, calculate_clawback_amount
+from app.calculator import calculate_agent_commission, calculate_clawback_amount, get_fixed_rate
 
 NSF_FLAG_THRESHOLD = 3
 
@@ -387,8 +387,10 @@ def parse_crm_and_calculate(file_bytes: bytes, filename: str, already_cleared_cr
         orig_result = agent_period_results.get(orig_key)
         if not orig_result:
             # Commission record not found (agent had 0 cleared in that month after cancels)
-            # Clawback = just this client's debt × lowest possible rate
-            cb = round(c["enrolled_debt"] * 0.01, 2)
+            # Clawback = just this client's debt × lowest possible rate (or the agent's
+            # contractual fixed rate, if they have one)
+            fallback_rate = get_fixed_rate(agent_name) or 0.01
+            cb = round(c["enrolled_debt"] * fallback_rate, 2)
             c["clawback_amount"] = cb
             clawback_by_drop_period[(agent_name, dropped_period)].append(c)
             continue
@@ -399,6 +401,7 @@ def parse_crm_and_calculate(file_bytes: bytes, filename: str, already_cleared_cr
             orig_result["gross_commission"],
             orig_result["cancellation_rate"],
             c["enrolled_debt"],
+            agent_name=agent_name,
         )
         c["clawback_amount"] = cb
         clawback_by_drop_period[(agent_name, dropped_period)].append(c)

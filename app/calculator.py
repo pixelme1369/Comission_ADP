@@ -11,6 +11,20 @@ QUALITY_BONUS_AMOUNT = 500.00
 CANCELLATION_PENALTY_THRESHOLD = 20.0  # > this triggers tier drop
 QUALITY_BONUS_THRESHOLD = 10.0         # < this triggers bonus eligibility
 
+# Per-agent contractual overrides that bypass the tier table entirely (deal
+# negotiated directly with the CEO, outside the standard commission plan).
+# Rate applies unconditionally — the cancellation-rate tier-drop penalty
+# never touches it, and it's reused as-is for clawback math on that agent's
+# clients so a clawed-back client's rate matches what they were actually paid.
+AGENT_FIXED_RATES = {
+    "alex tambouly": 0.02,
+}
+
+
+def get_fixed_rate(agent_name: str):
+    """Return the contractual fixed rate for an agent, or None if they're on the standard tier table."""
+    return AGENT_FIXED_RATES.get((agent_name or "").strip().lower())
+
 
 def get_tier(units: int) -> tuple:
     """Return (tier_number, rate, label) for given units cleared."""
@@ -45,6 +59,15 @@ def calculate_agent_commission(
     # Get rate for adjusted tier
     _, _high, tier_rate, tier_label = TIERS[adjusted_tier_num - 1]
 
+    fixed_rate = get_fixed_rate(agent_name)
+    if fixed_rate is not None:
+        # Contractual fixed rate overrides the tier table unconditionally —
+        # the cancellation-rate tier-drop penalty does not apply.
+        penalty_applied = False
+        adjusted_tier_num = raw_tier_num
+        tier_rate = fixed_rate
+        tier_label = "Fixed Rate (contract)"
+
     gross_commission = tier_rate * total_cleared_debt
 
     # Draw vs commission: agent gets whichever is higher; draw is non-recoverable
@@ -57,9 +80,12 @@ def calculate_agent_commission(
 
     quality_bonus_eligible = cancellation_rate_pct < QUALITY_BONUS_THRESHOLD
 
-    notes_parts = [f"Tier {adjusted_tier_num} ({tier_label}) @ {tier_rate*100:.2f}%"]
-    if penalty_applied:
-        notes_parts.append(f"Tier dropped from {raw_tier_num} due to cancellation rate {cancellation_rate_pct:.1f}% > 20%")
+    if fixed_rate is not None:
+        notes_parts = [f"Fixed rate {tier_rate*100:.2f}% (contract override, tier table not applied)"]
+    else:
+        notes_parts = [f"Tier {adjusted_tier_num} ({tier_label}) @ {tier_rate*100:.2f}%"]
+        if penalty_applied:
+            notes_parts.append(f"Tier dropped from {raw_tier_num} due to cancellation rate {cancellation_rate_pct:.1f}% > 20%")
     if quality_bonus_eligible:
         notes_parts.append("Quality bonus rate eligible (< 10% cancellations) — pending manual review")
     if payout_type == "draw":
@@ -83,8 +109,16 @@ def calculate_agent_commission(
     }
 
 
-def get_adjusted_tier_rate(units: int, cancellation_rate_pct: float) -> tuple:
-    """Return (adjusted_tier_num, rate) for a unit count, applying the cancellation penalty."""
+def get_adjusted_tier_rate(units: int, cancellation_rate_pct: float, agent_name: str = None) -> tuple:
+    """Return (adjusted_tier_num, rate) for a unit count, applying the cancellation penalty.
+
+    If agent_name has a contractual fixed rate, that rate is returned unconditionally
+    (no tier lookup, no cancellation penalty).
+    """
+    fixed_rate = get_fixed_rate(agent_name)
+    if fixed_rate is not None:
+        raw_tier_num, _, _ = get_tier(units) if units > 0 else (0, 0.0, "")
+        return raw_tier_num, fixed_rate
     if units <= 0:
         return 0, 0.0
     raw_tier_num, _, _ = get_tier(units)
@@ -100,6 +134,7 @@ def calculate_clawback_amount(
     orig_gross_commission: float,
     orig_cancellation_rate_pct: float,
     client_debt: float,
+    agent_name: str = None,
 ) -> float:
     """
     Clawback owed for removing one already-commissioned client from a month's totals.
@@ -108,9 +143,16 @@ def calculate_clawback_amount(
     back. If removing the client drops the agent's tier, the clawback is the full
     commission difference on the whole month's debt (not just this client's share).
     If the tier is unchanged, the clawback is just this client's share of the rate.
+
+    If agent_name has a contractual fixed rate, the tier never changes (there is no
+    tier), so the clawback is always just this client's share at that fixed rate.
     """
     if orig_units <= 1:
         return round(orig_gross_commission, 2)
+
+    fixed_rate = get_fixed_rate(agent_name)
+    if fixed_rate is not None:
+        return max(0.0, round(client_debt * fixed_rate, 2))
 
     new_units = orig_units - 1
     new_debt = orig_total_debt - client_debt
