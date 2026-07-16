@@ -80,6 +80,7 @@
         <th>Enrolled Debt</th>
         <th>Commission on Client</th>
         <th>Cordoba Payout</th>
+        <th>Cordoba Clawback</th>
         <th>1st Payment Cleared</th>
         <th>2nd Payment Cleared</th>
         <th>Dropped Date</th>
@@ -111,6 +112,13 @@
             <span class="badge badge-amber">No</span>
           {% endif %}
         </td>
+        <td>
+          {% if c.crm_id in cordoba_charged_back_ids %}
+            <span class="badge badge-red">Yes</span>
+          {% else %}
+            <span class="badge badge-amber">No</span>
+          {% endif %}
+        </td>
         <td>{{ c.first_payment_cleared_date }}</td>
         <td>{{ c.second_payment_cleared_date or '—' }}</td>
         <td>{{ c.dropped_date or '—' }}</td>
@@ -122,7 +130,7 @@
         <td>{{ c.phone }}</td>
       </tr>
       {% else %}
-      <tr><td colspan="15" class="muted" style="padding:1rem;">No cleared clients this period.</td></tr>
+      <tr><td colspan="16" class="muted" style="padding:1rem;">No cleared clients this period.</td></tr>
       {% endfor %}
     </tbody>
   </table>
