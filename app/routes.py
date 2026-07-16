@@ -9,7 +9,7 @@ from app.models import (
 from app.crm_parser import parse_crm_and_calculate, _parse_date, _period_of
 from app.cordoba_parser import parse_cordoba_payout
 from app.commission_history_parser import parse_commission_history
-from app.calculator import calculate_clawback_amount
+from app.calculator import calculate_clawback_amount, get_fixed_rate
 
 bp = Blueprint("main", __name__)
 
@@ -380,9 +380,10 @@ def _apply_cordoba_chargebacks(file, parsed):
                 orig_agent_row.gross_commission,
                 orig_agent_row.cancellation_rate,
                 client_debt,
+                agent_name=agent_name,
             )
         else:
-            cb = round(client_debt * 0.01, 2)
+            cb = round(client_debt * (get_fixed_rate(agent_name) or 0.01), 2)
 
         if cb <= 0:
             continue
