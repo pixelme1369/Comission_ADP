@@ -426,7 +426,7 @@ def _apply_cordoba_chargebacks(file, parsed):
 
         dropped_date = row.get("dropped_date") or client_rec.dropped_date
         dropped_dt = _parse_date(dropped_date or "")
-        orig_period_label = CommissionPeriod.query.get(client_rec.period_id).period_label
+        orig_period_label = db.session.get(CommissionPeriod, client_rec.period_id).period_label
         dropped_period = _period_of(dropped_dt) or orig_period_label
 
         period, agent_row = _get_or_create_agent_period_row(dropped_period, agent_name, file.filename)

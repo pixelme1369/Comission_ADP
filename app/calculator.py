@@ -14,8 +14,12 @@ QUALITY_BONUS_THRESHOLD = 10.0         # < this triggers bonus eligibility
 
 def get_tier(units: int) -> tuple:
     """Return (tier_number, rate, label) for given units cleared."""
+    if units < 1:
+        # Without this guard, anything below 1 falls through to the open-ended
+        # 61+ tier ("high is None") and silently earns the TOP rate.
+        raise ValueError(f"Units {units} out of valid range (must be >= 1)")
     for i, (low, high, rate, label) in enumerate(TIERS, start=1):
-        if high is None or low <= units <= high:
+        if low <= units and (high is None or units <= high):
             return i, rate, label
     raise ValueError(f"Units {units} out of valid range (must be >= 1)")
 
