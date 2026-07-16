@@ -719,16 +719,6 @@ def period_detail(period_id):
     nsf_count = sum(1 for a in agents if a.nsf_flagged)
     pending_count = sum(1 for a in agents if a.pending_units > 0)
 
-    # Agents in this period with at least one Cordoba-chargeback clawback — shown as
-    # a red "Yes" in the dashboard's Cordoba Clawback column.
-    cordoba_clawback_agent_ids = {
-        r[0] for r in db.session.query(ClientRecord.agent_commission_id).filter(
-            ClientRecord.period_id == period_id,
-            ClientRecord.clawback_applied.is_(True),
-            ClientRecord.status == "Cordoba Chargeback",
-        )
-    }
-
     return render_template(
         "results.html",
         period=period,
@@ -740,7 +730,6 @@ def period_detail(period_id):
         penalty_count=penalty_count,
         nsf_count=nsf_count,
         pending_count=pending_count,
-        cordoba_clawback_agent_ids=cordoba_clawback_agent_ids,
     )
 
 
