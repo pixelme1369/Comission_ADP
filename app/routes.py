@@ -69,6 +69,18 @@ def index():
     return render_template("index.html", periods=recent_periods)
 
 
+@bp.route("/reset-all", methods=["POST"])
+def reset_all():
+    # Per-object delete (not a bulk Query.delete()) so the ORM cascade on
+    # CommissionPeriod actually fires and takes AgentCommission + ClientRecord with it.
+    for period in CommissionPeriod.query.all():
+        db.session.delete(period)
+    CordobaPaidClient.query.delete()
+    CordobaChargedBackClient.query.delete()
+    EpfClient.query.delete()
+    db.session.commit()
+    flash("All commission data has been reset.", "success")
+    return redirect(url_for("main.index"))
 @bp.route("/upload-crm", methods=["POST"])
 def upload_crm():
     file = request.files.get("csv_file")
