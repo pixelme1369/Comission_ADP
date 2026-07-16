@@ -3,9 +3,9 @@ import io
 from flask import Blueprint, render_template, request, redirect, url_for, flash, Response
 from app import db
 from app.models import (
-    CommissionPeriod, AgentCommission, ClientRecord, CordobaPaidClient, CordobaChargedBackClient,
+    CommissionPeriod, AgentCommission, ClientRecord, CordobaPaidClient,
+    CordobaChargedBackClient, EpfClient,
 )
-from app.csv_parser import parse_and_calculate
 from app.crm_parser import parse_crm_and_calculate, _parse_date, _period_of
 from app.cordoba_parser import parse_cordoba_payout
 from app.commission_history_parser import parse_commission_history
@@ -67,49 +67,6 @@ def _new_client_record(period_id, agent_commission_id, cr, **overrides):
 def index():
     recent_periods = CommissionPeriod.query.order_by(CommissionPeriod.uploaded_at.desc()).limit(12).all()
     return render_template("index.html", periods=recent_periods)
-
-
-@bp.route("/upload", methods=["POST"])
-def upload():
-    file = request.files.get("csv_file")
-    if not file or file.filename == "":
-        flash("No file selected.", "error")
-        return redirect(url_for("main.index"))
-    if not _allowed_file(file.filename):
-        flash("Only .csv files are accepted.", "error")
-        return redirect(url_for("main.index"))
-
-    file_bytes = file.read()
-    parsed = parse_and_calculate(file_bytes, file.filename)
-
-    if parsed["errors"]:
-        for err in parsed["errors"]:
-            flash(err, "error")
-        return redirect(url_for("main.index"))
-
-    period_label = parsed["period_label"]
-    existing = CommissionPeriod.query.filter_by(period_label=period_label).first()
-    if existing:
-        flash(
-            f"Period {period_label} already exists (uploaded {existing.uploaded_at.strftime('%Y-%m-%d')}). "
-            "Delete it first before re-uploading.", "error",
-        )
-        return redirect(url_for("main.index"))
-
-    period = CommissionPeriod(period_label=period_label, filename=file.filename,
-                               total_agents=len(parsed["results"]))
-    db.session.add(period)
-    db.session.flush()
-
-    for r in parsed["results"]:
-        r.setdefault("clawback_amount", 0.0)
-        r.setdefault("net_commission", r.get("gross_commission", 0.0))
-        agent = AgentCommission(period_id=period.id, **r)
-        db.session.add(agent)
-
-    db.session.commit()
-    flash(f"Successfully processed {len(parsed['results'])} agents for period {period_label}.", "success")
-    return redirect(url_for("main.period_detail", period_id=period.id))
 
 
 @bp.route("/upload-crm", methods=["POST"])
@@ -300,6 +257,12 @@ def _apply_cordoba_paid_flags(file, parsed):
     return new_count, flipped
 
 
+def _client_label(client_name, crm_id):
+    """'Eddie Ramos (ID 1181065497)' — skip messages must carry the ID so a client
+    can be cross-checked against the CRM export directly."""
+    return f"{client_name} (ID {crm_id})" if client_name else crm_id
+
+
 def _get_or_create_agent_period_row(period_label, agent_name, filename):
     """Find (or create a zero-unit) AgentCommission row to carry a clawback that has
     no cleared units of its own in this period — mirrors the CRM-clawback holding entry."""
@@ -388,7 +351,7 @@ def _apply_cordoba_chargebacks(file, parsed):
 
         if crm_id in already_clawed_elsewhere:
             # Agent was already deducted for this client (CRM upload or history import).
-            skipped_already_clawed.append(row.get("client_name") or crm_id)
+            skipped_already_clawed.append(_client_label(row.get("client_name"), crm_id))
             continue
 
         client_rec = (
@@ -397,13 +360,13 @@ def _apply_cordoba_chargebacks(file, parsed):
         )
         if not client_rec:
             # We never recorded this client as cleared/commissioned — nothing to claw back.
-            skipped_not_commissioned.append(row.get("client_name") or crm_id)
+            skipped_not_commissioned.append(_client_label(row.get("client_name"), crm_id))
             continue
 
         if crm_id not in confirmed_paid_ids:
             # Cordoba's own First Pays/EPF tabs never confirmed paying us on this ID —
             # don't claw back an agent for a payout we can't verify we received.
-            skipped_not_confirmed_paid.append(row.get("client_name") or crm_id)
+            skipped_not_confirmed_paid.append(_client_label(row.get("client_name"), crm_id))
             continue
 
         agent_name = client_rec.agent_name
@@ -473,6 +436,72 @@ def _apply_cordoba_chargebacks(file, parsed):
             skipped_not_commissioned, skipped_not_confirmed_paid, skipped_already_clawed)
 
 
+def _apply_epf_rows(file, parsed):
+    """
+    EPF tab (owner decision, July 2026: DISPLAY ONLY — never changes units, tier, or
+    commission). For each EPF row: match Contact ID against our ClientRecord history to
+    find the sales rep, take the month from the tab's Cleared Date, and store an
+    EpfClient entry so the client appears in the "EPF" section at the bottom of that
+    agent's page for that month. Clients already commissioned (is_cleared=True anywhere)
+    are skipped — never even hint at paying twice. crm_id is unique in the table, so
+    re-uploading the same file is a no-op.
+    Returns (added, skipped_already_commissioned, unmatched, missing_date).
+    """
+    epf_rows = parsed.get("epf_rows", [])
+    incoming_ids = {r["crm_id"] for r in epf_rows if r["crm_id"]}
+    if not incoming_ids:
+        return 0, 0, 0, 0
+
+    already_stored = {
+        r[0] for r in db.session.query(EpfClient.crm_id).filter(EpfClient.crm_id.in_(incoming_ids))
+    }
+    already_commissioned = {
+        r[0] for r in db.session.query(ClientRecord.crm_id).filter(
+            ClientRecord.crm_id.in_(incoming_ids),
+            ClientRecord.is_cleared.is_(True),
+        )
+    }
+
+    added = skipped_commissioned = unmatched = missing_date = 0
+    seen_this_file = set()
+
+    for row in epf_rows:
+        crm_id = row["crm_id"]
+        if not crm_id or crm_id in already_stored or crm_id in seen_this_file:
+            continue
+        seen_this_file.add(crm_id)
+
+        if crm_id in already_commissioned:
+            skipped_commissioned += 1
+            continue
+
+        client_rec = (
+            ClientRecord.query.filter_by(crm_id=crm_id)
+            .order_by(ClientRecord.id.desc()).first()
+        )
+        if not client_rec:
+            unmatched += 1
+            continue
+
+        cleared_dt = _parse_date(row.get("cleared_date") or "")
+        period_label = _period_of(cleared_dt)
+        if not period_label:
+            missing_date += 1
+            continue
+
+        db.session.add(EpfClient(
+            crm_id=crm_id,
+            client_name=row.get("client_name") or client_rec.client_name,
+            agent_name=client_rec.agent_name,
+            period_label=period_label,
+            cleared_date=row.get("cleared_date"),
+            uploaded_filename=file.filename,
+        ))
+        added += 1
+
+    return added, skipped_commissioned, unmatched, missing_date
+
+
 def _process_cordoba_file(file):
     """Parse one Cordoba payout file and apply both the paid-flag check (First Pays/EPF)
     and the chargeback-triggered agent clawback (Chargebacks tab)."""
@@ -485,10 +514,12 @@ def _process_cordoba_file(file):
     new_count, flipped = _apply_cordoba_paid_flags(file, parsed)
     (clawback_count, clawback_total, skipped_not_commissioned,
      skipped_not_confirmed_paid, skipped_already_clawed) = _apply_cordoba_chargebacks(file, parsed)
+    epf_counts = _apply_epf_rows(file, parsed)
 
     db.session.commit()
     return (new_count, flipped, clawback_count, clawback_total,
-            skipped_not_commissioned, skipped_not_confirmed_paid, skipped_already_clawed)
+            skipped_not_commissioned, skipped_not_confirmed_paid, skipped_already_clawed,
+            epf_counts)
 
 
 @bp.route("/upload-cordoba-payout", methods=["POST"])
@@ -513,6 +544,10 @@ def upload_cordoba_payout():
     skipped_not_commissioned = [name for r in results for name in r[4]]
     skipped_not_confirmed_paid = [name for r in results for name in r[5]]
     skipped_already_clawed = [name for r in results for name in r[6]]
+    epf_added = sum(r[7][0] for r in results)
+    epf_skipped_commissioned = sum(r[7][1] for r in results)
+    epf_unmatched = sum(r[7][2] for r in results)
+    epf_missing_date = sum(r[7][3] for r in results)
 
     file_word = "file" if len(files) == 1 else f"{len(files)} files"
     flash(
@@ -526,6 +561,16 @@ def upload_cordoba_payout():
             f"${clawback_amount_total:,.2f} clawed back from agent commissions.",
             "success",
         )
+
+    if epf_added or epf_skipped_commissioned or epf_unmatched or epf_missing_date:
+        epf_parts = [f"{epf_added} client(s) added to agents' EPF sections (display only)"]
+        if epf_skipped_commissioned:
+            epf_parts.append(f"{epf_skipped_commissioned} skipped (already commissioned)")
+        if epf_unmatched:
+            epf_parts.append(f"{epf_unmatched} skipped (Contact ID not found in our records)")
+        if epf_missing_date:
+            epf_parts.append(f"{epf_missing_date} skipped (no usable Cleared Date)")
+        flash("EPF tab: " + ", ".join(epf_parts) + ".", "success" if epf_added else "error")
 
     def _flash_skipped(names, reason):
         if not names:
@@ -661,6 +706,16 @@ def period_detail(period_id):
     nsf_count = sum(1 for a in agents if a.nsf_flagged)
     pending_count = sum(1 for a in agents if a.pending_units > 0)
 
+    # Agents in this period with at least one Cordoba-chargeback clawback — shown as
+    # a red "Yes" in the dashboard's Cordoba Clawback column.
+    cordoba_clawback_agent_ids = {
+        r[0] for r in db.session.query(ClientRecord.agent_commission_id).filter(
+            ClientRecord.period_id == period_id,
+            ClientRecord.clawback_applied.is_(True),
+            ClientRecord.status == "Cordoba Chargeback",
+        )
+    }
+
     return render_template(
         "results.html",
         period=period,
@@ -672,6 +727,7 @@ def period_detail(period_id):
         penalty_count=penalty_count,
         nsf_count=nsf_count,
         pending_count=pending_count,
+        cordoba_clawback_agent_ids=cordoba_clawback_agent_ids,
     )
 
 
@@ -682,6 +738,11 @@ def agent_detail(period_id, agent_id):
     clients = ClientRecord.query.filter_by(agent_commission_id=agent_id).all()
     clawback_clients = [c for c in clients if c.clawback_applied]
     active_clients = [c for c in clients if not c.clawback_applied]
+    # Display-only EPF entries for this agent+month (matched by label, not FK, so
+    # they appear regardless of whether the EPF file or the CRM upload came first)
+    epf_clients = EpfClient.query.filter_by(
+        period_label=period.period_label, agent_name=agent.agent_name,
+    ).all()
 
     return render_template(
         "agent_detail.html",
@@ -689,6 +750,7 @@ def agent_detail(period_id, agent_id):
         agent=agent,
         clients=active_clients,
         clawback_clients=clawback_clients,
+        epf_clients=epf_clients,
     )
 
 
@@ -734,7 +796,7 @@ CLIENT_EXPORT_COLUMNS = [
 ]
 
 
-def _client_export_rows(clients):
+def _client_export_rows(clients, epf_clients=()):
     clawback_clients = [c for c in clients if c.clawback_applied]
     active_clients = [c for c in clients if not c.clawback_applied]
     rows = []
@@ -758,6 +820,15 @@ def _client_export_rows(clients):
             c.payments_made, c.pay_freq or "", c.nsf_count,
             "", f"-{c.clawback_amount:.2f}", "",
         ])
+    # Display-only EPF entries — no money columns by design
+    for e in epf_clients:
+        rows.append([
+            "EPF", e.crm_id or "", e.client_name or "", "",
+            "", "EPF",
+            e.cleared_date or "", "", "",
+            "", "", "",
+            "", "", "",
+        ])
     return rows
 
 
@@ -766,11 +837,13 @@ def export_agent(period_id, agent_id):
     period = CommissionPeriod.query.get_or_404(period_id)
     agent = AgentCommission.query.get_or_404(agent_id)
     clients = ClientRecord.query.filter_by(agent_commission_id=agent_id).all()
+    epf_clients = EpfClient.query.filter_by(
+        period_label=period.period_label, agent_name=agent.agent_name).all()
 
     output = io.StringIO()
     writer = csv.writer(output)
     writer.writerow(CLIENT_EXPORT_COLUMNS)
-    for row in _client_export_rows(clients):
+    for row in _client_export_rows(clients, epf_clients):
         writer.writerow(row)
 
     return Response(
@@ -790,7 +863,9 @@ def export_all_agents(period_id):
     writer.writerow(["Agent Name"] + CLIENT_EXPORT_COLUMNS)
     for agent in agents:
         clients = ClientRecord.query.filter_by(agent_commission_id=agent.id).all()
-        for row in _client_export_rows(clients):
+        epf_clients = EpfClient.query.filter_by(
+            period_label=period.period_label, agent_name=agent.agent_name).all()
+        for row in _client_export_rows(clients, epf_clients):
             writer.writerow([agent.agent_name] + row)
 
     return Response(

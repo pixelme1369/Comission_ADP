@@ -115,7 +115,7 @@ def test_client_already_clawed_back_by_crm_upload_is_not_clawed_again(db):
     db.session.commit()
 
     assert (applied, total) == (0, 0.0)
-    assert skipped_already == ["John Doe"]
+    assert skipped_already == [f"John Doe (ID {CRM_ID})"]
     refreshed = db.session.get(AgentCommission, aug_agent.id)
     assert refreshed.clawback_amount == pytest.approx(375.0)  # unchanged, not 750
 
@@ -125,7 +125,7 @@ def test_never_commissioned_client_is_skipped(db):
     applied, total, skipped_not_comm, _, _ = _apply_cordoba_chargebacks(
         FAKE_FILE, parsed([chargeback_row(crm_id="9999999", name="Unknown Person")]))
     assert (applied, total) == (0, 0.0)
-    assert skipped_not_comm == ["Unknown Person"]
+    assert skipped_not_comm == ["Unknown Person (ID 9999999)"]
 
 
 def test_unconfirmed_payout_is_skipped(db):
@@ -133,4 +133,4 @@ def test_unconfirmed_payout_is_skipped(db):
     applied, total, _, skipped_unconfirmed, _ = _apply_cordoba_chargebacks(
         FAKE_FILE, parsed([chargeback_row()]))
     assert (applied, total) == (0, 0.0)
-    assert skipped_unconfirmed == ["John Doe"]
+    assert skipped_unconfirmed == [f"John Doe (ID {CRM_ID})"]
