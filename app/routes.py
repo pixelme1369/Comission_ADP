@@ -4,7 +4,7 @@ from flask import Blueprint, render_template, request, redirect, url_for, flash,
 from app import db
 from app.models import (
     CommissionPeriod, AgentCommission, ClientRecord, CordobaPaidClient,
-    CordobaChargedBackClient, EpfClient,
+    CordobaChargedBackClient, CordobaChargebackMatchedClient, EpfClient,
 )
 from app.crm_parser import parse_crm_and_calculate, _parse_date, _period_of
 from app.cordoba_parser import parse_cordoba_payout
@@ -77,10 +77,13 @@ def reset_all():
         db.session.delete(period)
     CordobaPaidClient.query.delete()
     CordobaChargedBackClient.query.delete()
+    CordobaChargebackMatchedClient.query.delete()
     EpfClient.query.delete()
     db.session.commit()
     flash("All commission data has been reset.", "success")
     return redirect(url_for("main.index"))
+
+
 @bp.route("/upload-crm", methods=["POST"])
 def upload_crm():
     file = request.files.get("csv_file")
@@ -299,6 +302,56 @@ def _get_or_create_agent_period_row(period_label, agent_name, filename):
         period.total_agents = (period.total_agents or 0) + 1
 
     return period, agent_row
+
+
+def _mark_cordoba_chargeback_matches(file, parsed):
+    """
+    Display-only companion to _apply_cordoba_chargebacks: for every ID in the
+    Chargebacks tab, check it against ALL of our own commission reports
+    (ClientRecord.crm_id, any period, any status — not gated on is_cleared, confirmed
+    payout, or having a Dropped Date on file). Any match is recorded in
+    CordobaChargebackMatchedClient forever, which drives the per-client "Cordoba
+    Clawback" Yes/No badge next to "Cordoba Payout" on the agent detail page.
+    This intentionally does NOT gate on anything _apply_cordoba_chargebacks checks —
+    the badge should show Yes as soon as we recognize the client, even if the actual
+    dollar deduction is still blocked (most commonly: no Dropped Date on file yet).
+    Returns (newly_marked_count, unmatched_labels).
+    """
+    chargebacks = parsed.get("chargebacks", [])
+    incoming_ids = {row["crm_id"] for row in chargebacks if row["crm_id"]}
+    if not incoming_ids:
+        return 0, []
+
+    already_marked = {
+        r[0] for r in db.session.query(CordobaChargebackMatchedClient.crm_id)
+        .filter(CordobaChargebackMatchedClient.crm_id.in_(incoming_ids))
+    }
+    known_ids = {
+        r[0] for r in db.session.query(ClientRecord.crm_id)
+        .filter(ClientRecord.crm_id.in_(incoming_ids))
+    }
+
+    marked = 0
+    unmatched = []
+    seen_this_file = set()
+    for row in chargebacks:
+        crm_id = row["crm_id"]
+        if not crm_id or crm_id in seen_this_file:
+            continue
+        seen_this_file.add(crm_id)
+
+        if crm_id not in known_ids:
+            unmatched.append(_client_label(row.get("client_name"), crm_id))
+            continue
+        if crm_id in already_marked:
+            continue
+
+        db.session.add(CordobaChargebackMatchedClient(
+            crm_id=crm_id, client_name=row.get("client_name"), uploaded_filename=file.filename,
+        ))
+        marked += 1
+
+    return marked, unmatched
 
 
 def _apply_cordoba_chargebacks(file, parsed):
@@ -534,6 +587,7 @@ def _process_cordoba_file(file):
         flash(f"{file.filename}: {err}", "error")
 
     new_count, flipped = _apply_cordoba_paid_flags(file, parsed)
+    matched_count, unmatched_chargeback_ids = _mark_cordoba_chargeback_matches(file, parsed)
     (clawback_count, clawback_total, skipped_not_commissioned,
      skipped_not_confirmed_paid, skipped_already_clawed,
      skipped_no_dropped_date) = _apply_cordoba_chargebacks(file, parsed)
@@ -542,7 +596,7 @@ def _process_cordoba_file(file):
     db.session.commit()
     return (new_count, flipped, clawback_count, clawback_total,
             skipped_not_commissioned, skipped_not_confirmed_paid, skipped_already_clawed,
-            epf_counts, skipped_no_dropped_date)
+            epf_counts, skipped_no_dropped_date, matched_count, unmatched_chargeback_ids)
 
 
 @bp.route("/upload-cordoba-payout", methods=["POST"])
@@ -572,6 +626,8 @@ def upload_cordoba_payout():
     epf_unmatched = sum(r[7][2] for r in results)
     epf_missing_date = sum(r[7][3] for r in results)
     skipped_no_dropped_date = [name for r in results for name in r[8]]
+    matched_total = sum(r[9] for r in results)
+    unmatched_chargeback_ids = [name for r in results for name in r[10]]
 
     file_word = "file" if len(files) == 1 else f"{len(files)} files"
     flash(
@@ -579,6 +635,12 @@ def upload_cordoba_payout():
         f"{flipped_total} client record(s) marked Cordoba Payout = Yes.",
         "success",
     )
+    if matched_total > 0:
+        flash(
+            f"Cordoba chargebacks: {matched_total} client(s) matched in our commission reports "
+            f"and marked \"Cordoba Clawback: Yes\".",
+            "success",
+        )
     if clawback_count_total > 0:
         flash(
             f"Cordoba chargebacks: {clawback_count_total} client(s) charged back, "
@@ -611,6 +673,7 @@ def upload_cordoba_payout():
     _flash_skipped(skipped_no_dropped_date,
                    "have no Dropped Date recorded in our own CRM data yet — upload a CRM export "
                    "reflecting the drop, then re-upload this Chargebacks file")
+    _flash_skipped(unmatched_chargeback_ids, "were not found in any of our commission reports — no match")
     return redirect(url_for("main.index"))
 
 
@@ -760,15 +823,17 @@ def agent_detail(period_id, agent_id):
         period_label=period.period_label, agent_name=agent.agent_name,
     ).all()
 
-    # Per-client "Cordoba Clawback" flag for the Cleared Clients table — a still-cleared
-    # client's own ClientRecord never gets clawback_applied=True (the chargeback lands on
-    # a separate holding record in the dropped month, see _apply_cordoba_chargebacks), so
-    # this is looked up from the CordobaChargedBackClient ledger by crm_id instead. Purely
-    # informational, same pattern as cordoba_paid — does not affect tier, units, or commission.
+    # Per-client "Cordoba Clawback" flag for the Cleared Clients table — looked up from
+    # CordobaChargebackMatchedClient (crm_id matched a Chargebacks-tab row against ANY
+    # of our commission reports), not from the money ledger (CordobaChargedBackClient).
+    # Owner policy (confirmed July 2026): shows Yes as soon as the client is recognized,
+    # even if the actual dollar deduction is still blocked on a gate in
+    # _apply_cordoba_chargebacks (most commonly: no Dropped Date on file yet). Purely
+    # informational — does not affect tier, units, or commission.
     crm_ids = {c.crm_id for c in active_clients if c.crm_id}
     cordoba_charged_back_ids = {
         cb.crm_id for cb in
-        CordobaChargedBackClient.query.filter(CordobaChargedBackClient.crm_id.in_(crm_ids)).all()
+        CordobaChargebackMatchedClient.query.filter(CordobaChargebackMatchedClient.crm_id.in_(crm_ids)).all()
     } if crm_ids else set()
 
     return render_template(
@@ -871,7 +936,7 @@ def export_agent(period_id, agent_id):
     crm_ids = {c.crm_id for c in clients if c.crm_id}
     cordoba_charged_back_ids = {
         cb.crm_id for cb in
-        CordobaChargedBackClient.query.filter(CordobaChargedBackClient.crm_id.in_(crm_ids)).all()
+        CordobaChargebackMatchedClient.query.filter(CordobaChargebackMatchedClient.crm_id.in_(crm_ids)).all()
     } if crm_ids else set()
 
     output = io.StringIO()
@@ -902,7 +967,7 @@ def export_all_agents(period_id):
         crm_ids = {c.crm_id for c in clients if c.crm_id}
         cordoba_charged_back_ids = {
             cb.crm_id for cb in
-            CordobaChargedBackClient.query.filter(CordobaChargedBackClient.crm_id.in_(crm_ids)).all()
+            CordobaChargebackMatchedClient.query.filter(CordobaChargebackMatchedClient.crm_id.in_(crm_ids)).all()
         } if crm_ids else set()
         for row in _client_export_rows(clients, epf_clients, cordoba_charged_back_ids):
             writer.writerow([agent.agent_name] + row)
