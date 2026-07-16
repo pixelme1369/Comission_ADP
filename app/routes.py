@@ -757,6 +757,17 @@ def agent_detail(period_id, agent_id):
         period_label=period.period_label, agent_name=agent.agent_name,
     ).all()
 
+    # Per-client "Cordoba Clawback" flag for the Cleared Clients table — a still-cleared
+    # client's own ClientRecord never gets clawback_applied=True (the chargeback lands on
+    # a separate holding record in the dropped month, see _apply_cordoba_chargebacks), so
+    # this is looked up from the CordobaChargedBackClient ledger by crm_id instead. Purely
+    # informational, same pattern as cordoba_paid — does not affect tier, units, or commission.
+    crm_ids = {c.crm_id for c in active_clients if c.crm_id}
+    cordoba_charged_back_ids = {
+        cb.crm_id for cb in
+        CordobaChargedBackClient.query.filter(CordobaChargedBackClient.crm_id.in_(crm_ids)).all()
+    } if crm_ids else set()
+
     return render_template(
         "agent_detail.html",
         period=period,
@@ -764,6 +775,7 @@ def agent_detail(period_id, agent_id):
         clients=active_clients,
         clawback_clients=clawback_clients,
         epf_clients=epf_clients,
+        cordoba_charged_back_ids=cordoba_charged_back_ids,
     )
 
 
@@ -805,11 +817,11 @@ CLIENT_EXPORT_COLUMNS = [
     "Type", "ID", "Client Name", "Enrolled Date", "Enrolled Debt", "Status",
     "1st Payment Cleared Date", "2nd Payment Cleared Date", "Dropped Date",
     "Payments Made", "Pay Freq.", "# NSF",
-    "Commission on Client", "Clawback Amount", "Cordoba Payout",
+    "Commission on Client", "Clawback Amount", "Cordoba Payout", "Cordoba Clawback",
 ]
 
 
-def _client_export_rows(clients, epf_clients=()):
+def _client_export_rows(clients, epf_clients=(), cordoba_charged_back_ids=frozenset()):
     clawback_clients = [c for c in clients if c.clawback_applied]
     active_clients = [c for c in clients if not c.clawback_applied]
     rows = []
@@ -823,6 +835,7 @@ def _client_export_rows(clients, epf_clients=()):
             c.payments_made, c.pay_freq or "", c.nsf_count,
             f"{c.commission_on_client:.2f}", "",
             ("Yes" if c.cordoba_paid else "No") if c.is_cleared else "",
+            ("Yes" if c.crm_id in cordoba_charged_back_ids else "No") if c.is_cleared else "",
         ])
     for c in clawback_clients:
         rows.append([
@@ -831,7 +844,7 @@ def _client_export_rows(clients, epf_clients=()):
             c.first_payment_cleared_date, c.second_payment_cleared_date or "",
             c.dropped_date or "",
             c.payments_made, c.pay_freq or "", c.nsf_count,
-            "", f"-{c.clawback_amount:.2f}", "",
+            "", f"-{c.clawback_amount:.2f}", "", "",
         ])
     # Display-only EPF entries — no money columns by design
     for e in epf_clients:
@@ -840,7 +853,7 @@ def _client_export_rows(clients, epf_clients=()):
             "", "EPF",
             e.cleared_date or "", "", "",
             "", "", "",
-            "", "", "",
+            "", "", "", "",
         ])
     return rows
 
@@ -852,11 +865,16 @@ def export_agent(period_id, agent_id):
     clients = ClientRecord.query.filter_by(agent_commission_id=agent_id).all()
     epf_clients = EpfClient.query.filter_by(
         period_label=period.period_label, agent_name=agent.agent_name).all()
+    crm_ids = {c.crm_id for c in clients if c.crm_id}
+    cordoba_charged_back_ids = {
+        cb.crm_id for cb in
+        CordobaChargedBackClient.query.filter(CordobaChargedBackClient.crm_id.in_(crm_ids)).all()
+    } if crm_ids else set()
 
     output = io.StringIO()
     writer = csv.writer(output)
     writer.writerow(CLIENT_EXPORT_COLUMNS)
-    for row in _client_export_rows(clients, epf_clients):
+    for row in _client_export_rows(clients, epf_clients, cordoba_charged_back_ids):
         writer.writerow(row)
 
     return Response(
@@ -878,7 +896,12 @@ def export_all_agents(period_id):
         clients = ClientRecord.query.filter_by(agent_commission_id=agent.id).all()
         epf_clients = EpfClient.query.filter_by(
             period_label=period.period_label, agent_name=agent.agent_name).all()
-        for row in _client_export_rows(clients, epf_clients):
+        crm_ids = {c.crm_id for c in clients if c.crm_id}
+        cordoba_charged_back_ids = {
+            cb.crm_id for cb in
+            CordobaChargedBackClient.query.filter(CordobaChargedBackClient.crm_id.in_(crm_ids)).all()
+        } if crm_ids else set()
+        for row in _client_export_rows(clients, epf_clients, cordoba_charged_back_ids):
             writer.writerow([agent.agent_name] + row)
 
     return Response(
