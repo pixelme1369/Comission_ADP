@@ -1,6 +1,10 @@
 import csv
 import io
+import re
+
 from app.calculator import calculate_agent_commission
+
+PERIOD_RE = re.compile(r"^\d{4}-\d{2}$")
 
 REQUIRED_COLUMNS = {"agent_name", "units_cleared", "total_cleared_debt", "cancellation_rate", "hourly_draw", "period"}
 
@@ -50,8 +54,7 @@ def parse_and_calculate(file_bytes: bytes, filename: str) -> dict:
         if not period:
             row_errors.append("period is missing")
         else:
-            import re
-            if not re.match(r"^\d{4}-\d{2}$", period):
+            if not PERIOD_RE.match(period):
                 row_errors.append(f"period '{period}' must be YYYY-MM format")
             elif period_label is None:
                 period_label = period

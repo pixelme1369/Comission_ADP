@@ -30,6 +30,39 @@ def _allowed_history_file(filename):
     return "." in filename and filename.rsplit(".", 1)[1].lower() in ALLOWED_HISTORY_EXTENSIONS
 
 
+def _new_client_record(period_id, agent_commission_id, cr, **overrides):
+    """Build a ClientRecord from a parser client dict. Every upload flow saves clients
+    through this one helper so the field mapping can never drift between flows;
+    flow-specific values (clawback fields, cordoba_paid, ...) come in as overrides."""
+    fields = dict(
+        period_id=period_id,
+        agent_commission_id=agent_commission_id,
+        crm_id=cr.get("crm_id"),
+        agent_name=cr["agent_name"],
+        client_name=cr.get("client_name"),
+        email=cr.get("email"),
+        phone=cr.get("phone"),
+        stage=cr.get("stage"),
+        status=cr.get("status"),
+        submitted_date=cr.get("submitted_date"),
+        enrolled_date=cr.get("enrolled_date"),
+        first_payment_date=cr.get("first_payment_date"),
+        first_payment_cleared_date=cr.get("first_payment_cleared_date"),
+        second_payment_cleared_date=cr.get("second_payment_cleared_date"),
+        dropped_date=cr.get("dropped_date"),
+        pay_freq=cr.get("pay_freq"),
+        payments_made=cr.get("payments_made", 0),
+        nsf_count=cr.get("nsf_count", 0),
+        enrolled_debt=cr.get("enrolled_debt", 0.0),
+        is_cleared=cr.get("is_cleared", False),
+        is_pending=cr.get("is_pending", False),
+        is_cancelled=cr.get("is_cancelled", False),
+        commission_on_client=cr.get("commission_on_client", 0.0),
+    )
+    fields.update(overrides)
+    return ClientRecord(**fields)
+
+
 @bp.route("/")
 def index():
     recent_periods = CommissionPeriod.query.order_by(CommissionPeriod.uploaded_at.desc()).limit(12).all()
@@ -93,13 +126,16 @@ def upload_crm():
 
     # Collect crm_ids already saved as cleared so the parser can detect late activations
     already_cleared_crm_ids = {
-        r.crm_id for r in ClientRecord.query.filter_by(is_cleared=True).all() if r.crm_id
+        r[0] for r in db.session.query(ClientRecord.crm_id)
+        .filter(ClientRecord.is_cleared.is_(True)) if r[0]
     }
     # Collect crm_ids Cordoba has already confirmed paying (from a prior payout upload)
-    already_cordoba_paid_ids = {p.crm_id for p in CordobaPaidClient.query.all()}
+    already_cordoba_paid_ids = {r[0] for r in db.session.query(CordobaPaidClient.crm_id)}
     # Collect crm_ids already clawed back via a Cordoba Chargebacks-tab upload, so this
     # CRM import doesn't claw the agent back a second time for the same client
-    already_charged_back_crm_ids = {c.crm_id for c in CordobaChargedBackClient.query.all() if c.crm_id}
+    already_charged_back_crm_ids = {
+        r[0] for r in db.session.query(CordobaChargedBackClient.crm_id) if r[0]
+    }
     period_results = parse_crm_and_calculate(
         file_bytes, file.filename, already_cleared_crm_ids, already_charged_back_crm_ids
     )
@@ -124,6 +160,34 @@ def upload_crm():
                 f"Period {period_label} already exists (uploaded {existing.uploaded_at.strftime('%Y-%m-%d')}). "
                 "Delete it first before re-uploading.", "error",
             )
+            # A skipped period silently discards everything the parser computed for it —
+            # including any NEW clawback (e.g. a Dropped Date backdated into an
+            # already-uploaded month). Money must never disappear without a warning.
+            # Clawbacks already recorded in the DB (normal monthly re-uploads recompute
+            # them every time) are not warned about — only genuinely new ones.
+            cb_clients = [c for r in parsed["results"] for c in r.get("_clawback_clients", [])]
+            if cb_clients:
+                cb_ids = {c["crm_id"] for c in cb_clients if c.get("crm_id")}
+                already_recorded = {
+                    r[0] for r in db.session.query(ClientRecord.crm_id).filter(
+                        ClientRecord.crm_id.in_(cb_ids),
+                        ClientRecord.clawback_applied.is_(True),
+                    )
+                } if cb_ids else set()
+                new_cb = [c for c in cb_clients
+                          if not c.get("crm_id") or c["crm_id"] not in already_recorded]
+                if new_cb:
+                    detail = "; ".join(
+                        f"{c['agent_name']} / {c.get('client_name') or c.get('crm_id') or 'unknown'}"
+                        f" (${c.get('clawback_amount', 0.0):,.2f})"
+                        for c in new_cb[:10]
+                    )
+                    more = f" and {len(new_cb) - 10} more" if len(new_cb) > 10 else ""
+                    flash(
+                        f"WARNING — {len(new_cb)} NEW clawback(s) fall in period {period_label} "
+                        f"and were NOT applied: {detail}{more}. Delete period {period_label} and "
+                        "re-upload this file to apply them.", "error",
+                    )
             continue
 
         period = CommissionPeriod(
@@ -159,58 +223,17 @@ def upload_crm():
 
             # Clients that belong to this period (cleared, pending, same-month cancel)
             for cr in data["all_period_clients"]:
-                rec = ClientRecord(
-                    period_id=period.id,
-                    agent_commission_id=agent_obj.id,
-                    crm_id=cr.get("crm_id"),
-                    agent_name=cr["agent_name"],
-                    client_name=cr.get("client_name"),
-                    email=cr.get("email"),
-                    phone=cr.get("phone"),
-                    stage=cr.get("stage"),
-                    status=cr.get("status"),
-                    submitted_date=cr.get("submitted_date"),
-                    enrolled_date=cr.get("enrolled_date"),
-                    first_payment_date=cr.get("first_payment_date"),
-                    first_payment_cleared_date=cr.get("first_payment_cleared_date"),
-                    second_payment_cleared_date=cr.get("second_payment_cleared_date"),
-                    dropped_date=cr.get("dropped_date"),
-                    pay_freq=cr.get("pay_freq"),
-                    payments_made=cr.get("payments_made", 0),
-                    nsf_count=cr.get("nsf_count", 0),
-                    enrolled_debt=cr.get("enrolled_debt", 0.0),
-                    is_cleared=cr.get("is_cleared", False),
-                    is_pending=cr.get("is_pending", False),
-                    is_cancelled=cr.get("is_cancelled", False),
-                    commission_on_client=cr.get("commission_on_client", 0.0),
+                db.session.add(_new_client_record(
+                    period.id, agent_obj.id, cr,
                     is_late_activation=cr.get("is_late_activation", False),
                     original_cleared_period=cr.get("original_cleared_period"),
                     cordoba_paid=cr.get("crm_id") in already_cordoba_paid_ids,
-                )
-                db.session.add(rec)
+                ))
 
             # Clawback clients — these cleared in a prior month, cancelled this month
             for cr in data["clawback_clients"]:
-                rec = ClientRecord(
-                    period_id=period.id,
-                    agent_commission_id=agent_obj.id,
-                    crm_id=cr.get("crm_id"),
-                    agent_name=cr["agent_name"],
-                    client_name=cr.get("client_name"),
-                    email=cr.get("email"),
-                    phone=cr.get("phone"),
-                    stage=cr.get("stage"),
-                    status=cr.get("status"),
-                    submitted_date=cr.get("submitted_date"),
-                    enrolled_date=cr.get("enrolled_date"),
-                    first_payment_date=cr.get("first_payment_date"),
-                    first_payment_cleared_date=cr.get("first_payment_cleared_date"),
-                    second_payment_cleared_date=cr.get("second_payment_cleared_date"),
-                    dropped_date=cr.get("dropped_date"),
-                    pay_freq=cr.get("pay_freq"),
-                    payments_made=cr.get("payments_made", 0),
-                    nsf_count=cr.get("nsf_count", 0),
-                    enrolled_debt=cr.get("enrolled_debt", 0.0),
+                db.session.add(_new_client_record(
+                    period.id, agent_obj.id, cr,
                     is_cleared=False,
                     is_pending=False,
                     is_cancelled=True,
@@ -218,11 +241,13 @@ def upload_crm():
                     clawback_applied=True,
                     clawback_period_id=period.id,
                     clawback_amount=cr.get("clawback_amount", 0.0),
-                )
-                db.session.add(rec)
+                ))
 
-        db.session.commit()
         saved_period_ids.append((period.id, period_label, len(parsed["results"])))
+
+    # One commit for the whole file: either every new period saves, or none do.
+    # (Per-period commits could leave a half-imported file if a later period failed.)
+    db.session.commit()
 
     if not saved_period_ids:
         return redirect(url_for("main.index"))
@@ -333,11 +358,26 @@ def _apply_cordoba_chargebacks(file, parsed):
         p.crm_id for p in
         CordobaPaidClient.query.filter(CordobaPaidClient.crm_id.in_(incoming_ids)).all()
     }
+    # Third gate — never claw back a client who was ALREADY clawed back through any
+    # other path: a CRM upload that reflected the drop (clawback_applied ClientRecord),
+    # or a prior manager's "To subtract" row from a commission-history import (which
+    # also creates a clawback_applied ClientRecord). Without this, the Cordoba
+    # Chargebacks tab arriving AFTER the CRM export already clawed the agent back
+    # would deduct the same client a second time — the CordobaChargedBackClient
+    # ledger above only guards the Cordoba-first ordering.
+    already_clawed_elsewhere = {
+        r[0] for r in
+        db.session.query(ClientRecord.crm_id).filter(
+            ClientRecord.crm_id.in_(incoming_ids),
+            ClientRecord.clawback_applied.is_(True),
+        )
+    }
 
     applied_count = 0
     total_clawed_back = 0.0
     skipped_not_commissioned = []
     skipped_not_confirmed_paid = []
+    skipped_already_clawed = []
     seen_this_file = set()
 
     for row in chargebacks:
@@ -345,6 +385,11 @@ def _apply_cordoba_chargebacks(file, parsed):
         if not crm_id or crm_id in already_charged_back or crm_id in seen_this_file:
             continue
         seen_this_file.add(crm_id)
+
+        if crm_id in already_clawed_elsewhere:
+            # Agent was already deducted for this client (CRM upload or history import).
+            skipped_already_clawed.append(row.get("client_name") or crm_id)
+            continue
 
         client_rec = (
             ClientRecord.query.filter_by(crm_id=crm_id, is_cleared=True)
@@ -381,7 +426,7 @@ def _apply_cordoba_chargebacks(file, parsed):
 
         dropped_date = row.get("dropped_date") or client_rec.dropped_date
         dropped_dt = _parse_date(dropped_date or "")
-        orig_period_label = CommissionPeriod.query.get(client_rec.period_id).period_label
+        orig_period_label = db.session.get(CommissionPeriod, client_rec.period_id).period_label
         dropped_period = _period_of(dropped_dt) or orig_period_label
 
         period, agent_row = _get_or_create_agent_period_row(dropped_period, agent_name, file.filename)
@@ -424,7 +469,8 @@ def _apply_cordoba_chargebacks(file, parsed):
         applied_count += 1
         total_clawed_back += cb
 
-    return applied_count, round(total_clawed_back, 2), skipped_not_commissioned, skipped_not_confirmed_paid
+    return (applied_count, round(total_clawed_back, 2),
+            skipped_not_commissioned, skipped_not_confirmed_paid, skipped_already_clawed)
 
 
 def _process_cordoba_file(file):
@@ -437,12 +483,12 @@ def _process_cordoba_file(file):
         flash(f"{file.filename}: {err}", "error")
 
     new_count, flipped = _apply_cordoba_paid_flags(file, parsed)
-    clawback_count, clawback_total, skipped_not_commissioned, skipped_not_confirmed_paid = (
-        _apply_cordoba_chargebacks(file, parsed)
-    )
+    (clawback_count, clawback_total, skipped_not_commissioned,
+     skipped_not_confirmed_paid, skipped_already_clawed) = _apply_cordoba_chargebacks(file, parsed)
 
     db.session.commit()
-    return new_count, flipped, clawback_count, clawback_total, skipped_not_commissioned, skipped_not_confirmed_paid
+    return (new_count, flipped, clawback_count, clawback_total,
+            skipped_not_commissioned, skipped_not_confirmed_paid, skipped_already_clawed)
 
 
 @bp.route("/upload-cordoba-payout", methods=["POST"])
@@ -466,6 +512,7 @@ def upload_cordoba_payout():
     clawback_amount_total = sum(r[3] for r in results)
     skipped_not_commissioned = [name for r in results for name in r[4]]
     skipped_not_confirmed_paid = [name for r in results for name in r[5]]
+    skipped_already_clawed = [name for r in results for name in r[6]]
 
     file_word = "file" if len(files) == 1 else f"{len(files)} files"
     flash(
@@ -490,6 +537,8 @@ def upload_cordoba_payout():
     _flash_skipped(skipped_not_commissioned, "were never recorded as commissioned here — no clawback applied")
     _flash_skipped(skipped_not_confirmed_paid,
                    "were never confirmed paid via a First Pays/EPF upload — no clawback applied")
+    _flash_skipped(skipped_already_clawed,
+                   "were already clawed back via a CRM upload or history import — not deducted twice")
     return redirect(url_for("main.index"))
 
 
@@ -512,15 +561,8 @@ def _save_commission_history_period(period_label, results, filename, already_cor
         db.session.flush()
 
         for cr in cleared_clients:
-            db.session.add(ClientRecord(
-                period_id=period.id,
-                agent_commission_id=agent_obj.id,
-                crm_id=cr.get("crm_id"),
-                agent_name=cr["agent_name"],
-                client_name=cr.get("client_name"),
-                status=cr.get("status"),
-                payments_made=cr.get("payments_made", 0),
-                enrolled_debt=cr.get("enrolled_debt", 0.0),
+            db.session.add(_new_client_record(
+                period.id, agent_obj.id, cr,
                 is_cleared=True,
                 is_pending=False,
                 is_cancelled=False,
@@ -529,15 +571,8 @@ def _save_commission_history_period(period_label, results, filename, already_cor
             ))
 
         for cr in clawback_clients:
-            db.session.add(ClientRecord(
-                period_id=period.id,
-                agent_commission_id=agent_obj.id,
-                crm_id=cr.get("crm_id"),
-                agent_name=cr["agent_name"],
-                client_name=cr.get("client_name"),
-                status=cr.get("status"),
-                payments_made=cr.get("payments_made", 0),
-                enrolled_debt=cr.get("enrolled_debt", 0.0),
+            db.session.add(_new_client_record(
+                period.id, agent_obj.id, cr,
                 is_cleared=False,
                 is_pending=False,
                 is_cancelled=True,

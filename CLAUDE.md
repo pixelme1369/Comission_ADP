@@ -15,9 +15,17 @@ The SQLite database (`instance/commissions.db`) is created automatically on firs
 
 If you change models, delete `instance/commissions.db` and restart — there are no migrations.
 
+## Tests
+
+```bash
+python -m pytest tests/ -q
+```
+
+The suite locks in every commission business rule (tier boundaries, penalty/bonus thresholds, clawback math, CRM classification, Cordoba chargeback dedup, history import). **Run it after any change to `calculator.py`, `crm_parser.py`, `commission_history_parser.py`, or `routes.py` — a failing test means the money math changed.** Owner-confirmed policies are marked as such in the test docstrings; do not "fix" a failing policy test without owner sign-off.
+
 ## Architecture
 
-This is a Flask + SQLAlchemy web app for calculating agent commissions at American Debt Protection. There is no test suite yet.
+This is a Flask + SQLAlchemy web app for calculating agent commissions at American Debt Protection.
 
 **Primary upload flow (CRM export):**
 1. User uploads a single full-history CRM CSV → `POST /upload-crm` (routes.py)
@@ -59,6 +67,13 @@ This is a Flask + SQLAlchemy web app for calculating agent commissions at Americ
    a prior payment, so in practice this only catches data gaps (the original payout confirmation
    was never uploaded here), and those are skipped with their own flash message rather than
    clawed back on faith.
+   **Third gate (never claw back twice, either direction):** any `crm_id` that already has a
+   `ClientRecord` with `clawback_applied=True` — from a CRM upload that reflected the drop, or
+   from a commission-history import's "To subtract" row — is skipped with its own flash message.
+   Without this, a Cordoba Chargebacks file arriving *after* the CRM export already clawed the
+   agent back would deduct the same client a second time (the `CordobaChargedBackClient` ledger
+   only guards the Cordoba-first ordering). Regression-tested in
+   `tests/test_cordoba_chargebacks.py`.
    If both checks pass, the agent's commission is clawed back **unconditionally**, regardless of the
    safe-payment-threshold that protects agents in the CRM-driven clawback flow — in practice
    Cordoba stops charging back once an agent-protecting threshold is hit anyway, so no
@@ -127,6 +142,7 @@ The tier table in `calculator.py` must match exactly:
 - Cancellation rate **> 20%** (strict) drops one tier; exactly 20% does not trigger penalty
 - Cancellation rate **< 10%** flags `quality_bonus_eligible = True` — display-only, not auto-paid
 - **Cancel rate formula:** clawback clients ÷ (cleared + clawback clients). Same-month cancels, safe cancels, and pending clients are excluded from both numerator and denominator.
+- **OWNER POLICY (confirmed July 2026):** a client counted as `clawback` at classification time stays in the cancellation rate **even if** the paid-guard later determines the agent was never paid on them (pending → cancelled) and charges no clawback. An enrolled client who cancelled counts against the agent's quality rate regardless of whether commission ever went out. Do NOT "fix" this by recomputing the rate after reclassification — it is intentional (locked in by `tests/test_crm_parser.py::TestCancellationRatePolicy`).
 - Commission vs draw: if `gross_commission > hourly_draw`, agent gets commission; otherwise agent keeps the draw (no repayment required). `hourly_draw` defaults to 0.0 in CRM flow (draw feature not yet wired for CRM uploads).
 
 ## Clawback Rules
@@ -155,7 +171,9 @@ Implemented in `_safe_payment_threshold(pay_freq)` in `crm_parser.py`. Also appl
 
 Clawbacks are summed per `(agent, dropped_month)` and deducted from the agent's commission in the month the client **dropped**, not the month they cleared (`net_commission = max(0, gross_commission - clawback_amount)`). If the agent has no cleared units in the dropped month, a zero-unit period entry is created just to carry the clawback.
 
-**Second, independent clawback trigger — Cordoba chargebacks:** everything above describes clawbacks detected from the CRM export itself (a Dropped Date appearing in a later CRM upload). A client can also get clawed back because Cordoba's Chargebacks tab shows they took the marketing payout back from the company — see "Cordoba payout check" above. That path skips the safe-payment-threshold table entirely (claws back unconditionally whenever we previously paid the agent) but reuses the same tier-recalculation math (`calculator.calculate_clawback_amount`) and the same "deduct from dropped month" mechanic. The two paths share a dedup guard (`CordobaChargedBackClient` ledger passed into `crm_parser.py` as `already_charged_back_crm_ids`) so the same client is never clawed back twice.
+**Second, independent clawback trigger — Cordoba chargebacks:** everything above describes clawbacks detected from the CRM export itself (a Dropped Date appearing in a later CRM upload). A client can also get clawed back because Cordoba's Chargebacks tab shows they took the marketing payout back from the company — see "Cordoba payout check" above. That path skips the safe-payment-threshold table entirely (claws back unconditionally whenever we previously paid the agent) but reuses the same tier-recalculation math (`calculator.calculate_clawback_amount`) and the same "deduct from dropped month" mechanic. **The same client is never clawed back twice, in either order:** Cordoba-first is guarded by the `CordobaChargedBackClient` ledger passed into `crm_parser.py` as `already_charged_back_crm_ids`; CRM-first (or history-import "To subtract"-first) is guarded by the Cordoba flow's third gate, which skips any `crm_id` that already has a `clawback_applied=True` `ClientRecord`.
+
+**Skipped-period clawback warning:** when a CRM upload skips a period because it already exists in the DB, any *new* clawback the parser routed into that month (e.g. a Dropped Date backdated into an already-uploaded month) is NOT applied — the upload flashes an explicit warning naming the agent, client, and amount so it isn't silently lost. Clawbacks already recorded in the DB are excluded from the warning, so routine monthly re-uploads of the full-history file stay quiet.
 
 ## Client Classification (`crm_parser.py`)
 

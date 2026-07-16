@@ -105,7 +105,7 @@ Clients whose first payment cleared this month. Commission is being paid on thes
 Clients whose first payment cleared but whose status is "Pending Affiliate Cancellation." **Commission is not paid** on these until the status resolves to active.
 
 ### Clawbacks Applied This Period
-Clients who were paid commission in a **prior month** but cancelled this month **after** the commission payment date (on or after the 25th of the month following their cleared month), with fewer than 3 payments made. The commission originally paid on them has been deducted from this period's payout.
+Clients who were paid commission in a **prior month** but cancelled this month **after** the commission payment date (on or after the 25th of the month following their cleared month), without reaching the safe payment count for their pay frequency (Monthly: 2 payments, Biweekly: 4, unknown: 3). The commission originally paid on them has been deducted from this period's payout.
 
 ### Cancelled — Not Paid
 Clients who cancelled **before** commission was ever sent out — either in the same month they cleared, or before the 25th payout date. No commission was ever paid on these, so there is no clawback; they are simply excluded.
@@ -141,9 +141,12 @@ Commission for a cleared month is paid on the **25th of the following month**. W
 | Client cleared April, dropped before May 25 | **Not a clawback** — commission was never sent out |
 | Client cleared April, dropped May 25 or later | **Clawback** — commission was already paid |
 | Client cleared April, dropped June or later | **Clawback** — commission was already paid |
-| Client has 3 or more payments made | **Never a clawback**, regardless of when they drop |
+| Client reached the safe payment count before dropping | **Never a clawback**, regardless of when they drop |
+
+**Safe payment count** (by the client's Pay Freq.): Monthly = 2 payments, Biweekly = 4 payments, missing/unknown = 3 payments.
 
 - If removing the cancelled client drops the agent's tier for the original cleared month, the clawback is the **full difference in commission for that month** — not just the one client's share
+- **A client is never clawed back twice.** Once deducted — by a CRM upload, a Cordoba Chargebacks upload, or a prior manager's ledger ("To subtract" row in a history import) — every later upload skips that client and tells you so.
 
 ### Draw vs Commission
 - The agent's hourly pay for the 1st–15th of the month acts as a **draw**
