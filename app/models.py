@@ -127,6 +127,29 @@ class CordobaPaidClient(db.Model):
     uploaded_at = db.Column(db.DateTime, default=lambda: datetime.now(timezone.utc))
 
 
+class EpfClient(db.Model):
+    """
+    Display-only entries from the Cordoba payout file's EPF tab (owner decision,
+    July 2026: EPF does NOT change units, tier, or commission). Each row is a client
+    whose Contact ID matched our ClientRecord history; they're shown in an "EPF"
+    section at the bottom of that agent's page for the Cleared Date month.
+    Clients already commissioned (is_cleared=True anywhere) are skipped at upload
+    time, and crm_id is unique so re-uploading the same file never duplicates rows.
+    Stored by (period_label, agent_name) — not FK'd to a period — so entries appear
+    automatically once that month's period exists, even if the EPF file arrived first.
+    """
+    __tablename__ = "epf_client"
+
+    id = db.Column(db.Integer, primary_key=True)
+    crm_id = db.Column(db.String(50), unique=True, nullable=False, index=True)
+    client_name = db.Column(db.String(255))
+    agent_name = db.Column(db.String(255), index=True)
+    period_label = db.Column(db.String(10), index=True)  # YYYY-MM from EPF Cleared Date
+    cleared_date = db.Column(db.String(50))              # as shown in the EPF tab
+    uploaded_filename = db.Column(db.String(255))
+    uploaded_at = db.Column(db.DateTime, default=lambda: datetime.now(timezone.utc))
+
+
 class CordobaChargedBackClient(db.Model):
     """
     Ledger of every client ID that has ever triggered an agent clawback via a Cordoba

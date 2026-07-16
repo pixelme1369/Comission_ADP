@@ -21,23 +21,6 @@
     </form>
   </div>
 
-  <!-- Manual Upload -->
-  <div class="card upload-card">
-    <h2>Manual CSV Upload</h2>
-    <p class="muted" style="margin-bottom:1rem;">Upload a pre-aggregated summary CSV with one row per agent.</p>
-    <form method="POST" action="{{ url_for('main.upload') }}" enctype="multipart/form-data">
-      <div class="form-group">
-        <label for="csv_file">Manual Summary CSV</label>
-        <input type="file" id="csv_file" name="csv_file" accept=".csv" required>
-      </div>
-      <div class="form-hint">
-        Required columns: <code>agent_name, units_cleared, total_cleared_debt, cancellation_rate, hourly_draw, period</code><br>
-        <a href="/static/sample.csv" download>Download sample CSV</a>
-      </div>
-      <button type="submit" class="btn btn-secondary">Upload Manual CSV</button>
-    </form>
-  </div>
-
   <!-- Cordoba Payout Upload -->
   <div class="card upload-card">
     <h2>Upload Cordoba Payout</h2>

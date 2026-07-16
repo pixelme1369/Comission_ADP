@@ -76,11 +76,12 @@
         <th data-col="4">Cleared Debt</th>
         <th data-col="5">Gross Commission</th>
         <th data-col="6">Clawback</th>
-        <th data-col="7">Net Commission</th>
-        <th data-col="8">Cancel Rate</th>
-        <th data-col="9">Quality Bonus</th>
-        <th data-col="10">NSF</th>
-        <th data-col="11">Pending</th>
+        <th data-col="7">Cordoba Clawback</th>
+        <th data-col="8">Net Commission</th>
+        <th data-col="9">Cancel Rate</th>
+        <th data-col="10">Quality Bonus</th>
+        <th data-col="11">NSF</th>
+        <th data-col="12">Pending</th>
         <th>Notes</th>
       </tr>
     </thead>
@@ -114,6 +115,11 @@
         <td>
           {% if a.clawback_amount > 0 %}
             <span style="color:#991b1b;font-weight:600;">-${{ "{:,.2f}".format(a.clawback_amount) }}</span>
+          {% else %}—{% endif %}
+        </td>
+        <td>
+          {% if a.id in cordoba_clawback_agent_ids %}
+            <span class="badge badge-red">Yes</span>
           {% else %}—{% endif %}
         </td>
         <td><strong>${{ "{:,.2f}".format(a.net_commission) }}</strong></td>

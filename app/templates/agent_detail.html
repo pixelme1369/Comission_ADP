@@ -169,6 +169,34 @@
 </div>
 {% endif %}
 
+<!-- EPF (display only) -->
+{% if epf_clients %}
+<h2 style="margin-top:1.5rem;">EPF ({{ epf_clients|length }})</h2>
+<p class="muted" style="margin-bottom:0.75rem;">Clients from Cordoba's EPF tab whose Contact ID matched this agent, placed in the month of the EPF Cleared Date. Informational only — these do not change units, tier, or commission.</p>
+<div class="table-wrapper">
+  <table class="data-table">
+    <thead>
+      <tr>
+        <th>ID</th>
+        <th>Client Name</th>
+        <th>EPF Cleared Date</th>
+        <th>Source File</th>
+      </tr>
+    </thead>
+    <tbody>
+      {% for c in epf_clients %}
+      <tr>
+        <td class="muted">{{ c.crm_id }}</td>
+        <td>{{ c.client_name or '—' }}</td>
+        <td>{{ c.cleared_date or '—' }}</td>
+        <td class="muted">{{ c.uploaded_filename or '—' }}</td>
+      </tr>
+      {% endfor %}
+    </tbody>
+  </table>
+</div>
+{% endif %}
+
 <!-- Clawback Clients -->
 {% if clawback_clients %}
 <h2 style="margin-top:1.5rem;">Clawbacks Applied This Period ({{ clawback_clients|length }})</h2>

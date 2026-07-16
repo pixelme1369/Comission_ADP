@@ -1,6 +1,0 @@
-agent_name,units_cleared,total_cleared_debt,cancellation_rate,hourly_draw,period
-Jane Smith,35,142000.00,8.5,1200.00,2026-05
-John Doe,22,95000.00,24.0,950.00,2026-05
-Alice Brown,47,210000.00,9.5,1100.00,2026-05
-Bob Johnson,12,55000.00,5.0,800.00,2026-05
-Carol White,62,275000.00,18.0,1300.00,2026-05
