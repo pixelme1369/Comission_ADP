@@ -19,12 +19,9 @@ CRM_ID = "4478112"
 
 
 def chargeback_row(crm_id=CRM_ID, name="John Doe"):
-    return {
-        "crm_id": crm_id, "client_name": name, "status": "Cancelled",
-        "marketing_payout_debt": 30_000.0, "first_payment_cleared_date": "06/10/2026",
-        "pay_freq": "Monthly", "payments_made": 1,
-        "dropped_date": "08/03/2026", "chargeback_date": "08/15/2026",
-    }
+    # Matches what cordoba_parser.py actually extracts from the Chargebacks tab
+    # (owner policy, July 2026: only ID matters; Full Name is read for display only).
+    return {"crm_id": crm_id, "client_name": name}
 
 
 def parsed(rows):
@@ -63,7 +60,7 @@ def seed_paid_june_client(db, cordoba_confirmed=True):
 def test_chargeback_applied_once_in_dropped_month(db):
     seed_paid_june_client(db)
 
-    applied, total, _, _, _ = _apply_cordoba_chargebacks(FAKE_FILE, parsed([chargeback_row()]))
+    applied, total, _, _, _, _ = _apply_cordoba_chargebacks(FAKE_FILE, parsed([chargeback_row()]))
     db.session.commit()
 
     assert applied == 1
@@ -79,7 +76,7 @@ def test_reuploading_same_chargebacks_file_is_a_noop(db):
     _apply_cordoba_chargebacks(FAKE_FILE, parsed([chargeback_row()]))
     db.session.commit()
 
-    applied, total, _, _, _ = _apply_cordoba_chargebacks(FAKE_FILE, parsed([chargeback_row()]))
+    applied, total, _, _, _, _ = _apply_cordoba_chargebacks(FAKE_FILE, parsed([chargeback_row()]))
     assert (applied, total) == (0, 0.0)
 
 
@@ -110,7 +107,7 @@ def test_client_already_clawed_back_by_crm_upload_is_not_clawed_again(db):
     ))
     db.session.commit()
 
-    applied, total, _, _, skipped_already = _apply_cordoba_chargebacks(
+    applied, total, _, _, skipped_already, _ = _apply_cordoba_chargebacks(
         FAKE_FILE, parsed([chargeback_row()]))
     db.session.commit()
 
@@ -122,7 +119,7 @@ def test_client_already_clawed_back_by_crm_upload_is_not_clawed_again(db):
 
 def test_never_commissioned_client_is_skipped(db):
     seed_paid_june_client(db)
-    applied, total, skipped_not_comm, _, _ = _apply_cordoba_chargebacks(
+    applied, total, skipped_not_comm, _, _, _ = _apply_cordoba_chargebacks(
         FAKE_FILE, parsed([chargeback_row(crm_id="9999999", name="Unknown Person")]))
     assert (applied, total) == (0, 0.0)
     assert skipped_not_comm == ["Unknown Person (ID 9999999)"]
@@ -130,7 +127,35 @@ def test_never_commissioned_client_is_skipped(db):
 
 def test_unconfirmed_payout_is_skipped(db):
     seed_paid_june_client(db, cordoba_confirmed=False)
-    applied, total, _, skipped_unconfirmed, _ = _apply_cordoba_chargebacks(
+    applied, total, _, skipped_unconfirmed, _, _ = _apply_cordoba_chargebacks(
         FAKE_FILE, parsed([chargeback_row()]))
     assert (applied, total) == (0, 0.0)
     assert skipped_unconfirmed == [f"John Doe (ID {CRM_ID})"]
+
+
+def test_skipped_when_we_have_no_dropped_date_yet(db):
+    """Owner policy (confirmed July 2026): the Chargebacks tab's own Dropped Date
+    column is ignored — only our own CRM-recorded dropped_date places the deduction.
+    A client with no dropped_date on file yet must be skipped, not clawed back into
+    their cleared month or some other guess."""
+    seed_paid_june_client(db)
+    ClientRecord.query.filter_by(crm_id=CRM_ID).update({"dropped_date": None})
+    db.session.commit()
+
+    applied, total, _, _, _, skipped_no_date = _apply_cordoba_chargebacks(
+        FAKE_FILE, parsed([chargeback_row()]))
+    assert (applied, total) == (0, 0.0)
+    assert skipped_no_date == [f"John Doe (ID {CRM_ID})"]
+
+
+def test_marketing_payout_debt_column_is_never_used(db):
+    """Owner policy (confirmed July 2026): the Chargebacks tab's Marketing Payout Debt
+    column is ignored entirely — client debt comes only from our own CRM-recorded
+    Enrolled Debt. If we don't have one, the clawback computes to $0 (no fallback to
+    the file's figure, even though the parser no longer even extracts it)."""
+    period, agent = seed_paid_june_client(db)
+    ClientRecord.query.filter_by(crm_id=CRM_ID).update({"enrolled_debt": 0.0})
+    db.session.commit()
+
+    applied, total, _, _, _, _ = _apply_cordoba_chargebacks(FAKE_FILE, parsed([chargeback_row()]))
+    assert (applied, total) == (0, 0.0)

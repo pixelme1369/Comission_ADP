@@ -38,9 +38,12 @@ This is a Flask + SQLAlchemy web app for calculating agent commissions at Americ
 **Cordoba payout check (funder payout confirmation):**
 1. User uploads one or more Cordoba payout exports (.xlsx) → `POST /upload-cordoba-payout` (routes.py)
 2. `cordoba_parser.py` reads the `First Pays`, `EPF`, and `Chargebacks` tabs. Per the owner
-   (July 2026), the only columns that matter are: First Pays → `ID`; Chargebacks → `ID`
-   (plus `Dropped Date` to place the deduction); EPF → `Contact ID` + `Cleared Date`.
-   Everything else in those tabs is ignored.
+   (July 2026), the only columns that matter are: First Pays → `ID`; Chargebacks → `ID` only
+   (`Full Name` is also read, purely to make flash/skip messages readable — not used for any
+   decision); EPF → `Contact ID` + `Cleared Date`. Everything else in those tabs — including
+   Chargebacks' own `Marketing Payout Debt`, `Dropped Date`, `Payments Made`, etc. — is ignored;
+   client debt, the dropped-date used to place the deduction, and payments-made all come from
+   OUR OWN `ClientRecord` history instead, never from the Chargebacks file itself.
 3. **First Pays / EPF** (paid confirmation): checks OUR existing `ClientRecord.crm_id` values
    against the IDs in those two tabs (not the reverse) — any match flips
    `ClientRecord.cordoba_paid = True`, remembered forever in `CordobaPaidClient` (`crm_id` unique)
@@ -74,13 +77,21 @@ This is a Flask + SQLAlchemy web app for calculating agent commissions at Americ
    agent back would deduct the same client a second time (the `CordobaChargedBackClient` ledger
    only guards the Cordoba-first ordering). Regression-tested in
    `tests/test_cordoba_chargebacks.py`.
-   If both checks pass, the agent's commission is clawed back **unconditionally**, regardless of the
+   **Fourth gate:** we must already have OUR OWN `ClientRecord.dropped_date` for that client (from
+   a CRM upload that reflected the drop) — the Chargebacks file's own `Dropped Date` column is
+   deliberately never read (owner policy, July 2026). If we don't have a dropped date yet, there's
+   nowhere to place the deduction, so the client is skipped with its own flash message telling the
+   uploader to upload the CRM export that reflects the drop first, then re-upload this Chargebacks
+   file. Client debt for the clawback math is likewise always `ClientRecord.enrolled_debt` — the
+   Chargebacks tab's `Marketing Payout Debt` column is never used, even as a fallback; if our own
+   enrolled debt is 0, the computed clawback is $0 and nothing is deducted.
+   If all checks pass, the agent's commission is clawed back **unconditionally**, regardless of the
    safe-payment-threshold that protects agents in the CRM-driven clawback flow — in practice
    Cordoba stops charging back once an agent-protecting threshold is hit anyway, so no
    threshold check is applied on this path. The clawback amount reuses
    `calculator.calculate_clawback_amount` (same tier-recalculation rule as the CRM flow — see
-   Clawback Rules below) and is deducted from the agent's commission in the client's **Dropped
-   Date month** from the Chargebacks row, creating a zero-unit `CommissionPeriod`/`AgentCommission`
+   Clawback Rules below) and is deducted from the agent's commission in the client's **own
+   `ClientRecord.dropped_date` month**, creating a zero-unit `CommissionPeriod`/`AgentCommission`
    holding entry if that month doesn't exist yet (`routes.py::_get_or_create_agent_period_row`,
    mirrors the CRM flow's Step 4). Each `crm_id` is recorded forever in
    `CordobaChargedBackClient` (`crm_id` unique) so re-uploading the same Chargebacks file, or a
