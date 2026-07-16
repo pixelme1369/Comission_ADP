@@ -59,6 +59,12 @@ def _parse_number(value):
         return None
 
 
+def _parse_int(value) -> int:
+    """Lenient int for count-ish columns — bad values become 0 instead of crashing the upload."""
+    parsed = _parse_number(value)
+    return int(parsed) if parsed is not None else 0
+
+
 def _header_map_from_row(header_row) -> dict:
     return {str(h).strip().lower(): idx for idx, h in enumerate(header_row) if h and str(h).strip()}
 
@@ -159,7 +165,7 @@ def parse_commission_history(file_bytes: bytes, filename: str, year: int) -> dic
             "agent_name": agent_name,
             "client_name": cell(row, "full name"),
             "status": cell(row, "status"),
-            "payments_made": int(cell(row, "payments made") or 0),
+            "payments_made": _parse_int(cell(row, "payments made")),
         }
 
         if enrolled_debt is not None:

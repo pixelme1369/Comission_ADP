@@ -124,6 +124,34 @@ def upload_crm():
                 f"Period {period_label} already exists (uploaded {existing.uploaded_at.strftime('%Y-%m-%d')}). "
                 "Delete it first before re-uploading.", "error",
             )
+            # A skipped period silently discards everything the parser computed for it —
+            # including any NEW clawback (e.g. a Dropped Date backdated into an
+            # already-uploaded month). Money must never disappear without a warning.
+            # Clawbacks already recorded in the DB (normal monthly re-uploads recompute
+            # them every time) are not warned about — only genuinely new ones.
+            cb_clients = [c for r in parsed["results"] for c in r.get("_clawback_clients", [])]
+            if cb_clients:
+                cb_ids = {c["crm_id"] for c in cb_clients if c.get("crm_id")}
+                already_recorded = {
+                    r[0] for r in db.session.query(ClientRecord.crm_id).filter(
+                        ClientRecord.crm_id.in_(cb_ids),
+                        ClientRecord.clawback_applied.is_(True),
+                    )
+                } if cb_ids else set()
+                new_cb = [c for c in cb_clients
+                          if not c.get("crm_id") or c["crm_id"] not in already_recorded]
+                if new_cb:
+                    detail = "; ".join(
+                        f"{c['agent_name']} / {c.get('client_name') or c.get('crm_id') or 'unknown'}"
+                        f" (${c.get('clawback_amount', 0.0):,.2f})"
+                        for c in new_cb[:10]
+                    )
+                    more = f" and {len(new_cb) - 10} more" if len(new_cb) > 10 else ""
+                    flash(
+                        f"WARNING — {len(new_cb)} NEW clawback(s) fall in period {period_label} "
+                        f"and were NOT applied: {detail}{more}. Delete period {period_label} and "
+                        "re-upload this file to apply them.", "error",
+                    )
             continue
 
         period = CommissionPeriod(
