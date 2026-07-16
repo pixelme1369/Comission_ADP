@@ -152,10 +152,13 @@ class EpfClient(db.Model):
 
 class CordobaChargedBackClient(db.Model):
     """
-    Ledger of every client ID that has ever triggered an agent clawback via a Cordoba
-    payout file's Chargebacks tab. Kept forever so re-uploading the same Chargebacks
-    file (or a later CRM upload that reflects the same drop) never claws back the
-    agent a second time for the same client.
+    Ledger of every client ID that has ever triggered an ACTUAL agent commission
+    deduction via a Cordoba payout file's Chargebacks tab (i.e. passed every gate in
+    _apply_cordoba_chargebacks: commissioned, confirmed paid, not already clawed back,
+    and we have our own dropped date). Kept forever so re-uploading the same
+    Chargebacks file (or a later CRM upload that reflects the same drop) never claws
+    back the agent a second time for the same client. This is the money ledger —
+    see CordobaChargebackMatchedClient below for the display-only ledger.
     """
     __tablename__ = "cordoba_charged_back_client"
 
@@ -165,5 +168,26 @@ class CordobaChargedBackClient(db.Model):
     agent_name = db.Column(db.String(255))
     clawback_amount = db.Column(db.Float, default=0.0)
     dropped_period = db.Column(db.String(10))  # YYYY-MM
+    uploaded_filename = db.Column(db.String(255))
+    uploaded_at = db.Column(db.DateTime, default=lambda: datetime.now(timezone.utc))
+
+
+class CordobaChargebackMatchedClient(db.Model):
+    """
+    Ledger of every client ID from a Cordoba Chargebacks tab that has ever matched a
+    client in OUR OWN commission reports (ClientRecord.crm_id, any period, any
+    status) — regardless of whether the actual dollar clawback could be applied yet.
+    Owner policy (confirmed July 2026): the "Cordoba Clawback" Yes/No column next to
+    "Cordoba Payout" on the agent detail page reflects this match immediately, even
+    if the real commission deduction is still blocked on a gate in
+    _apply_cordoba_chargebacks (most commonly: we don't have our own Dropped Date for
+    this client yet). Kept forever, crm_id unique, so re-uploading the same file is a
+    no-op and the Yes badge never disappears once shown.
+    """
+    __tablename__ = "cordoba_chargeback_matched_client"
+
+    id = db.Column(db.Integer, primary_key=True)
+    crm_id = db.Column(db.String(50), unique=True, nullable=False, index=True)
+    client_name = db.Column(db.String(255))
     uploaded_filename = db.Column(db.String(255))
     uploaded_at = db.Column(db.DateTime, default=lambda: datetime.now(timezone.utc))

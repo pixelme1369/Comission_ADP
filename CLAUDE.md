@@ -98,13 +98,24 @@ This is a Flask + SQLAlchemy web app for calculating agent commissions at Americ
    later CRM upload that reflects the same drop, never claws the agent back twice — `crm_parser.py`
    is passed this ledger as `already_charged_back_crm_ids` and skips computing a clawback for any
    `crm_id` already in it.
-   Clients hit by a Cordoba chargeback show a red **"Cordoba Clawback: Yes"** badge next to the
-   "Cordoba Payout" column, per client, on the agent detail page's Cleared Clients table (and in
-   the agent/all-agents CSV exports) — looked up from the `CordobaChargedBackClient` ledger by
-   `crm_id` (a still-cleared client's own `ClientRecord` never gets `clawback_applied=True`; that
-   flag lands on a separate holding record in the dropped month). Display only, on top of the
-   money deduction, not instead of it. There is deliberately no period-level dashboard badge for
-   this (owner removed it July 2026) — the per-client column is the only place it's shown.
+   **The "Cordoba Clawback" display badge is decoupled from the gates above (OWNER POLICY,
+   confirmed July 2026).** Clients hit by a Cordoba chargeback show a red **"Cordoba Clawback:
+   Yes"** badge next to the "Cordoba Payout" column, per client, on the agent detail page's
+   Cleared Clients table (and in the agent/all-agents CSV exports) — but this reflects a simple
+   ID match, not a successful deduction. `routes.py::_mark_cordoba_chargeback_matches` runs
+   independently of `_apply_cordoba_chargebacks` and, for every ID in the Chargebacks tab, checks
+   it against ALL of our own commission reports (`ClientRecord.crm_id`, any period, any status —
+   none of the four gates above apply). Any match is recorded forever in
+   `CordobaChargebackMatchedClient` (`crm_id` unique, separate table from
+   `CordobaChargedBackClient`), which is what the badge actually looks up. So the badge can — and
+   routinely will — show "Yes" for a client where no money was actually deducted yet (e.g. we
+   don't have our own Dropped Date on file, or the client was never confirmed paid via First
+   Pays/EPF): it's an early-warning flag that Cordoba considers this client charged back, ahead of
+   whenever our own data catches up enough to actually move the dollars. A still-cleared client's
+   own `ClientRecord` never gets `clawback_applied=True` regardless — that flag only ever lands on
+   a separate holding record in the dropped month once the real deduction goes through. There is
+   deliberately no period-level dashboard badge for this (owner removed it July 2026) — the
+   per-client column is the only place it's shown.
 5. **EPF** (display-only section — OWNER DECISION July 2026, do NOT make this pay commission):
    each EPF row's `Contact ID` is matched against our `ClientRecord` history to find the sales
    rep, and the month is taken from the tab's `Cleared Date`. Matches are stored in `EpfClient`
@@ -149,7 +160,7 @@ This is a Flask + SQLAlchemy web app for calculating agent commissions at Americ
 - `app/crm_parser.py` — parses the full-history CRM export, classifies clients, calculates commissions and clawbacks in one pass, returns one dict per period
 - `app/cordoba_parser.py` — reads the Cordoba payout .xlsx (First Pays / EPF / Chargebacks tabs), returns raw normalized rows; no DB access
 - `app/commission_history_parser.py` — reads a prior account manager's ledger .xlsx (not a CRM export) to backfill pre-app commission history; no DB access
-- `app/models.py` — `CommissionPeriod`, `AgentCommission`, `ClientRecord`, `CordobaPaidClient`, `CordobaChargedBackClient`, `EpfClient`
+- `app/models.py` — `CommissionPeriod`, `AgentCommission`, `ClientRecord`, `CordobaPaidClient`, `CordobaChargedBackClient`, `CordobaChargebackMatchedClient`, `EpfClient`
 - `app/routes.py` — routes: `/`, `/upload-crm`, `/upload-cordoba-payout`, `/upload-commission-history`, `/period/<id>`, `/period/<id>/agent/<id>`, `/period/<id>/export`, `/period/<id>/agent/<id>/export`, `/period/<id>/delete`, `/history`
 
 ## Commission Business Rules (April 2026 Plan)
