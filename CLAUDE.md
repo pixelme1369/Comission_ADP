@@ -37,7 +37,10 @@ This is a Flask + SQLAlchemy web app for calculating agent commissions at Americ
 
 **Cordoba payout check (funder payout confirmation):**
 1. User uploads one or more Cordoba payout exports (.xlsx) → `POST /upload-cordoba-payout` (routes.py)
-2. `cordoba_parser.py` reads the `First Pays`, `EPF`, and `Chargebacks` tabs
+2. `cordoba_parser.py` reads the `First Pays`, `EPF`, and `Chargebacks` tabs. Per the owner
+   (July 2026), the only columns that matter are: First Pays → `ID`; Chargebacks → `ID`
+   (plus `Dropped Date` to place the deduction); EPF → `Contact ID` + `Cleared Date`.
+   Everything else in those tabs is ignored.
 3. **First Pays / EPF** (paid confirmation): checks OUR existing `ClientRecord.crm_id` values
    against the IDs in those two tabs (not the reverse) — any match flips
    `ClientRecord.cordoba_paid = True`, remembered forever in `CordobaPaidClient` (`crm_id` unique)
@@ -84,6 +87,19 @@ This is a Flask + SQLAlchemy web app for calculating agent commissions at Americ
    later CRM upload that reflects the same drop, never claws the agent back twice — `crm_parser.py`
    is passed this ledger as `already_charged_back_crm_ids` and skips computing a clawback for any
    `crm_id` already in it.
+   Agents hit by a Cordoba chargeback also show a red **"Cordoba Clawback: Yes"** badge on the
+   period dashboard (detected per period via `ClientRecord.status == "Cordoba Chargeback"` +
+   `clawback_applied=True` — display only, on top of the money deduction, not instead of it).
+5. **EPF** (display-only section — OWNER DECISION July 2026, do NOT make this pay commission):
+   each EPF row's `Contact ID` is matched against our `ClientRecord` history to find the sales
+   rep, and the month is taken from the tab's `Cleared Date`. Matches are stored in `EpfClient`
+   (`crm_id` unique — re-uploads are no-ops) keyed by `(period_label, agent_name)` — matched by
+   label at render time, not FK, so entries appear once that month's period exists regardless of
+   upload order. They render as an "EPF" section at the bottom of the agent detail page (below
+   Pending) and as `Type=EPF` rows in the agent CSV exports. **Never** counted in units, tier,
+   or commission. Rows are skipped (with a flash summary) when: the client is already
+   commissioned (`is_cleared=True` anywhere — never suggest paying twice), the Contact ID isn't
+   in our records, or Cleared Date is missing/unparseable.
 
 **Commission history backfill (pre-app paid history):**
 1. User uploads one or more prior account manager ledgers (.xlsx or .csv, NOT a CRM export) + a
@@ -118,7 +134,7 @@ This is a Flask + SQLAlchemy web app for calculating agent commissions at Americ
 - `app/crm_parser.py` — parses the full-history CRM export, classifies clients, calculates commissions and clawbacks in one pass, returns one dict per period
 - `app/cordoba_parser.py` — reads the Cordoba payout .xlsx (First Pays / EPF / Chargebacks tabs), returns raw normalized rows; no DB access
 - `app/commission_history_parser.py` — reads a prior account manager's ledger .xlsx (not a CRM export) to backfill pre-app commission history; no DB access
-- `app/models.py` — `CommissionPeriod`, `AgentCommission`, `ClientRecord`, `CordobaPaidClient`, `CordobaChargedBackClient`
+- `app/models.py` — `CommissionPeriod`, `AgentCommission`, `ClientRecord`, `CordobaPaidClient`, `CordobaChargedBackClient`, `EpfClient`
 - `app/routes.py` — routes: `/`, `/upload-crm`, `/upload-cordoba-payout`, `/upload-commission-history`, `/period/<id>`, `/period/<id>/agent/<id>`, `/period/<id>/export`, `/period/<id>/agent/<id>/export`, `/period/<id>/delete`, `/history`
 
 ## Commission Business Rules (April 2026 Plan)
