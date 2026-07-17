@@ -138,6 +138,18 @@ This is a Flask + SQLAlchemy web app for calculating agent commissions at Americ
    so the unit is never lost regardless of ordering. Rows are skipped (with a flash summary)
    when: the client is already commissioned (`is_cleared=True` anywhere — never suggest paying
    twice), the Contact ID isn't in our records, or Cleared Date is missing/unparseable.
+   **The reverse ordering is guarded too (OWNER POLICY, confirmed July 2026):** if the EPF file
+   arrives first and later the CRM export catches up with that same client's own real cleared
+   date and debt, the CRM row must NOT also be processed as a normal cleared client — that would
+   double count them (their unit-only EPF entry, plus a second full unit + real commission
+   dollars from the CRM row) and could bump the agent's tier on a phantom unit. `routes.py::upload_crm`
+   passes every `EpfClient.crm_id` ever recorded into `parse_crm_and_calculate` as
+   `already_epf_crm_ids`; any CRM row whose ID is in that set is skipped entirely (flash message
+   naming the client) — only the pre-existing EPF unit credit counts, no commission is paid, and
+   the client keeps showing up solely in the EPF section, not Cleared Clients. This actually
+   happened: a client credited via EPF for a month later showed up in that same month's CRM
+   export and got paid full commission on top of the EPF unit, silently bumping the agent from
+   Tier 1 to Tier 2 on a duplicate unit.
    Regression-tested in `tests/test_epf.py` and `tests/test_crm_parser.py::TestEpfUnits`.
 
 **Commission history backfill (pre-app paid history):**

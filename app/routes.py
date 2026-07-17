@@ -116,10 +116,13 @@ def upload_crm():
     epf_units_by_agent_period = defaultdict(int)
     for agent_name, period_label in db.session.query(EpfClient.agent_name, EpfClient.period_label):
         epf_units_by_agent_period[(agent_name, period_label)] += 1
+    # crm_ids already credited a unit-only EPF entry (any period, ever) — a later CRM
+    # row for the same client must never also pay real commission on top of that unit.
+    already_epf_crm_ids = {r[0] for r in db.session.query(EpfClient.crm_id) if r[0]}
 
     period_results = parse_crm_and_calculate(
         file_bytes, file.filename, already_cleared_crm_ids, already_charged_back_crm_ids,
-        dict(epf_units_by_agent_period),
+        dict(epf_units_by_agent_period), already_epf_crm_ids,
     )
 
     saved_period_ids = []
