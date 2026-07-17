@@ -46,14 +46,6 @@ class AgentCommission(db.Model):
     source = db.Column(db.String(20), default="manual")
     notes = db.Column(db.Text)
 
-    # EPF-credited units currently baked into units_cleared (owner policy, July 2026):
-    # EPF rows add a unit toward this agent's tier for the month, but their debt is
-    # never added to total_cleared_debt, so they add no commission dollars directly.
-    # Stored so a later EPF upload can recompute units_cleared idempotently
-    # (units_cleared - epf_units recovers the CRM-only base before re-adding the
-    # fresh EPF count) without needing to re-derive it from EpfClient every time.
-    epf_units = db.Column(db.Integer, default=0, server_default=db.text("0"))
-
     clients = db.relationship("ClientRecord", backref="agent_commission", lazy=True,
                               foreign_keys="ClientRecord.agent_commission_id",
                               cascade="all, delete-orphan")
@@ -91,6 +83,13 @@ class ClientRecord(db.Model):
     payments_made = db.Column(db.Integer, default=0)
     nsf_count = db.Column(db.Integer, default=0)
     enrolled_debt = db.Column(db.Float, default=0.0)
+
+    # Credit Score (owner decision, July 2026): a client with Credit Score <= 500 who
+    # clears still counts as a unit toward the agent's tier, but earns zero commission
+    # dollars — see crm_parser.py's is_low_credit handling. credit_score is stored
+    # purely for display/audit (why commission_on_client is $0).
+    credit_score = db.Column(db.Integer, nullable=True)
+    is_low_credit = db.Column(db.Boolean, default=False, server_default=db.text("0"))
 
     # Computed status
     is_cleared = db.Column(db.Boolean, default=False)
@@ -131,32 +130,6 @@ class CordobaPaidClient(db.Model):
     crm_id = db.Column(db.String(50), unique=True, nullable=False, index=True)
     client_name = db.Column(db.String(255))
     source = db.Column(db.String(20))  # "first_pays" or "epf"
-    uploaded_filename = db.Column(db.String(255))
-    uploaded_at = db.Column(db.DateTime, default=lambda: datetime.now(timezone.utc))
-
-
-class EpfClient(db.Model):
-    """
-    Entries from the Cordoba payout file's EPF tab (owner decision, July 2026: each
-    row credits one unit toward the matched agent's tier for the month — see
-    AgentCommission.epf_units and routes.py::_recompute_agent_epf_units — but never
-    adds its own debt, so it contributes no commission dollars directly). Each row is
-    a client whose Contact ID matched our ClientRecord history; they're shown in an
-    "EPF" section at the bottom of that agent's page for the Cleared Date month.
-    Clients already commissioned (is_cleared=True anywhere) are skipped at upload
-    time, and crm_id is unique so re-uploading the same file never duplicates rows.
-    Stored by (period_label, agent_name) — not FK'd to a period — so entries appear
-    automatically once that month's period exists, even if the EPF file arrived first
-    (the unit credit itself is picked up by parse_crm_and_calculate at that point).
-    """
-    __tablename__ = "epf_client"
-
-    id = db.Column(db.Integer, primary_key=True)
-    crm_id = db.Column(db.String(50), unique=True, nullable=False, index=True)
-    client_name = db.Column(db.String(255))
-    agent_name = db.Column(db.String(255), index=True)
-    period_label = db.Column(db.String(10), index=True)  # YYYY-MM from EPF Cleared Date
-    cleared_date = db.Column(db.String(50))              # as shown in the EPF tab
     uploaded_filename = db.Column(db.String(255))
     uploaded_at = db.Column(db.DateTime, default=lambda: datetime.now(timezone.utc))
 

@@ -26,6 +26,15 @@ For each client row:
 Clawbacks are computed entirely within the parser (no DB lookups needed) since
 the full history is in one file. The clawback amount is applied to the agent's
 dropped-month commission period.
+
+Credit Score (optional column, owner decision July 2026): a client who clears with
+Credit Score <= 500 still counts as a full unit toward the agent's tier, but earns
+zero commission dollars — their debt is excluded from the period's total_cleared_debt
+entirely, individually and in aggregate. Older CRM exports without this column are
+unaffected (missing/unparseable Credit Score is just treated as "not low credit").
+This replaced an earlier mechanism (matching Cordoba's separate EPF-tab payout file)
+that was fragile to upload ordering — Credit Score lives in the CRM row itself, so
+there's nothing to reconcile across files.
 """
 
 import csv
@@ -90,8 +99,7 @@ def _parse_currency(value: str) -> float:
 
 def parse_crm_and_calculate(file_bytes: bytes, filename: str, already_cleared_crm_ids: set = None,
                              already_charged_back_crm_ids: set = None,
-                             epf_units_by_agent_period: dict = None,
-                             already_epf_crm_ids: set = None) -> list:
+                             already_low_credit_crm_ids: set = None) -> list:
     """
     Parse a full-history CRM export and return one dict per commission period found.
 
@@ -105,8 +113,8 @@ def parse_crm_and_calculate(file_bytes: bytes, filename: str, already_cleared_cr
     }
     """
     errors = []
-    if already_epf_crm_ids is None:
-        already_epf_crm_ids = set()
+    if already_low_credit_crm_ids is None:
+        already_low_credit_crm_ids = set()
 
     try:
         text = file_bytes.decode("utf-8-sig")
@@ -204,19 +212,23 @@ def parse_crm_and_calculate(file_bytes: bytes, filename: str, already_cleared_cr
 
         crm_id = get(raw_row, "id")
 
-        if crm_id and crm_id in already_epf_crm_ids:
-            # This client already has a unit-credit-only EPF entry (Cordoba's EPF tab
-            # confirmed them before our own CRM data caught up) — see EpfClient. Don't
-            # let this CRM row also count them as a real cleared client: that would add
-            # a second unit AND real commission dollars for the same person, on top of
-            # the unit already flowing through epf_units_by_agent_period. Owner policy
-            # (confirmed July 2026): once a client is EPF-credited, later CRM rows for
-            # that same crm_id never pay commission — only the EPF unit counts.
-            row_errors.append(
-                f"Row {row_num} ({agent}): {get(raw_row, 'full name') or crm_id} already "
-                "credited via Cordoba EPF — skipped duplicate CRM entry, no commission paid"
-            )
-            continue
+        # Credit Score (owner decision, July 2026): optional column. A client who
+        # clears with Credit Score <= 500 still counts as a full unit toward the
+        # agent's tier, but earns zero commission dollars — see the debt/commission
+        # exclusion in Step 2 below. Missing/unparseable Credit Score is just treated
+        # as "not low credit" (no error) since older CRM exports won't have this column.
+        credit_score_raw = get(raw_row, "credit score")
+        credit_score = None
+        if credit_score_raw:
+            try:
+                credit_score = int(float(credit_score_raw))
+            except ValueError:
+                credit_score = None
+        # Not gated on unit_status: a client whose single CRM row already shows both
+        # a cleared and dropped date (classified "clawback" outright, not "cleared"
+        # then later dropped) still needs this flag so Step 3's clawback guard can
+        # see it — the credit score reflects the client, not the row's classification.
+        is_low_credit = credit_score is not None and credit_score <= 500
 
         all_clients.append({
             "crm_id": crm_id,
@@ -236,6 +248,8 @@ def parse_crm_and_calculate(file_bytes: bytes, filename: str, already_cleared_cr
             "payments_made": payments_made,
             "nsf_count": nsf_count,
             "enrolled_debt": enrolled_debt,
+            "credit_score": credit_score,
+            "is_low_credit": is_low_credit,
             "unit_status": unit_status,
             "cleared_period": cleared_period,
             "dropped_period": dropped_period,
@@ -266,8 +280,6 @@ def parse_crm_and_calculate(file_bytes: bytes, filename: str, already_cleared_cr
         already_cleared_crm_ids = set()
     if already_charged_back_crm_ids is None:
         already_charged_back_crm_ids = set()
-    if epf_units_by_agent_period is None:
-        epf_units_by_agent_period = {}
 
     if already_cleared_crm_ids:
         all_cleared_periods = [c["cleared_period"] for c in all_clients if c["cleared_period"]]
@@ -322,27 +334,23 @@ def parse_crm_and_calculate(file_bytes: bytes, filename: str, already_cleared_cr
         pending = pending_buckets.get((agent_name, period_label), [])
 
         units_cleared = len(cleared)
-        total_cleared_debt = sum(c["enrolled_debt"] for c in cleared)
+        # Credit Score <= 500 clients (owner policy, July 2026) still count as a full
+        # unit toward the agent's tier, but their debt is excluded from the dollar
+        # basis entirely — they earn zero commission, individually or in aggregate.
+        low_credit_clients = [c for c in cleared if c["is_low_credit"]]
+        total_cleared_debt = sum(c["enrolled_debt"] for c in cleared if not c["is_low_credit"])
         # Cancel rate = clawback clients / (cleared + clawback clients)
-        # Same-month cancels, safe cancels, and pending are excluded from both sides
-        # (EPF units are excluded too — they aren't real ClientRecord cleared/clawback
-        # clients, just a tier credit).
+        # Same-month cancels, safe cancels, and pending are excluded from both sides.
+        # Low-credit clients are still real ClientRecords/units, so they stay included
+        # on the cleared side same as any other cleared client.
         total_for_rate = units_cleared + len(cancelled)
         cancel_rate_pct = (len(cancelled) / total_for_rate * 100) if total_for_rate > 0 else 0.0
         nsf_flagged = any(c["nsf_count"] >= NSF_FLAG_THRESHOLD
                           for c in cleared + cancelled + pending)
 
-        # EPF (owner policy, July 2026): a client confirmed cleared by Cordoba's EPF
-        # tab before our own CRM data reflects it adds a unit toward this agent's
-        # tier for the month, but never adds debt — total_cleared_debt above is left
-        # untouched, so EPF contributes no commission dollars directly, only a
-        # possible tier bump on the agent's other real cleared debt.
-        epf_units = epf_units_by_agent_period.get((agent_name, period_label), 0)
-        tier_units = units_cleared + epf_units
-
         result = calculate_agent_commission(
             agent_name=agent_name,
-            units_cleared=tier_units,
+            units_cleared=units_cleared,
             total_cleared_debt=total_cleared_debt,
             cancellation_rate_pct=cancel_rate_pct,
             hourly_draw=0.0,
@@ -353,7 +361,6 @@ def parse_crm_and_calculate(file_bytes: bytes, filename: str, already_cleared_cr
         result["pending_units"] = len(pending)
         result["pending_debt"] = sum(c["enrolled_debt"] for c in pending)
         result["source"] = "crm"
-        result["epf_units"] = epf_units
         result["_cleared_clients"] = cleared
         result["_all_period_clients"] = cleared + cancelled + pending
 
@@ -361,9 +368,10 @@ def parse_crm_and_calculate(file_bytes: bytes, filename: str, already_cleared_cr
             result["notes"] += f" | {len(pending)} unit(s) pending Affiliate Cancellation review"
         if nsf_flagged:
             result["notes"] += f" | NSF flag: client(s) with {NSF_FLAG_THRESHOLD}+ NSF events"
-        if epf_units:
+        if low_credit_clients:
             result["notes"] += (
-                f" | EPF: +{epf_units} unit(s) credited toward tier (no commission dollars added)"
+                f" | {len(low_credit_clients)} unit(s) counted at $0 commission "
+                "(Credit Score <= 500)"
             )
 
         # Note any late activations included in this period
@@ -375,9 +383,11 @@ def parse_crm_and_calculate(file_bytes: bytes, filename: str, already_cleared_cr
                 f"{', '.join(periods)}, commission credited this period"
             )
 
-        # Commission per cleared client
+        # Commission per cleared client — zero for low-credit clients
         for c in cleared:
-            c["commission_on_client"] = round(c["enrolled_debt"] * result["tier_rate"], 2)
+            c["commission_on_client"] = (
+                0.0 if c["is_low_credit"] else round(c["enrolled_debt"] * result["tier_rate"], 2)
+            )
 
         agent_period_results[(agent_name, period_label)] = result
 
@@ -417,6 +427,18 @@ def parse_crm_and_calculate(file_bytes: bytes, filename: str, already_cleared_cr
         if not was_cleared_in_file and not was_paid_in_db:
             # Commission was never paid (e.g. client was pending then cancelled).
             # Reclassify as a non-paying cancel — no clawback applies.
+            c["unit_status"] = "same_month_cancel"
+            c["is_cancelled"] = True
+            continue
+
+        # Guard: a Credit Score <= 500 client earns zero commission when they clear
+        # (see Step 2) — there's nothing to claw back if they later drop, even though
+        # they're technically "cleared" and counted toward the tier. c["is_low_credit"]
+        # covers a single row that already shows both cleared+dropped dates (classified
+        # "clawback" outright, never passing through the cleared bucket at all);
+        # already_low_credit_crm_ids covers a client who cleared low-credit in a PRIOR
+        # upload and this row doesn't (or can't) repeat their Credit Score.
+        if c.get("is_low_credit") or (crm_id and crm_id in already_low_credit_crm_ids):
             c["unit_status"] = "same_month_cancel"
             c["is_cancelled"] = True
             continue
@@ -474,7 +496,6 @@ def parse_crm_and_calculate(file_bytes: bytes, filename: str, already_cleared_cr
                 "pending_units": 0,
                 "pending_debt": 0.0,
                 "source": "crm",
-                "epf_units": 0,
                 "notes": "",
                 "_cleared_clients": [],
                 "_all_period_clients": [],

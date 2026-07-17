@@ -12,10 +12,7 @@
 <div class="summary-cards" style="margin-bottom:1.5rem;">
   <div class="card summary-card">
     <div class="card-value">{{ agent.units_cleared }}</div>
-    <div class="card-label">
-      Units Cleared
-      {% if agent.epf_units %}<span class="muted">(incl. {{ agent.epf_units }} EPF)</span>{% endif %}
-    </div>
+    <div class="card-label">Units Cleared</div>
   </div>
   <div class="card summary-card">
     <div class="card-value">
@@ -81,6 +78,7 @@
         <th>Client Name</th>
         <th>Enrolled Date</th>
         <th>Enrolled Debt</th>
+        <th>Credit Score</th>
         <th>Commission on Client</th>
         <th>Cordoba Payout</th>
         <th>Cordoba Clawback</th>
@@ -107,6 +105,12 @@
         </td>
         <td>{{ c.enrolled_date or '—' }}</td>
         <td>${{ "{:,.2f}".format(c.enrolled_debt) }}</td>
+        <td>
+          {{ c.credit_score if c.credit_score is not none else '—' }}
+          {% if c.is_low_credit %}
+            <span class="badge badge-amber" title="Credit Score <= 500 — counts toward tier, no commission">$0</span>
+          {% endif %}
+        </td>
         <td><strong>${{ "{:,.2f}".format(c.commission_on_client) }}</strong></td>
         <td>
           {% if c.cordoba_paid %}
@@ -133,7 +137,7 @@
         <td>{{ c.phone }}</td>
       </tr>
       {% else %}
-      <tr><td colspan="16" class="muted" style="padding:1rem;">No cleared clients this period.</td></tr>
+      <tr><td colspan="17" class="muted" style="padding:1rem;">No cleared clients this period.</td></tr>
       {% endfor %}
     </tbody>
   </table>
@@ -173,34 +177,6 @@
         <td><span class="badge badge-purple">{{ c.status }}</span></td>
         <td>{{ c.email }}</td>
         <td>{{ c.phone }}</td>
-      </tr>
-      {% endfor %}
-    </tbody>
-  </table>
-</div>
-{% endif %}
-
-<!-- EPF -->
-{% if epf_clients %}
-<h2 style="margin-top:1.5rem;">EPF ({{ epf_clients|length }})</h2>
-<p class="muted" style="margin-bottom:0.75rem;">Clients from Cordoba's EPF tab whose Contact ID matched this agent, placed in the month of the EPF Cleared Date. Each row credits one unit toward this agent's tier for the month (reflected in "Units Cleared" above) — its own enrolled debt is never added to the commission dollar total.</p>
-<div class="table-wrapper">
-  <table class="data-table">
-    <thead>
-      <tr>
-        <th>ID</th>
-        <th>Client Name</th>
-        <th>EPF Cleared Date</th>
-        <th>Source File</th>
-      </tr>
-    </thead>
-    <tbody>
-      {% for c in epf_clients %}
-      <tr>
-        <td class="muted">{{ c.crm_id }}</td>
-        <td>{{ c.client_name or '—' }}</td>
-        <td>{{ c.cleared_date or '—' }}</td>
-        <td class="muted">{{ c.uploaded_filename or '—' }}</td>
       </tr>
       {% endfor %}
     </tbody>

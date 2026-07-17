@@ -84,7 +84,6 @@ def parse_cordoba_payout(file_bytes: bytes) -> dict:
     {
         "paid_ids": [ {"crm_id": str, "client_name": str, "source": "first_pays"|"epf"}, ... ],
         "chargebacks": [ {"crm_id": str, "client_name": str}, ... ],
-        "epf_rows": [ {"crm_id": str, "client_name": str, "cleared_date": str|None}, ... ],
         "errors": [str, ...],
     }
     """
@@ -117,7 +116,6 @@ def parse_cordoba_payout(file_bytes: bytes) -> dict:
                 client_name = row[cols["full name"]] if "full name" in cols and cols["full name"] < len(row) else ""
                 paid_ids.append({"crm_id": crm_id, "client_name": client_name, "source": "first_pays"})
 
-    epf_rows = []
     epf = _sheet_by_name(workbook, "epf")
     if epf is not None:
         cols = _header_map(epf)
@@ -133,17 +131,13 @@ def parse_cordoba_payout(file_bytes: bytes) -> dict:
                 if not crm_id:
                     continue
                 client_name = cell(row, "full name") or ""
-                # EPF entries still confirm Cordoba paid us on the client (CordobaPaidClient
-                # ledger / chargeback gate 2) ...
+                # EPF entries still confirm Cordoba paid us on the client — feeds the
+                # CordobaPaidClient ledger / "Cordoba Payout" flag (chargeback gate 2).
+                # Unit-only crediting is no longer driven by this tab (owner decision,
+                # July 2026): that's now decided directly from the CRM export's own
+                # Credit Score column — see crm_parser.py.
                 paid_ids.append({"crm_id": crm_id, "client_name": client_name, "source": "epf"})
-                # ... and additionally feed the display-only EPF section, placed in the
-                # month of the tab's Cleared Date.
-                epf_rows.append({
-                    "crm_id": crm_id,
-                    "client_name": client_name,
-                    "cleared_date": _clean_date(cell(row, "cleared date")),
-                })
 
     chargebacks = _parse_chargebacks(workbook, errors)
 
-    return {"paid_ids": paid_ids, "chargebacks": chargebacks, "epf_rows": epf_rows, "errors": errors}
+    return {"paid_ids": paid_ids, "chargebacks": chargebacks, "errors": errors}

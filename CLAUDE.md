@@ -116,64 +116,16 @@ This is a Flask + SQLAlchemy web app for calculating agent commissions at Americ
    a separate holding record in the dropped month once the real deduction goes through. There is
    deliberately no period-level dashboard badge for this (owner removed it July 2026) — the
    per-client column is the only place it's shown.
-5. **EPF** (unit-credit section — OWNER DECISION, updated July 2026): EPF represents a Cordoba
-   revenue-share payment made to the **company**, not the agent — the agent is never paid EPF
-   dollars, only credited the unit. Each EPF row's `Contact ID` is matched against our
-   `ClientRecord` history to find the sales rep, and the month is taken from the tab's
-   `Cleared Date`. Matches are stored in `EpfClient` (`crm_id` unique **globally, across every
-   Cordoba payout file ever uploaded — not just within one file**, so re-uploads are no-ops and
-   the same client appearing in EPF a second time, whether as a duplicate row in the same file or
-   in a later, separate Cordoba payout upload, never credits a second unit — one crm_id = one
-   unit, ever, no matter how many times EPF lists them) keyed by `(period_label, agent_name)` —
-   matched by label, not FK, so entries apply once that month's period exists regardless of
-   upload order. They render as an "EPF" section at the bottom of the agent detail page (below
-   Pending) and as `Type=EPF` rows in the agent CSV exports.
-   **Each EPF row credits exactly one unit toward the matched agent's tier for that month —
-   it can bump `units_cleared` and therefore the tier/rate applied to the agent's OTHER real
-   cleared debt that month — but its own enrolled debt is never added to `total_cleared_debt`,
-   so an EPF row contributes no commission dollars on its own** (if the agent has no other
-   real cleared debt that month, the tier bump is moot and gross commission stays $0).
-   `AgentCommission.epf_units` tracks how many of the row's `units_cleared` currently come from
-   EPF, so later EPF uploads can recompute idempotently (`units_cleared - epf_units` recovers
-   the CRM-only base before re-adding the fresh count) — see
-   `routes.py::_recompute_agent_epf_units`. If the month's `CommissionPeriod` doesn't exist yet
-   (EPF file arrived before the CRM export), nothing is recomputed at upload time; instead
-   `crm_parser.py::parse_crm_and_calculate` is passed `epf_units_by_agent_period` (built from
-   every `EpfClient` row in the DB) and folds the credit in when that period is first created,
-   so the unit is never lost regardless of ordering. Rows are skipped (with a flash summary)
-   when: the Contact ID isn't in our records, or Cleared Date is missing/unparseable.
-   **Already-commissioned clients are retroactively converted, not skipped (OWNER POLICY,
-   confirmed July 2026 — supersedes an earlier "skip if already commissioned" rule that turned
-   out to be backwards):** if a CRM upload got to a client first and paid them real commission
-   before Cordoba's EPF tab confirmed that client was actually paid via the revenue-share
-   mechanism (not normal per-debt funding), the agent was overpaid — the old rule silently left
-   that overpayment in place forever, since a re-upload can never re-trigger EPF matching once
-   `ClientRecord.is_cleared=True`. `routes.py::_apply_epf_rows` now reverses it instead: the
-   client's debt comes out of their **original** cleared period's `total_cleared_debt`, their
-   unit converts from "real" to "EPF" (net unit count is unchanged, so the tier itself doesn't
-   move — only the dollar amount tied to that specific client is removed), and their
-   `ClientRecord` is deleted so only the `EpfClient` entry represents them going forward, placed
-   in **their own original cleared period** (not the EPF tab's own `Cleared Date`, which is
-   irrelevant once we already know their real cleared period from the CRM data). A note is
-   appended to the agent's period noting the reversal and dollar amount for audit purposes. This
-   actually happened: Chuvar Maestas's May 2026 period included a client (Monica Bramham) who
-   cleared normally in the CRM and got paid real commission on top of bumping his tier from 1 to
-   2 — Cordoba's EPF tab later confirmed she was an EPF client, but the old skip-if-commissioned
-   guard meant the app could never apply the correction, no matter how many times the Cordoba
-   file was re-uploaded.
-   **The reverse ordering is guarded too (OWNER POLICY, confirmed July 2026):** if the EPF file
-   arrives first and later the CRM export catches up with that same client's own real cleared
-   date and debt, the CRM row must NOT also be processed as a normal cleared client — that would
-   double count them (their unit-only EPF entry, plus a second full unit + real commission
-   dollars from the CRM row) and could bump the agent's tier on a phantom unit. `routes.py::upload_crm`
-   passes every `EpfClient.crm_id` ever recorded into `parse_crm_and_calculate` as
-   `already_epf_crm_ids`; any CRM row whose ID is in that set is skipped entirely (flash message
-   naming the client) — only the pre-existing EPF unit credit counts, no commission is paid, and
-   the client keeps showing up solely in the EPF section, not Cleared Clients. This actually
-   happened: a client credited via EPF for a month later showed up in that same month's CRM
-   export and got paid full commission on top of the EPF unit, silently bumping the agent from
-   Tier 1 to Tier 2 on a duplicate unit.
-   Regression-tested in `tests/test_epf.py` and `tests/test_crm_parser.py::TestEpfUnits`.
+5. **EPF tab (paid-confirmation only, since July 2026):** the EPF tab's `Contact ID` rows still
+   feed the First Pays/EPF paid-confirmation flow above (`cordoba_paid` flag / `CordobaPaidClient`
+   ledger) — Cordoba still uses this tab to confirm it paid the company. It no longer drives any
+   unit-crediting or commission-reversal logic of its own. That mechanism (matching EPF-tab rows
+   against `ClientRecord` history, retroactively reversing already-paid commission, an `EpfClient`
+   table, an "EPF" section on the agent page) existed briefly and was **replaced** by the Credit
+   Score mechanism below — see "Credit Score (Low-Value Client) Handling". It turned out to be
+   fragile to upload ordering (a client commissioned by the CRM before the Cordoba file arrived
+   needed a whole retroactive-conversion path to fix) and required cross-referencing a second file
+   at all. Credit Score lives directly in the CRM row, so there's nothing to reconcile.
 
 **Commission history backfill (pre-app paid history):**
 1. User uploads one or more prior account manager ledgers (.xlsx or .csv, NOT a CRM export) + a
@@ -206,9 +158,9 @@ This is a Flask + SQLAlchemy web app for calculating agent commissions at Americ
 **Key files:**
 - `app/calculator.py` — pure commission logic, no Flask deps. All tier/penalty/bonus rules live here, including `calculate_clawback_amount` (shared by both the CRM-driven and Cordoba-chargeback-driven clawback paths).
 - `app/crm_parser.py` — parses the full-history CRM export, classifies clients, calculates commissions and clawbacks in one pass, returns one dict per period
-- `app/cordoba_parser.py` — reads the Cordoba payout .xlsx (First Pays / EPF / Chargebacks tabs), returns raw normalized rows; no DB access
+- `app/cordoba_parser.py` — reads the Cordoba payout .xlsx (First Pays / EPF / Chargebacks tabs), returns raw normalized rows; no DB access. The EPF tab only feeds the paid-confirmation flag now (see above) — it no longer drives unit-crediting.
 - `app/commission_history_parser.py` — reads a prior account manager's ledger .xlsx (not a CRM export) to backfill pre-app commission history; no DB access
-- `app/models.py` — `CommissionPeriod`, `AgentCommission`, `ClientRecord`, `CordobaPaidClient`, `CordobaChargedBackClient`, `CordobaChargebackMatchedClient`, `EpfClient`
+- `app/models.py` — `CommissionPeriod`, `AgentCommission`, `ClientRecord`, `CordobaPaidClient`, `CordobaChargedBackClient`, `CordobaChargebackMatchedClient`
 - `app/routes.py` — routes: `/`, `/upload-crm`, `/upload-cordoba-payout`, `/upload-commission-history`, `/period/<id>`, `/period/<id>/agent/<id>`, `/period/<id>/export`, `/period/<id>/agent/<id>/export`, `/period/<id>/delete`, `/history`
 
 ## Commission Business Rules (April 2026 Plan)
@@ -292,6 +244,41 @@ late_activation  → was pending in cleared month (crm_id never in DB as is_clea
                     cleared_period < latest period in file → commission credited in latest period
 ```
 
+## Credit Score (Low-Value Client) Handling
+
+**OWNER DECISION (July 2026), replaces the earlier Cordoba EPF-tab-matching mechanism** (see
+"Cordoba payout check" above): the CRM export now has an optional `Credit Score` column. A client
+who clears (their row is otherwise classified `cleared`, or would be `clawback`) with
+`Credit Score <= 500` still counts as a **full unit** toward the agent's tier that month, but
+earns **zero commission dollars** — individually and in aggregate:
+
+- `units_cleared` for the period includes them like any other cleared client (no separate
+  "credited units" bookkeeping needed, unlike the old EPF mechanism's `epf_units` field).
+- `total_cleared_debt` **excludes** their `enrolled_debt` entirely, so they contribute no dollars
+  to the agent's gross commission, and don't inflate other clients' commission either.
+- Their own `commission_on_client` is `$0.00`. They still show up normally in the "Cleared
+  Clients This Period" table (not pulled into a separate section) — `ClientRecord.is_low_credit`
+  and `ClientRecord.credit_score` are stored for display/audit (a "$0" badge next to their Credit
+  Score in the UI, plus a `Credit Score` column in the CSV exports).
+- `AgentCommission.notes` gets a `"N unit(s) counted at $0 commission (Credit Score <= 500)"`
+  segment when applicable.
+
+Missing/unparseable `Credit Score` (older CRM exports, blank cells) is just treated as "not low
+credit" — no error, no required-column change; `Credit Score` is optional in
+`crm_parser.CRM_REQUIRED_COLUMNS`.
+
+**Clawback guard:** a low-credit client was never paid any commission, so if they later drop,
+there's nothing to claw back even though they're technically `cleared`. Guarded two ways in
+`crm_parser.py`'s Step 3, mirroring the pending→cancelled clawback guard below: (1) `is_low_credit`
+is computed per-row independent of `unit_status` (not gated on `unit_status == "cleared"`) so a
+single CRM row that already shows both a cleared and dropped date — classified `clawback` outright,
+never passing through the cleared bucket — still carries its own flag; (2) `routes.py::upload_crm`
+also passes `already_low_credit_crm_ids` (every `ClientRecord.crm_id` ever saved with
+`is_low_credit=True`) so a client who cleared low-credit in a **prior** upload is still protected
+even if a later row about them omits Credit Score. Either signal reclassifies the row as
+`same_month_cancel` before any clawback math runs.
+Regression-tested in `tests/test_crm_parser.py::TestCreditScore`.
+
 ## Late Activation Logic
 
 When a client was "Pending Affiliate Cancellation" in their cleared month and later becomes active:
@@ -327,7 +314,7 @@ If a client goes from "Pending Affiliate Cancellation" directly to cancelled (ne
 Sales Rep, 1st Payment Cleared Date, Dropped Date, Status, Enrolled Debt, # NSF
 ```
 
-Optional columns stored in `ClientRecord`: ID, Full Name, Email, Home Phone, Stage, Submitted Date, Enrolled Date, 1st Payment Date, 2nd Payment Cleared Date, Payments Made.
+Optional columns stored in `ClientRecord`: ID, Full Name, Email, Home Phone, Stage, Submitted Date, Enrolled Date, 1st Payment Date, 2nd Payment Cleared Date, Payments Made, Credit Score (see "Credit Score (Low-Value Client) Handling" above).
 
 ## UI Notes
 
