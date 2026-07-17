@@ -281,9 +281,14 @@ def parse_crm_and_calculate(file_bytes: bytes, filename: str, already_cleared_cr
     if already_charged_back_crm_ids is None:
         already_charged_back_crm_ids = set()
 
+    # The latest cleared-month found anywhere in this file — used both for late
+    # activation (below) and, per owner policy (July 2026, see Step 3), as the
+    # period a "commission already paid, needs clawback" deduction lands in.
+    all_cleared_periods = [c["cleared_period"] for c in all_clients if c["cleared_period"]]
+    latest_period_in_file = max(all_cleared_periods) if all_cleared_periods else None
+
     if already_cleared_crm_ids:
-        all_cleared_periods = [c["cleared_period"] for c in all_clients if c["cleared_period"]]
-        latest_period = max(all_cleared_periods) if all_cleared_periods else None
+        latest_period = latest_period_in_file
 
         for c in all_clients:
             if (
@@ -395,10 +400,20 @@ def parse_crm_and_calculate(file_bytes: bytes, filename: str, already_cleared_cr
     # Step 3: Calculate clawbacks
     # For each clawback client, find their original cleared period,
     # recalculate that period's commission without them, compute delta.
-    # Apply the clawback to the agent's DROPPED month period.
+    #
+    # OWNER POLICY (confirmed July 2026): the deduction is booked against the
+    # LATEST period found anywhere in this file — not the client's own dropped
+    # month. Rationale: this file represents "as of now," and the latest month
+    # in it is effectively the payment run about to go out (e.g. uploading in
+    # June for a May period paid 6/25) — any already-paid client caught
+    # dropping before that run should reduce THAT payout, not get filed away
+    # under a separate, possibly-already-passed calendar month. This only
+    # applies to genuine clawbacks (commission already sent); a client who
+    # dropped before their OWN payout date was never paid to begin with, so
+    # there's nothing to redirect — that case is already excluded above.
     # ---------------------------------------------------------------
-    # (agent, dropped_period) → list of (client, clawback_amount)
-    clawback_by_drop_period = defaultdict(list)
+    # (agent, target_period) → list of (client, clawback_amount)
+    clawback_by_target_period = defaultdict(list)
 
     for c in all_clients:
         if c["unit_status"] != "clawback":
@@ -407,7 +422,7 @@ def parse_crm_and_calculate(file_bytes: bytes, filename: str, already_cleared_cr
         crm_id = c.get("crm_id", "")
         agent_name = c["agent_name"]
         cleared_period = c["cleared_period"]
-        dropped_period = c["dropped_period"]
+        target_period = latest_period_in_file or c["dropped_period"]
         orig_key = (agent_name, cleared_period)
 
         if crm_id and crm_id in already_charged_back_crm_ids:
@@ -451,7 +466,7 @@ def parse_crm_and_calculate(file_bytes: bytes, filename: str, already_cleared_cr
             fallback_rate = get_fixed_rate(agent_name) or 0.01
             cb = round(c["enrolled_debt"] * fallback_rate, 2)
             c["clawback_amount"] = cb
-            clawback_by_drop_period[(agent_name, dropped_period)].append(c)
+            clawback_by_target_period[(agent_name, target_period)].append(c)
             continue
 
         cb = calculate_clawback_amount(
@@ -463,19 +478,19 @@ def parse_crm_and_calculate(file_bytes: bytes, filename: str, already_cleared_cr
             agent_name=agent_name,
         )
         c["clawback_amount"] = cb
-        clawback_by_drop_period[(agent_name, dropped_period)].append(c)
+        clawback_by_target_period[(agent_name, target_period)].append(c)
 
     # ---------------------------------------------------------------
-    # Step 4: Apply clawbacks to the dropped-month period results
-    # If no commission result exists for the dropped month yet,
-    # create a zero-unit entry just to carry the clawback.
+    # Step 4: Apply clawbacks to the target period's results (the latest
+    # period in the file — see Step 3). If no commission result exists there
+    # yet, create a zero-unit entry just to carry the clawback.
     # ---------------------------------------------------------------
-    for (agent_name, dropped_period), cb_clients in clawback_by_drop_period.items():
+    for (agent_name, target_period), cb_clients in clawback_by_target_period.items():
         total_cb = round(sum(c["clawback_amount"] for c in cb_clients), 2)
-        key = (agent_name, dropped_period)
+        key = (agent_name, target_period)
 
         if key not in agent_period_results:
-            # Agent had no cleared units in the dropped month — create a holding entry
+            # Agent had no cleared units in the target period — create a holding entry
             agent_period_results[key] = {
                 "agent_name": agent_name,
                 "units_cleared": 0,
@@ -505,7 +520,7 @@ def parse_crm_and_calculate(file_bytes: bytes, filename: str, already_cleared_cr
         r["clawback_amount"] = round(r.get("clawback_amount", 0.0) + total_cb, 2)
         r["net_commission"] = max(0.0, round(r["gross_commission"] - r["clawback_amount"], 2))
         r["notes"] = (r.get("notes") or "") + \
-            f" | Clawback -${total_cb:,.2f} from {len(cb_clients)} cancelled client(s) (prior month)"
+            f" | Clawback -${total_cb:,.2f} from {len(cb_clients)} previously-paid cancelled client(s)"
         r["_clawback_clients"] = cb_clients
 
     # ---------------------------------------------------------------
