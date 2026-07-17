@@ -116,16 +116,29 @@ This is a Flask + SQLAlchemy web app for calculating agent commissions at Americ
    a separate holding record in the dropped month once the real deduction goes through. There is
    deliberately no period-level dashboard badge for this (owner removed it July 2026) — the
    per-client column is the only place it's shown.
-5. **EPF** (display-only section — OWNER DECISION July 2026, do NOT make this pay commission):
-   each EPF row's `Contact ID` is matched against our `ClientRecord` history to find the sales
-   rep, and the month is taken from the tab's `Cleared Date`. Matches are stored in `EpfClient`
-   (`crm_id` unique — re-uploads are no-ops) keyed by `(period_label, agent_name)` — matched by
-   label at render time, not FK, so entries appear once that month's period exists regardless of
-   upload order. They render as an "EPF" section at the bottom of the agent detail page (below
-   Pending) and as `Type=EPF` rows in the agent CSV exports. **Never** counted in units, tier,
-   or commission. Rows are skipped (with a flash summary) when: the client is already
-   commissioned (`is_cleared=True` anywhere — never suggest paying twice), the Contact ID isn't
-   in our records, or Cleared Date is missing/unparseable.
+5. **EPF** (unit-credit section — OWNER DECISION, updated July 2026): each EPF row's
+   `Contact ID` is matched against our `ClientRecord` history to find the sales rep, and the
+   month is taken from the tab's `Cleared Date`. Matches are stored in `EpfClient` (`crm_id`
+   unique — re-uploads are no-ops) keyed by `(period_label, agent_name)` — matched by label,
+   not FK, so entries apply once that month's period exists regardless of upload order. They
+   render as an "EPF" section at the bottom of the agent detail page (below Pending) and as
+   `Type=EPF` rows in the agent CSV exports.
+   **Each EPF row credits exactly one unit toward the matched agent's tier for that month —
+   it can bump `units_cleared` and therefore the tier/rate applied to the agent's OTHER real
+   cleared debt that month — but its own enrolled debt is never added to `total_cleared_debt`,
+   so an EPF row contributes no commission dollars on its own** (if the agent has no other
+   real cleared debt that month, the tier bump is moot and gross commission stays $0).
+   `AgentCommission.epf_units` tracks how many of the row's `units_cleared` currently come from
+   EPF, so later EPF uploads can recompute idempotently (`units_cleared - epf_units` recovers
+   the CRM-only base before re-adding the fresh count) — see
+   `routes.py::_recompute_agent_epf_units`. If the month's `CommissionPeriod` doesn't exist yet
+   (EPF file arrived before the CRM export), nothing is recomputed at upload time; instead
+   `crm_parser.py::parse_crm_and_calculate` is passed `epf_units_by_agent_period` (built from
+   every `EpfClient` row in the DB) and folds the credit in when that period is first created,
+   so the unit is never lost regardless of ordering. Rows are skipped (with a flash summary)
+   when: the client is already commissioned (`is_cleared=True` anywhere — never suggest paying
+   twice), the Contact ID isn't in our records, or Cleared Date is missing/unparseable.
+   Regression-tested in `tests/test_epf.py` and `tests/test_crm_parser.py::TestEpfUnits`.
 
 **Commission history backfill (pre-app paid history):**
 1. User uploads one or more prior account manager ledgers (.xlsx or .csv, NOT a CRM export) + a

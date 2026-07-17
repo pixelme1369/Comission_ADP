@@ -233,3 +233,33 @@ class TestValidation:
         ])
         periods = parse_crm_and_calculate(data, "f.csv")
         assert any("missing Sales Rep" in e for e in periods[0]["errors"])
+
+
+class TestEpfUnits:
+    """EPF units queued before this month's CRM upload (owner policy, July 2026):
+    a Cordoba EPF row credits one unit toward the agent's tier for that month, but
+    never adds debt — see also tests/test_epf.py for the already-existing-period case."""
+
+    def test_epf_units_bump_tier_without_adding_debt(self):
+        # 20 real cleared units at $5,000 each = Tier 1 (1.00%) on $100,000.
+        rows = [client(f"A{i}", cleared="06/05/2026", debt="5000") for i in range(20)]
+        data = crm_csv(rows)
+        periods = by_period(parse_crm_and_calculate(
+            data, "f.csv", epf_units_by_agent_period={("Maria", "2026-06"): 1},
+        ))
+        result = periods["2026-06"]["results"][0]
+        assert result["units_cleared"] == 21          # 20 real + 1 EPF
+        assert result["epf_units"] == 1
+        assert result["total_cleared_debt"] == 100_000.0   # EPF added no debt
+        assert result["raw_tier"] == 2
+        assert result["tier_rate"] == 0.0125
+        assert result["gross_commission"] == 1_250.0
+        assert "EPF: +1 unit(s) credited toward tier" in result["notes"]
+
+    def test_no_epf_units_leaves_result_unchanged(self):
+        data = crm_csv([client("A1", cleared="06/05/2026", debt="5000")])
+        periods = by_period(parse_crm_and_calculate(data, "f.csv"))
+        result = periods["2026-06"]["results"][0]
+        assert result["epf_units"] == 0
+        assert result["units_cleared"] == 1
+        assert "EPF:" not in result["notes"]

@@ -46,6 +46,14 @@ class AgentCommission(db.Model):
     source = db.Column(db.String(20), default="manual")
     notes = db.Column(db.Text)
 
+    # EPF-credited units currently baked into units_cleared (owner policy, July 2026):
+    # EPF rows add a unit toward this agent's tier for the month, but their debt is
+    # never added to total_cleared_debt, so they add no commission dollars directly.
+    # Stored so a later EPF upload can recompute units_cleared idempotently
+    # (units_cleared - epf_units recovers the CRM-only base before re-adding the
+    # fresh EPF count) without needing to re-derive it from EpfClient every time.
+    epf_units = db.Column(db.Integer, default=0, server_default=db.text("0"))
+
     clients = db.relationship("ClientRecord", backref="agent_commission", lazy=True,
                               foreign_keys="ClientRecord.agent_commission_id",
                               cascade="all, delete-orphan")
@@ -129,14 +137,17 @@ class CordobaPaidClient(db.Model):
 
 class EpfClient(db.Model):
     """
-    Display-only entries from the Cordoba payout file's EPF tab (owner decision,
-    July 2026: EPF does NOT change units, tier, or commission). Each row is a client
-    whose Contact ID matched our ClientRecord history; they're shown in an "EPF"
-    section at the bottom of that agent's page for the Cleared Date month.
+    Entries from the Cordoba payout file's EPF tab (owner decision, July 2026: each
+    row credits one unit toward the matched agent's tier for the month — see
+    AgentCommission.epf_units and routes.py::_recompute_agent_epf_units — but never
+    adds its own debt, so it contributes no commission dollars directly). Each row is
+    a client whose Contact ID matched our ClientRecord history; they're shown in an
+    "EPF" section at the bottom of that agent's page for the Cleared Date month.
     Clients already commissioned (is_cleared=True anywhere) are skipped at upload
     time, and crm_id is unique so re-uploading the same file never duplicates rows.
     Stored by (period_label, agent_name) — not FK'd to a period — so entries appear
-    automatically once that month's period exists, even if the EPF file arrived first.
+    automatically once that month's period exists, even if the EPF file arrived first
+    (the unit credit itself is picked up by parse_crm_and_calculate at that point).
     """
     __tablename__ = "epf_client"
 
