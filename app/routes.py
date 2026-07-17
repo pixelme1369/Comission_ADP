@@ -620,12 +620,29 @@ def _apply_epf_rows(file, parsed):
     _recompute_agent_epf_units for the actual commission recompute.
 
     For each EPF row: match Contact ID against our ClientRecord history to find the
-    sales rep, take the month from the tab's Cleared Date, and store an EpfClient
-    entry so the client appears in the "EPF" section at the bottom of that agent's
-    page for that month. Clients already commissioned (is_cleared=True anywhere) are
-    skipped — never even hint at paying twice. crm_id is unique in the table, so
-    re-uploading the same file is a no-op.
-    Returns (added, skipped_already_commissioned, unmatched, missing_date).
+    sales rep, and store an EpfClient entry so the client appears in the "EPF"
+    section at the bottom of that agent's page. crm_id is unique in the table
+    (globally, across every Cordoba payout file ever uploaded), so re-uploading the
+    same file, or the same client appearing twice, never credits a second unit.
+
+    **Already-commissioned clients are retroactively converted, not skipped (OWNER
+    POLICY, confirmed July 2026, superseding the prior "skip if already commissioned"
+    rule):** if a crm_id already has a real, paid ClientRecord (a CRM upload got to it
+    before this Cordoba file did), that means the CRM export showed a normal cleared
+    date/debt for a client who was actually paid via Cordoba's EPF revenue-share
+    mechanism, not the normal per-debt funding path — the agent was wrongly paid real
+    dollars on them. The fix reverses that: the client's debt is removed from their
+    ORIGINAL period's total_cleared_debt, their unit is converted from "real" to
+    "EPF" (net unit count unchanged, so the tier itself doesn't move), and their
+    ClientRecord is deleted — only the EpfClient entry remains, in their own original
+    cleared period (not the EPF tab's own Cleared Date, which is irrelevant once we
+    already know their real cleared period from the CRM data). This actually
+    happened: a client cleared normally in the CRM, got paid real commission, and
+    then a later Cordoba EPF upload confirmed she was actually an EPF client — the
+    old skip-if-already-commissioned guard silently left her double-dipping (full
+    commission dollars, no unit-only correction) forever, since a re-upload can never
+    trigger EPF matching for a crm_id once ClientRecord already says is_cleared=True.
+    Returns (added, converted, unmatched, missing_date).
     """
     epf_rows = parsed.get("epf_rows", [])
     incoming_ids = {r["crm_id"] for r in epf_rows if r["crm_id"]}
@@ -635,14 +652,8 @@ def _apply_epf_rows(file, parsed):
     already_stored = {
         r[0] for r in db.session.query(EpfClient.crm_id).filter(EpfClient.crm_id.in_(incoming_ids))
     }
-    already_commissioned = {
-        r[0] for r in db.session.query(ClientRecord.crm_id).filter(
-            ClientRecord.crm_id.in_(incoming_ids),
-            ClientRecord.is_cleared.is_(True),
-        )
-    }
 
-    added = skipped_commissioned = unmatched = missing_date = 0
+    added = converted = unmatched = missing_date = 0
     seen_this_file = set()
     touched_agent_periods = set()
 
@@ -652,16 +663,48 @@ def _apply_epf_rows(file, parsed):
             continue
         seen_this_file.add(crm_id)
 
-        if crm_id in already_commissioned:
-            skipped_commissioned += 1
-            continue
-
         client_rec = (
             ClientRecord.query.filter_by(crm_id=crm_id)
             .order_by(ClientRecord.id.desc()).first()
         )
         if not client_rec:
             unmatched += 1
+            continue
+
+        if client_rec.is_cleared and not client_rec.clawback_applied:
+            orig_agent_row = client_rec.agent_commission
+            orig_period = db.session.get(CommissionPeriod, client_rec.period_id)
+            if not orig_agent_row or not orig_period:
+                unmatched += 1
+                continue
+
+            agent_name = client_rec.agent_name
+            client_name = row.get("client_name") or client_rec.client_name
+            removed_debt = client_rec.enrolled_debt or 0.0
+            removed_commission = client_rec.commission_on_client or 0.0
+
+            orig_agent_row.units_cleared = max(0, orig_agent_row.units_cleared - 1)
+            orig_agent_row.total_cleared_debt = max(
+                0.0, round(orig_agent_row.total_cleared_debt - removed_debt, 2)
+            )
+            note = (
+                f"EPF override: {client_name or crm_id} (ID {crm_id}) was paid via Cordoba's "
+                f"EPF revenue-share, not normal funding — -${removed_commission:,.2f} commission "
+                "reversed, converted to unit-only credit"
+            )
+            orig_agent_row.notes = f"{orig_agent_row.notes} | {note}" if orig_agent_row.notes else note
+
+            db.session.delete(client_rec)
+            db.session.add(EpfClient(
+                crm_id=crm_id,
+                client_name=client_name,
+                agent_name=agent_name,
+                period_label=orig_period.period_label,
+                cleared_date=row.get("cleared_date"),
+                uploaded_filename=file.filename,
+            ))
+            touched_agent_periods.add((agent_name, orig_period.period_label))
+            converted += 1
             continue
 
         cleared_dt = _parse_date(row.get("cleared_date") or "")
@@ -686,7 +729,7 @@ def _apply_epf_rows(file, parsed):
         for agent_name, period_label in touched_agent_periods:
             _recompute_agent_epf_units(agent_name, period_label)
 
-    return added, skipped_commissioned, unmatched, missing_date
+    return added, converted, unmatched, missing_date
 
 
 def _process_cordoba_file(file):
@@ -734,7 +777,7 @@ def upload_cordoba_payout():
     skipped_not_confirmed_paid = [name for r in results for name in r[5]]
     skipped_already_clawed = [name for r in results for name in r[6]]
     epf_added = sum(r[7][0] for r in results)
-    epf_skipped_commissioned = sum(r[7][1] for r in results)
+    epf_converted = sum(r[7][1] for r in results)
     epf_unmatched = sum(r[7][2] for r in results)
     epf_missing_date = sum(r[7][3] for r in results)
     skipped_no_dropped_date = [name for r in results for name in r[8]]
@@ -760,15 +803,18 @@ def upload_cordoba_payout():
             "success",
         )
 
-    if epf_added or epf_skipped_commissioned or epf_unmatched or epf_missing_date:
+    if epf_added or epf_converted or epf_unmatched or epf_missing_date:
         epf_parts = [f"{epf_added} client(s) added to agents' EPF sections (+1 unit toward tier each, no commission dollars)"]
-        if epf_skipped_commissioned:
-            epf_parts.append(f"{epf_skipped_commissioned} skipped (already commissioned)")
+        if epf_converted:
+            epf_parts.append(
+                f"{epf_converted} already-commissioned client(s) reversed and converted to EPF "
+                "unit-only credit (real commission dollars removed)"
+            )
         if epf_unmatched:
             epf_parts.append(f"{epf_unmatched} skipped (Contact ID not found in our records)")
         if epf_missing_date:
             epf_parts.append(f"{epf_missing_date} skipped (no usable Cleared Date)")
-        flash("EPF tab: " + ", ".join(epf_parts) + ".", "success" if epf_added else "error")
+        flash("EPF tab: " + ", ".join(epf_parts) + ".", "success" if (epf_added or epf_converted) else "error")
 
     def _flash_skipped(names, reason):
         if not names:

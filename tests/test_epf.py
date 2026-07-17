@@ -209,13 +209,87 @@ def test_epf_recompute_is_idempotent_across_multiple_uploads(db):
     assert refreshed.epf_units == 2
 
 
-def test_already_commissioned_client_is_skipped(db):
-    seed_client(db, is_cleared=True)
-    added, skipped, unmatched, missing = _apply_epf_rows(
+def test_already_commissioned_client_is_retroactively_converted_to_epf(db):
+    """Owner policy (confirmed July 2026), supersedes the old skip-if-already-
+    commissioned rule: if the CRM export got to a client first and paid them real
+    commission, and Cordoba's EPF tab later confirms that client was actually paid
+    via the revenue-share mechanism (not normal funding), the agent was overpaid —
+    reverse it. The client's debt/commission is stripped out of their ORIGINAL
+    period, they're converted to a unit-only EPF credit there (not the EPF tab's own
+    Cleared Date), and their ClientRecord is removed since only the EpfClient entry
+    should represent them going forward."""
+    agent_row = seed_client(db, is_cleared=True)
+    added, converted, unmatched, missing = _apply_epf_rows(
         FAKE_FILE, {"epf_rows": [{"crm_id": "7001", "client_name": "Jane Roe",
                                   "cleared_date": "06/15/2026"}]})
-    assert (added, skipped, unmatched, missing) == (0, 1, 0, 0)
-    assert EpfClient.query.count() == 0
+    db.session.commit()
+    assert (added, converted, unmatched, missing) == (0, 1, 0, 0)
+
+    assert ClientRecord.query.filter_by(crm_id="7001").count() == 0
+    entry = EpfClient.query.one()
+    assert entry.agent_name == "Maria"
+    assert entry.period_label == "2026-05"   # her own original cleared period, not "2026-06"
+
+    refreshed = db.session.get(AgentCommission, agent_row.id)
+    assert refreshed.units_cleared == 1        # unchanged: 0 real + 1 EPF unit
+    assert refreshed.epf_units == 1
+    assert refreshed.total_cleared_debt == 0.0  # her $10,000 removed
+    assert refreshed.gross_commission == 0.0
+    assert "EPF override" in refreshed.notes
+
+
+def test_client_commissioned_via_crm_then_matched_in_epf_reverses_commission_only(db):
+    """The exact real-world bug this fixes: 20 real cleared clients already put the
+    agent at Tier 1 boundary; a 21st client (Jane Roe) cleared normally in the CRM
+    and bumped the agent to Tier 2, paying her real commission on top. A Cordoba EPF
+    upload then reveals she was actually an EPF/revenue-share client all along — the
+    fix must remove exactly her commission dollars while leaving the Tier 2 bump in
+    place (the unit itself is still owed, just now sourced from EPF instead of her
+    real debt)."""
+    period = CommissionPeriod(period_label="2026-06", filename="crm.csv", total_agents=1)
+    db.session.add(period)
+    db.session.flush()
+    result = calculate_agent_commission(
+        agent_name="Maria", units_cleared=21, total_cleared_debt=110_000.0, cancellation_rate_pct=0.0,
+    )
+    agent_row = AgentCommission(
+        period_id=period.id, agent_name="Maria",
+        units_cleared=21, total_cleared_debt=110_000.0, cancellation_rate=0.0, hourly_draw=0.0,
+        raw_tier=result["raw_tier"], adjusted_tier=result["adjusted_tier"],
+        tier_rate=result["tier_rate"], gross_commission=result["gross_commission"],
+        clawback_amount=0.0, net_commission=result["gross_commission"],
+        payout=result["payout"], payout_type=result["payout_type"], source="crm", notes="",
+    )
+    db.session.add(agent_row)
+    db.session.flush()
+    assert agent_row.tier_rate == 0.0125            # 21 units -> Tier 2
+    assert agent_row.gross_commission == pytest.approx(1375.0)   # 110,000 x 1.25%
+
+    db.session.add(ClientRecord(
+        period_id=period.id, agent_commission_id=agent_row.id,
+        crm_id="7001", agent_name="Maria", client_name="Jane Roe",
+        enrolled_debt=10_000.0, is_cleared=True,
+        commission_on_client=125.0,   # 10,000 x 1.25%
+        first_payment_cleared_date="06/15/2026",
+    ))
+    db.session.commit()
+
+    added, converted, unmatched, missing = _apply_epf_rows(FAKE_FILE, {"epf_rows": [
+        {"crm_id": "7001", "client_name": "Jane Roe", "cleared_date": "07/25/2026"},
+    ]})
+    db.session.commit()
+    assert (added, converted, unmatched, missing) == (0, 1, 0, 0)
+
+    assert ClientRecord.query.filter_by(crm_id="7001").count() == 0
+    entry = EpfClient.query.filter_by(crm_id="7001").one()
+    assert entry.period_label == "2026-06"   # her own cleared period, not the EPF tab's Cleared Date
+
+    refreshed = db.session.get(AgentCommission, agent_row.id)
+    assert refreshed.units_cleared == 21               # unchanged: 20 real + 1 EPF unit
+    assert refreshed.epf_units == 1
+    assert refreshed.total_cleared_debt == 100_000.0    # her $10,000 removed
+    assert refreshed.tier_rate == 0.0125                # tier unaffected — still 21 units
+    assert refreshed.gross_commission == pytest.approx(1250.0)   # 100,000 x 1.25%, her $125 reversed
 
 
 def test_unknown_contact_id_is_skipped(db):

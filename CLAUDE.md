@@ -141,8 +141,26 @@ This is a Flask + SQLAlchemy web app for calculating agent commissions at Americ
    `crm_parser.py::parse_crm_and_calculate` is passed `epf_units_by_agent_period` (built from
    every `EpfClient` row in the DB) and folds the credit in when that period is first created,
    so the unit is never lost regardless of ordering. Rows are skipped (with a flash summary)
-   when: the client is already commissioned (`is_cleared=True` anywhere — never suggest paying
-   twice), the Contact ID isn't in our records, or Cleared Date is missing/unparseable.
+   when: the Contact ID isn't in our records, or Cleared Date is missing/unparseable.
+   **Already-commissioned clients are retroactively converted, not skipped (OWNER POLICY,
+   confirmed July 2026 — supersedes an earlier "skip if already commissioned" rule that turned
+   out to be backwards):** if a CRM upload got to a client first and paid them real commission
+   before Cordoba's EPF tab confirmed that client was actually paid via the revenue-share
+   mechanism (not normal per-debt funding), the agent was overpaid — the old rule silently left
+   that overpayment in place forever, since a re-upload can never re-trigger EPF matching once
+   `ClientRecord.is_cleared=True`. `routes.py::_apply_epf_rows` now reverses it instead: the
+   client's debt comes out of their **original** cleared period's `total_cleared_debt`, their
+   unit converts from "real" to "EPF" (net unit count is unchanged, so the tier itself doesn't
+   move — only the dollar amount tied to that specific client is removed), and their
+   `ClientRecord` is deleted so only the `EpfClient` entry represents them going forward, placed
+   in **their own original cleared period** (not the EPF tab's own `Cleared Date`, which is
+   irrelevant once we already know their real cleared period from the CRM data). A note is
+   appended to the agent's period noting the reversal and dollar amount for audit purposes. This
+   actually happened: Chuvar Maestas's May 2026 period included a client (Monica Bramham) who
+   cleared normally in the CRM and got paid real commission on top of bumping his tier from 1 to
+   2 — Cordoba's EPF tab later confirmed she was an EPF client, but the old skip-if-commissioned
+   guard meant the app could never apply the correction, no matter how many times the Cordoba
+   file was re-uploaded.
    **The reverse ordering is guarded too (OWNER POLICY, confirmed July 2026):** if the EPF file
    arrives first and later the CRM export catches up with that same client's own real cleared
    date and debt, the CRM row must NOT also be processed as a normal cleared client — that would
