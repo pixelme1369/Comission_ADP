@@ -89,7 +89,8 @@ def _parse_currency(value: str) -> float:
 
 
 def parse_crm_and_calculate(file_bytes: bytes, filename: str, already_cleared_crm_ids: set = None,
-                             already_charged_back_crm_ids: set = None) -> list:
+                             already_charged_back_crm_ids: set = None,
+                             epf_units_by_agent_period: dict = None) -> list:
     """
     Parse a full-history CRM export and return one dict per commission period found.
 
@@ -246,6 +247,8 @@ def parse_crm_and_calculate(file_bytes: bytes, filename: str, already_cleared_cr
         already_cleared_crm_ids = set()
     if already_charged_back_crm_ids is None:
         already_charged_back_crm_ids = set()
+    if epf_units_by_agent_period is None:
+        epf_units_by_agent_period = {}
 
     if already_cleared_crm_ids:
         all_cleared_periods = [c["cleared_period"] for c in all_clients if c["cleared_period"]]
@@ -303,14 +306,24 @@ def parse_crm_and_calculate(file_bytes: bytes, filename: str, already_cleared_cr
         total_cleared_debt = sum(c["enrolled_debt"] for c in cleared)
         # Cancel rate = clawback clients / (cleared + clawback clients)
         # Same-month cancels, safe cancels, and pending are excluded from both sides
+        # (EPF units are excluded too — they aren't real ClientRecord cleared/clawback
+        # clients, just a tier credit).
         total_for_rate = units_cleared + len(cancelled)
         cancel_rate_pct = (len(cancelled) / total_for_rate * 100) if total_for_rate > 0 else 0.0
         nsf_flagged = any(c["nsf_count"] >= NSF_FLAG_THRESHOLD
                           for c in cleared + cancelled + pending)
 
+        # EPF (owner policy, July 2026): a client confirmed cleared by Cordoba's EPF
+        # tab before our own CRM data reflects it adds a unit toward this agent's
+        # tier for the month, but never adds debt — total_cleared_debt above is left
+        # untouched, so EPF contributes no commission dollars directly, only a
+        # possible tier bump on the agent's other real cleared debt.
+        epf_units = epf_units_by_agent_period.get((agent_name, period_label), 0)
+        tier_units = units_cleared + epf_units
+
         result = calculate_agent_commission(
             agent_name=agent_name,
-            units_cleared=units_cleared,
+            units_cleared=tier_units,
             total_cleared_debt=total_cleared_debt,
             cancellation_rate_pct=cancel_rate_pct,
             hourly_draw=0.0,
@@ -321,6 +334,7 @@ def parse_crm_and_calculate(file_bytes: bytes, filename: str, already_cleared_cr
         result["pending_units"] = len(pending)
         result["pending_debt"] = sum(c["enrolled_debt"] for c in pending)
         result["source"] = "crm"
+        result["epf_units"] = epf_units
         result["_cleared_clients"] = cleared
         result["_all_period_clients"] = cleared + cancelled + pending
 
@@ -328,6 +342,10 @@ def parse_crm_and_calculate(file_bytes: bytes, filename: str, already_cleared_cr
             result["notes"] += f" | {len(pending)} unit(s) pending Affiliate Cancellation review"
         if nsf_flagged:
             result["notes"] += f" | NSF flag: client(s) with {NSF_FLAG_THRESHOLD}+ NSF events"
+        if epf_units:
+            result["notes"] += (
+                f" | EPF: +{epf_units} unit(s) credited toward tier (no commission dollars added)"
+            )
 
         # Note any late activations included in this period
         late_activations = [c for c in cleared if c.get("is_late_activation")]
@@ -437,6 +455,7 @@ def parse_crm_and_calculate(file_bytes: bytes, filename: str, already_cleared_cr
                 "pending_units": 0,
                 "pending_debt": 0.0,
                 "source": "crm",
+                "epf_units": 0,
                 "notes": "",
                 "_cleared_clients": [],
                 "_all_period_clients": [],

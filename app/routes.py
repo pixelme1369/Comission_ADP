@@ -1,5 +1,6 @@
 import csv
 import io
+from collections import defaultdict
 from flask import Blueprint, render_template, request, redirect, url_for, flash, Response
 from app import db
 from app.models import (
@@ -9,7 +10,7 @@ from app.models import (
 from app.crm_parser import parse_crm_and_calculate, _parse_date, _period_of
 from app.cordoba_parser import parse_cordoba_payout
 from app.commission_history_parser import parse_commission_history
-from app.calculator import calculate_clawback_amount, get_fixed_rate
+from app.calculator import calculate_clawback_amount, get_fixed_rate, calculate_agent_commission
 
 bp = Blueprint("main", __name__)
 
@@ -108,8 +109,17 @@ def upload_crm():
     already_charged_back_crm_ids = {
         r[0] for r in db.session.query(CordobaChargedBackClient.crm_id) if r[0]
     }
+    # EPF units already recorded for a month this CRM file is about to create for the
+    # first time (EPF file arrived before the CRM export that covers that month) — see
+    # EpfClient. Only matters for brand-new periods; EPF rows landing on an
+    # already-existing period are instead applied by _apply_epf_rows.
+    epf_units_by_agent_period = defaultdict(int)
+    for agent_name, period_label in db.session.query(EpfClient.agent_name, EpfClient.period_label):
+        epf_units_by_agent_period[(agent_name, period_label)] += 1
+
     period_results = parse_crm_and_calculate(
-        file_bytes, file.filename, already_cleared_crm_ids, already_charged_back_crm_ids
+        file_bytes, file.filename, already_cleared_crm_ids, already_charged_back_crm_ids,
+        dict(epf_units_by_agent_period),
     )
 
     saved_period_ids = []
@@ -511,14 +521,106 @@ def _apply_cordoba_chargebacks(file, parsed):
             skipped_no_dropped_date)
 
 
+def _update_epf_note(existing_notes, epf_units):
+    """Insert/refresh the single EPF segment of an AgentCommission's notes without
+    disturbing any other segment (pending, NSF, late activation, clawback, ...)."""
+    marker = "EPF: "
+    parts = [p for p in (existing_notes or "").split(" | ") if p and not p.startswith(marker)]
+    if epf_units:
+        parts.append(f"{marker}+{epf_units} unit(s) credited toward tier (no commission dollars added)")
+    return " | ".join(parts)
+
+
+def _recompute_agent_epf_units(agent_name, period_label):
+    """
+    Owner policy (confirmed July 2026): an EPF row adds one unit toward the agent's
+    tier for that month, but its own debt is never added — total_cleared_debt is left
+    untouched, so EPF contributes no commission dollars directly, only a possible tier
+    bump on the agent's other real cleared debt (or $0 if they have no other cleared
+    debt that month).
+
+    Only runs when the month's CommissionPeriod already exists — if it doesn't yet
+    (this EPF file arrived before the CRM export for that month), nothing to update
+    here; parse_crm_and_calculate picks up the accumulated EpfClient count for this
+    (agent, period) itself once that CRM upload creates the period, so the unit isn't
+    lost, just applied later (mirrors the existing order-independent EPF display).
+
+    Recomputes from EpfClient's current count every time (not by incrementing), and
+    recovers the CRM-only base via units_cleared - epf_units (the previously stored
+    EPF contribution) before adding the fresh count back in — so re-running this for
+    the same agent/period after more EPF rows arrive is idempotent, never double-counts.
+    """
+    period = CommissionPeriod.query.filter_by(period_label=period_label).first()
+    if not period:
+        return
+
+    fresh_epf_count = EpfClient.query.filter_by(
+        period_label=period_label, agent_name=agent_name).count()
+
+    agent_row = AgentCommission.query.filter_by(period_id=period.id, agent_name=agent_name).first()
+    if not agent_row:
+        # This agent has no real cleared units of their own in this (already-existing,
+        # from other agents') period yet — create a zero-debt row just to carry the
+        # EPF-credited unit. gross_commission is naturally $0 since total_cleared_debt
+        # is $0 regardless of tier.
+        agent_row = AgentCommission(
+            period_id=period.id, agent_name=agent_name,
+            units_cleared=fresh_epf_count, total_cleared_debt=0.0, cancellation_rate=0.0,
+            hourly_draw=0.0, epf_units=fresh_epf_count,
+            source="crm", notes="",
+        )
+        result = calculate_agent_commission(
+            agent_name=agent_name, units_cleared=fresh_epf_count,
+            total_cleared_debt=0.0, cancellation_rate_pct=0.0, hourly_draw=0.0,
+        )
+        for field in ("raw_tier", "adjusted_tier", "tier_rate", "gross_commission",
+                      "payout", "payout_type", "quality_bonus_eligible", "cancellation_penalty_applied"):
+            setattr(agent_row, field, result[field])
+        agent_row.net_commission = agent_row.gross_commission
+        agent_row.notes = _update_epf_note("", fresh_epf_count)
+        db.session.add(agent_row)
+        db.session.flush()
+        period.total_agents = (period.total_agents or 0) + 1
+        return
+
+    base_units = agent_row.units_cleared - (agent_row.epf_units or 0)
+    new_tier_units = base_units + fresh_epf_count
+    if new_tier_units == agent_row.units_cleared and fresh_epf_count == (agent_row.epf_units or 0):
+        return  # nothing changed
+
+    result = calculate_agent_commission(
+        agent_name=agent_name, units_cleared=new_tier_units,
+        total_cleared_debt=agent_row.total_cleared_debt,
+        cancellation_rate_pct=agent_row.cancellation_rate,
+        hourly_draw=agent_row.hourly_draw,
+    )
+    agent_row.units_cleared = new_tier_units
+    agent_row.epf_units = fresh_epf_count
+    agent_row.raw_tier = result["raw_tier"]
+    agent_row.adjusted_tier = result["adjusted_tier"]
+    agent_row.tier_rate = result["tier_rate"]
+    agent_row.gross_commission = result["gross_commission"]
+    agent_row.payout = result["payout"]
+    agent_row.payout_type = result["payout_type"]
+    agent_row.quality_bonus_eligible = result["quality_bonus_eligible"]
+    agent_row.cancellation_penalty_applied = result["cancellation_penalty_applied"]
+    agent_row.net_commission = max(0.0, round(agent_row.gross_commission - (agent_row.clawback_amount or 0.0), 2))
+    agent_row.notes = _update_epf_note(agent_row.notes, fresh_epf_count)
+
+
 def _apply_epf_rows(file, parsed):
     """
-    EPF tab (owner decision, July 2026: DISPLAY ONLY — never changes units, tier, or
-    commission). For each EPF row: match Contact ID against our ClientRecord history to
-    find the sales rep, take the month from the tab's Cleared Date, and store an
-    EpfClient entry so the client appears in the "EPF" section at the bottom of that
-    agent's page for that month. Clients already commissioned (is_cleared=True anywhere)
-    are skipped — never even hint at paying twice. crm_id is unique in the table, so
+    EPF tab (owner decision, July 2026): each row adds ONE UNIT toward the matched
+    agent's tier for the month, but its enrolled debt is never added to that month's
+    total_cleared_debt — so an EPF row contributes no commission dollars on its own,
+    only a possible tier bump on the agent's other real cleared debt. See
+    _recompute_agent_epf_units for the actual commission recompute.
+
+    For each EPF row: match Contact ID against our ClientRecord history to find the
+    sales rep, take the month from the tab's Cleared Date, and store an EpfClient
+    entry so the client appears in the "EPF" section at the bottom of that agent's
+    page for that month. Clients already commissioned (is_cleared=True anywhere) are
+    skipped — never even hint at paying twice. crm_id is unique in the table, so
     re-uploading the same file is a no-op.
     Returns (added, skipped_already_commissioned, unmatched, missing_date).
     """
@@ -539,6 +641,7 @@ def _apply_epf_rows(file, parsed):
 
     added = skipped_commissioned = unmatched = missing_date = 0
     seen_this_file = set()
+    touched_agent_periods = set()
 
     for row in epf_rows:
         crm_id = row["crm_id"]
@@ -564,6 +667,7 @@ def _apply_epf_rows(file, parsed):
             missing_date += 1
             continue
 
+        touched_agent_periods.add((client_rec.agent_name, period_label))
         db.session.add(EpfClient(
             crm_id=crm_id,
             client_name=row.get("client_name") or client_rec.client_name,
@@ -573,6 +677,11 @@ def _apply_epf_rows(file, parsed):
             uploaded_filename=file.filename,
         ))
         added += 1
+
+    if touched_agent_periods:
+        db.session.flush()  # EpfClient rows must be visible to the recompute's own count query
+        for agent_name, period_label in touched_agent_periods:
+            _recompute_agent_epf_units(agent_name, period_label)
 
     return added, skipped_commissioned, unmatched, missing_date
 
@@ -649,7 +758,7 @@ def upload_cordoba_payout():
         )
 
     if epf_added or epf_skipped_commissioned or epf_unmatched or epf_missing_date:
-        epf_parts = [f"{epf_added} client(s) added to agents' EPF sections (display only)"]
+        epf_parts = [f"{epf_added} client(s) added to agents' EPF sections (+1 unit toward tier each, no commission dollars)"]
         if epf_skipped_commissioned:
             epf_parts.append(f"{epf_skipped_commissioned} skipped (already commissioned)")
         if epf_unmatched:
