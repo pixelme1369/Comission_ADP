@@ -263,3 +263,29 @@ class TestEpfUnits:
         assert result["epf_units"] == 0
         assert result["units_cleared"] == 1
         assert "EPF:" not in result["notes"]
+
+    def test_epf_credited_client_in_crm_file_is_not_double_counted(self):
+        """Regression: a client already credited via Cordoba's EPF tab (EpfClient)
+        must not ALSO be paid real commission when the CRM export later catches up
+        and shows their own cleared date/debt — that would double count them (once
+        as the unit-only EPF entry, once as a full cleared client), inflating both
+        units_cleared and total_cleared_debt and potentially bumping the agent's
+        tier on a phantom unit. Owner-confirmed policy: only the EPF unit counts,
+        no commission dollars, no duplicate unit."""
+        rows = [client(f"A{i}", cleared="06/05/2026", debt="5000") for i in range(20)]
+        rows.append(client("DUP1", cleared="06/05/2026", debt="5000", name="Already EPF'd"))
+        data = crm_csv(rows)
+        periods = by_period(parse_crm_and_calculate(
+            data, "f.csv",
+            epf_units_by_agent_period={("Maria", "2026-06"): 1},
+            already_epf_crm_ids={"DUP1"},
+        ))
+        result = periods["2026-06"]["results"][0]
+        # 20 real cleared + 1 EPF unit credit — the DUP1 CRM row itself is excluded.
+        assert result["units_cleared"] == 21
+        assert result["epf_units"] == 1
+        assert result["total_cleared_debt"] == 100_000.0   # DUP1's $5,000 never added
+        assert result["raw_tier"] == 2
+        assert result["tier_rate"] == 0.0125
+        assert result["gross_commission"] == 1_250.0
+        assert not any(c["crm_id"] == "DUP1" for c in periods["2026-06"]["client_rows"])

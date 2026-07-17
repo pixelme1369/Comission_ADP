@@ -90,7 +90,8 @@ def _parse_currency(value: str) -> float:
 
 def parse_crm_and_calculate(file_bytes: bytes, filename: str, already_cleared_crm_ids: set = None,
                              already_charged_back_crm_ids: set = None,
-                             epf_units_by_agent_period: dict = None) -> list:
+                             epf_units_by_agent_period: dict = None,
+                             already_epf_crm_ids: set = None) -> list:
     """
     Parse a full-history CRM export and return one dict per commission period found.
 
@@ -104,6 +105,8 @@ def parse_crm_and_calculate(file_bytes: bytes, filename: str, already_cleared_cr
     }
     """
     errors = []
+    if already_epf_crm_ids is None:
+        already_epf_crm_ids = set()
 
     try:
         text = file_bytes.decode("utf-8-sig")
@@ -199,8 +202,24 @@ def parse_crm_and_calculate(file_bytes: bytes, filename: str, already_cleared_cr
             if not cleared_date:
                 continue  # no cleared date = no commission relevance
 
+        crm_id = get(raw_row, "id")
+
+        if crm_id and crm_id in already_epf_crm_ids:
+            # This client already has a unit-credit-only EPF entry (Cordoba's EPF tab
+            # confirmed them before our own CRM data caught up) — see EpfClient. Don't
+            # let this CRM row also count them as a real cleared client: that would add
+            # a second unit AND real commission dollars for the same person, on top of
+            # the unit already flowing through epf_units_by_agent_period. Owner policy
+            # (confirmed July 2026): once a client is EPF-credited, later CRM rows for
+            # that same crm_id never pay commission — only the EPF unit counts.
+            row_errors.append(
+                f"Row {row_num} ({agent}): {get(raw_row, 'full name') or crm_id} already "
+                "credited via Cordoba EPF — skipped duplicate CRM entry, no commission paid"
+            )
+            continue
+
         all_clients.append({
-            "crm_id": get(raw_row, "id"),
+            "crm_id": crm_id,
             "agent_name": agent,
             "client_name": get(raw_row, "full name"),
             "email": get(raw_row, "email"),
