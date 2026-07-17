@@ -15,7 +15,9 @@
         <input type="file" id="crm_file" name="csv_file" accept=".csv" required>
       </div>
       <div class="form-hint">
-        Required columns: <code>Sales Rep, 1st Payment Cleared Date, Dropped Date, Status, Enrolled Debt, # NSF</code>
+        Required columns: <code>Sales Rep, 1st Payment Cleared Date, Dropped Date, Status, Enrolled Debt, # NSF</code>.
+        Optional: <code>Credit Score</code> — a cleared client with Credit Score &le; 500 still
+        counts as a unit toward the agent's tier, but earns $0 commission.
       </div>
       <button type="submit" class="btn btn-primary">Import CRM Data</button>
     </form>

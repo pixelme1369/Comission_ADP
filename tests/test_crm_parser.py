@@ -14,7 +14,7 @@ from app.crm_parser import parse_crm_and_calculate, _safe_payment_threshold
 
 HEADERS = [
     "ID", "Sales Rep", "Full Name", "1st Payment Cleared Date", "Dropped Date",
-    "Status", "Enrolled Debt", "# NSF", "Payments Made", "Pay Freq.",
+    "Status", "Enrolled Debt", "# NSF", "Payments Made", "Pay Freq.", "Credit Score",
 ]
 
 
@@ -28,12 +28,13 @@ def crm_csv(rows) -> bytes:
 
 
 def client(crm_id, cleared="", dropped="", status="Active", debt="10000",
-           payments="0", freq="Monthly", rep="Maria", name="Client", nsf="0"):
+           payments="0", freq="Monthly", rep="Maria", name="Client", nsf="0",
+           credit_score=""):
     return {
         "ID": crm_id, "Sales Rep": rep, "Full Name": name,
         "1st Payment Cleared Date": cleared, "Dropped Date": dropped,
         "Status": status, "Enrolled Debt": debt, "# NSF": nsf,
-        "Payments Made": payments, "Pay Freq.": freq,
+        "Payments Made": payments, "Pay Freq.": freq, "Credit Score": credit_score,
     }
 
 
@@ -235,57 +236,77 @@ class TestValidation:
         assert any("missing Sales Rep" in e for e in periods[0]["errors"])
 
 
-class TestEpfUnits:
-    """EPF units queued before this month's CRM upload (owner policy, July 2026):
-    a Cordoba EPF row credits one unit toward the agent's tier for that month, but
-    never adds debt — see also tests/test_epf.py for the already-existing-period case."""
+class TestCreditScore:
+    """Credit Score (owner decision, July 2026, replaces the earlier Cordoba
+    EPF-tab-matching mechanism): a client who clears with Credit Score <= 500 still
+    counts as a full unit toward the agent's tier, but earns zero commission —
+    their debt is excluded from total_cleared_debt entirely, individually and in
+    aggregate. This is decided directly from the CRM row itself, so there's no
+    cross-file ordering to worry about."""
 
-    def test_epf_units_bump_tier_without_adding_debt(self):
-        # 20 real cleared units at $5,000 each = Tier 1 (1.00%) on $100,000.
+    def test_low_credit_client_counts_as_unit_with_zero_commission(self):
+        # 20 real cleared units at $5,000 each = $100,000, plus a 21st client with
+        # Credit Score 500 and $5,000 debt that must NOT count toward the dollar total.
         rows = [client(f"A{i}", cleared="06/05/2026", debt="5000") for i in range(20)]
+        rows.append(client("LC1", cleared="06/05/2026", debt="5000",
+                            name="Low Credit Client", credit_score="500"))
         data = crm_csv(rows)
-        periods = by_period(parse_crm_and_calculate(
-            data, "f.csv", epf_units_by_agent_period={("Maria", "2026-06"): 1},
-        ))
+        periods = by_period(parse_crm_and_calculate(data, "f.csv"))
         result = periods["2026-06"]["results"][0]
-        assert result["units_cleared"] == 21          # 20 real + 1 EPF
-        assert result["epf_units"] == 1
-        assert result["total_cleared_debt"] == 100_000.0   # EPF added no debt
-        assert result["raw_tier"] == 2
-        assert result["tier_rate"] == 0.0125
-        assert result["gross_commission"] == 1_250.0
-        assert "EPF: +1 unit(s) credited toward tier" in result["notes"]
 
-    def test_no_epf_units_leaves_result_unchanged(self):
+        assert result["units_cleared"] == 21               # counts as a real unit
+        assert result["total_cleared_debt"] == 100_000.0   # their $5,000 excluded
+        assert result["raw_tier"] == 2                     # 21 units -> Tier 2
+        assert result["tier_rate"] == 0.0125
+        assert result["gross_commission"] == 1_250.0       # 100,000 x 1.25%
+        assert "1 unit(s) counted at $0 commission" in result["notes"]
+
+        lc_row = next(c for c in periods["2026-06"]["client_rows"] if c["crm_id"] == "LC1")
+        assert lc_row["is_low_credit"] is True
+        assert lc_row["commission_on_client"] == 0.0
+        assert lc_row["is_cleared"] is True
+
+    def test_credit_score_above_500_is_not_low_credit(self):
+        data = crm_csv([client("A1", cleared="06/05/2026", debt="5000", credit_score="501")])
+        periods = by_period(parse_crm_and_calculate(data, "f.csv"))
+        result = periods["2026-06"]["results"][0]
+        assert result["total_cleared_debt"] == 5_000.0
+        assert result["gross_commission"] == pytest.approx(50.0)  # normal 1% Tier 1
+        row = periods["2026-06"]["client_rows"][0]
+        assert row["is_low_credit"] is False
+        assert row["commission_on_client"] == pytest.approx(50.0)
+
+    def test_missing_credit_score_is_not_low_credit(self):
         data = crm_csv([client("A1", cleared="06/05/2026", debt="5000")])
         periods = by_period(parse_crm_and_calculate(data, "f.csv"))
         result = periods["2026-06"]["results"][0]
-        assert result["epf_units"] == 0
-        assert result["units_cleared"] == 1
-        assert "EPF:" not in result["notes"]
+        assert result["total_cleared_debt"] == 5_000.0
+        row = periods["2026-06"]["client_rows"][0]
+        assert row["is_low_credit"] is False
 
-    def test_epf_credited_client_in_crm_file_is_not_double_counted(self):
-        """Regression: a client already credited via Cordoba's EPF tab (EpfClient)
-        must not ALSO be paid real commission when the CRM export later catches up
-        and shows their own cleared date/debt — that would double count them (once
-        as the unit-only EPF entry, once as a full cleared client), inflating both
-        units_cleared and total_cleared_debt and potentially bumping the agent's
-        tier on a phantom unit. Owner-confirmed policy: only the EPF unit counts,
-        no commission dollars, no duplicate unit."""
-        rows = [client(f"A{i}", cleared="06/05/2026", debt="5000") for i in range(20)]
-        rows.append(client("DUP1", cleared="06/05/2026", debt="5000", name="Already EPF'd"))
-        data = crm_csv(rows)
+    def test_low_credit_client_dropping_later_triggers_no_clawback(self):
+        """A low-credit client was never paid any commission, so a later drop must
+        not claw back money that was never sent — same file, cleared then dropped
+        in a later month, below the safe threshold, on/after the payout date."""
+        data = crm_csv([
+            client("A1", cleared="06/10/2026", debt="20000"),
+            client("LC1", cleared="06/12/2026", dropped="08/03/2026", payments="1",
+                   debt="10000", credit_score="450"),
+        ])
+        periods = by_period(parse_crm_and_calculate(
+            data, "f.csv", already_cleared_crm_ids={"A1", "LC1"}))
+        assert "2026-08" not in periods   # no holding entry created — nothing clawed back
+
+    def test_low_credit_client_known_from_prior_upload_triggers_no_clawback(self):
+        """Same guard, but the low-credit flag comes from the DB (already_low_credit_crm_ids)
+        because the client cleared in a prior upload, not this file."""
+        data = crm_csv([
+            client("A1", cleared="06/10/2026", debt="20000"),
+            client("LC1", cleared="06/12/2026", dropped="08/03/2026", payments="1", debt="10000"),
+        ])
         periods = by_period(parse_crm_and_calculate(
             data, "f.csv",
-            epf_units_by_agent_period={("Maria", "2026-06"): 1},
-            already_epf_crm_ids={"DUP1"},
+            already_cleared_crm_ids={"A1", "LC1"},
+            already_low_credit_crm_ids={"LC1"},
         ))
-        result = periods["2026-06"]["results"][0]
-        # 20 real cleared + 1 EPF unit credit — the DUP1 CRM row itself is excluded.
-        assert result["units_cleared"] == 21
-        assert result["epf_units"] == 1
-        assert result["total_cleared_debt"] == 100_000.0   # DUP1's $5,000 never added
-        assert result["raw_tier"] == 2
-        assert result["tier_rate"] == 0.0125
-        assert result["gross_commission"] == 1_250.0
-        assert not any(c["crm_id"] == "DUP1" for c in periods["2026-06"]["client_rows"])
+        assert "2026-08" not in periods
