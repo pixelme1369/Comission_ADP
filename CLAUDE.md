@@ -116,13 +116,18 @@ This is a Flask + SQLAlchemy web app for calculating agent commissions at Americ
    a separate holding record in the dropped month once the real deduction goes through. There is
    deliberately no period-level dashboard badge for this (owner removed it July 2026) — the
    per-client column is the only place it's shown.
-5. **EPF** (unit-credit section — OWNER DECISION, updated July 2026): each EPF row's
-   `Contact ID` is matched against our `ClientRecord` history to find the sales rep, and the
-   month is taken from the tab's `Cleared Date`. Matches are stored in `EpfClient` (`crm_id`
-   unique — re-uploads are no-ops) keyed by `(period_label, agent_name)` — matched by label,
-   not FK, so entries apply once that month's period exists regardless of upload order. They
-   render as an "EPF" section at the bottom of the agent detail page (below Pending) and as
-   `Type=EPF` rows in the agent CSV exports.
+5. **EPF** (unit-credit section — OWNER DECISION, updated July 2026): EPF represents a Cordoba
+   revenue-share payment made to the **company**, not the agent — the agent is never paid EPF
+   dollars, only credited the unit. Each EPF row's `Contact ID` is matched against our
+   `ClientRecord` history to find the sales rep, and the month is taken from the tab's
+   `Cleared Date`. Matches are stored in `EpfClient` (`crm_id` unique **globally, across every
+   Cordoba payout file ever uploaded — not just within one file**, so re-uploads are no-ops and
+   the same client appearing in EPF a second time, whether as a duplicate row in the same file or
+   in a later, separate Cordoba payout upload, never credits a second unit — one crm_id = one
+   unit, ever, no matter how many times EPF lists them) keyed by `(period_label, agent_name)` —
+   matched by label, not FK, so entries apply once that month's period exists regardless of
+   upload order. They render as an "EPF" section at the bottom of the agent detail page (below
+   Pending) and as `Type=EPF` rows in the agent CSV exports.
    **Each EPF row credits exactly one unit toward the matched agent's tier for that month —
    it can bump `units_cleared` and therefore the tier/rate applied to the agent's OTHER real
    cleared debt that month — but its own enrolled debt is never added to `total_cleared_debt`,

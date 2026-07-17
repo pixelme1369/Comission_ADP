@@ -243,3 +243,37 @@ def test_reupload_is_a_noop(db):
     added, *_ = _apply_epf_rows(FAKE_FILE, row)
     assert added == 0
     assert EpfClient.query.count() == 1
+
+
+def test_same_client_credited_once_even_across_separate_epf_files(db):
+    """Owner policy: EPF is a Cordoba revenue-share payment to the company, not the
+    agent — the agent only ever gets the unit credit, never the dollars. So a client
+    who shows up in EPF twice (a duplicate row in the same file, OR the same crm_id
+    appearing again in a later, separate Cordoba payout upload) must still only ever
+    count as ONE unit toward the agent's tier — never two. crm_id is unique in
+    EpfClient and the already-known-IDs check is global (not scoped to one file), so
+    this holds regardless of how many files or rows repeat the same ID."""
+    agent_row = seed_agent_period(db, "2026-06", "Maria", units_cleared=20, total_cleared_debt=100_000.0)
+    seed_client(db, crm_id="7001", agent="Maria", is_cleared=False)
+
+    file_one = SimpleNamespace(filename="cordoba_payout_week1.xlsx")
+    added_1, *_ = _apply_epf_rows(file_one, {"epf_rows": [
+        {"crm_id": "7001", "client_name": "Jane Roe", "cleared_date": "06/15/2026"},
+        {"crm_id": "7001", "client_name": "Jane Roe", "cleared_date": "06/15/2026"},  # dup row, same file
+    ]})
+    db.session.commit()
+    assert added_1 == 1
+
+    # A second, separate Cordoba payout file later lists the same client again.
+    file_two = SimpleNamespace(filename="cordoba_payout_week2.xlsx")
+    added_2, *_ = _apply_epf_rows(file_two, {"epf_rows": [
+        {"crm_id": "7001", "client_name": "Jane Roe", "cleared_date": "06/15/2026"},
+    ]})
+    db.session.commit()
+    assert added_2 == 0
+    assert EpfClient.query.count() == 1
+
+    refreshed = db.session.get(AgentCommission, agent_row.id)
+    assert refreshed.units_cleared == 21   # 20 real + exactly 1 EPF unit, not 22
+    assert refreshed.epf_units == 1
+    assert refreshed.total_cleared_debt == 100_000.0
