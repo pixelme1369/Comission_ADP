@@ -1078,21 +1078,21 @@ def _write_agent_client_rows(ws, agent, clients, cordoba_charged_back_ids):
                 ws.cell(row=r, column=idx + 1).number_format = CURRENCY_NUMBER_FORMAT
 
 
-def _write_agent_cordoba_block(ws, entries, agent_name):
-    """Writes the Cordoba Charge back mini-table with Agent Name as its own leading
-    column (no separate title row above it, per owner request) — a solid red,
-    white-bold header row followed by one data row per entry."""
-    if not entries:
-        return
-    ws.append([])
+def _write_cordoba_header(ws):
+    """Writes the Cordoba Charge back header row — Agent Name plus the Chargebacks-tab
+    columns — as solid red with white bold text."""
     ws.append(CORDOBA_CHARGEBACK_XLSX_COLUMNS)
-    # ws.max_row only advances once a row holds a real value, so it's read AFTER
-    # appending the header (not after the blank spacer row) to land on the right row.
+    # ws.max_row only advances once a row holds a real value, so it's always safe to
+    # read right after appending an actually-populated row like this header.
     header_row_num = ws.max_row
     for col in range(1, len(CORDOBA_CHARGEBACK_XLSX_COLUMNS) + 1):
         cell = ws.cell(row=header_row_num, column=col)
         cell.fill = CORDOBA_HEADER_FILL
         cell.font = CORDOBA_HEADER_FONT
+
+
+def _write_cordoba_rows(ws, entries, agent_name):
+    """Appends this agent's Cordoba Charge back data rows (no header) into ws."""
     for e in entries:
         ws.append([
             agent_name,
@@ -1108,11 +1108,12 @@ def _write_agent_cordoba_block(ws, entries, agent_name):
 
 @bp.route("/period/<int:period_id>/export-by-agent")
 def export_by_agent(period_id):
-    """One .xlsx workbook for the whole period: an "All Agents" sheet combining
-    every agent's rows first, then one sheet per agent — same content as
-    export_all_agents (Agent Name/Tier/Rate % + CLIENT_EXPORT_COLUMNS, plus each
-    agent's own Cordoba Charge back block) but split into per-agent tabs instead of
-    one flat CSV, per owner request (matches the agent_client_details_by_agent style)."""
+    """One .xlsx workbook for the whole period: an "All Agents" sheet combining every
+    agent's cleared/pending/cancelled client rows, an "All Chargeback" sheet combining
+    every agent's Cordoba Charge back rows (kept on its own tab, per owner request, so
+    it never gets mixed in with the cleared-client rows), then one sheet per agent with
+    just their own client rows — same underlying data as export_all_agents but split
+    into tabs instead of one flat CSV (matches the agent_client_details_by_agent style)."""
     period = CommissionPeriod.query.get_or_404(period_id)
     agents = AgentCommission.query.filter_by(period_id=period_id).order_by(AgentCommission.agent_name).all()
 
@@ -1122,6 +1123,9 @@ def export_by_agent(period_id):
 
     combined_ws = workbook.create_sheet(_safe_sheet_title("All Agents", used_titles))
     combined_ws.append(["Agent Name", "Tier", "Rate %"] + CLIENT_EXPORT_COLUMNS)
+
+    chargeback_ws = workbook.create_sheet(_safe_sheet_title("All Chargeback", used_titles))
+    _write_cordoba_header(chargeback_ws)
 
     for agent in agents:
         ws = workbook.create_sheet(_safe_sheet_title(agent.agent_name, used_titles))
@@ -1140,8 +1144,7 @@ def export_by_agent(period_id):
         cordoba_chargeback_entries = CordobaChargebackEntry.query.filter_by(
             agent_name=agent.agent_name, period_label=period.period_label,
         ).order_by(CordobaChargebackEntry.uploaded_at).all()
-        _write_agent_cordoba_block(ws, cordoba_chargeback_entries, agent.agent_name)
-        _write_agent_cordoba_block(combined_ws, cordoba_chargeback_entries, agent.agent_name)
+        _write_cordoba_rows(chargeback_ws, cordoba_chargeback_entries, agent.agent_name)
 
     if not agents:
         workbook.create_sheet("No Agents")
