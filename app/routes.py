@@ -1003,36 +1003,6 @@ def export_agent(period_id, agent_id):
     )
 
 
-@bp.route("/period/<int:period_id>/export-all-agents")
-def export_all_agents(period_id):
-    period = CommissionPeriod.query.get_or_404(period_id)
-    agents = AgentCommission.query.filter_by(period_id=period_id).order_by(AgentCommission.agent_name).all()
-
-    output = io.StringIO()
-    writer = csv.writer(output)
-    writer.writerow(["Agent Name", "Tier", "Rate %"] + CLIENT_EXPORT_COLUMNS)
-    for agent in agents:
-        clients = ClientRecord.query.filter_by(agent_commission_id=agent.id).all()
-        crm_ids = {c.crm_id for c in clients if c.crm_id}
-        cordoba_charged_back_ids = {
-            cb.crm_id for cb in
-            CordobaChargebackMatchedClient.query.filter(CordobaChargebackMatchedClient.crm_id.in_(crm_ids)).all()
-        } if crm_ids else set()
-        cordoba_chargeback_entries = CordobaChargebackEntry.query.filter_by(
-            agent_name=agent.agent_name, period_label=period.period_label,
-        ).order_by(CordobaChargebackEntry.uploaded_at).all()
-
-        for row in _client_export_rows(clients, cordoba_charged_back_ids):
-            writer.writerow([agent.agent_name, agent.adjusted_tier, f"{agent.tier_rate*100:.2f}"] + row)
-        _write_cordoba_chargeback_block(writer, cordoba_chargeback_entries, agent_name=agent.agent_name)
-
-    return Response(
-        output.getvalue(),
-        mimetype="text/csv",
-        headers={"Content-Disposition": f"attachment; filename=all_agents_client_details_{period.period_label}.csv"},
-    )
-
-
 def _safe_sheet_title(name, used_titles):
     """Excel sheet titles: max 31 chars, and : \\ / ? * [ ] are illegal — dedup
     on collision (e.g. two agents sharing a truncated name)."""
@@ -1109,11 +1079,12 @@ def _write_cordoba_rows(ws, entries, agent_name):
 @bp.route("/period/<int:period_id>/export-by-agent")
 def export_by_agent(period_id):
     """One .xlsx workbook for the whole period: an "All Agents" sheet combining every
-    agent's cleared/pending/cancelled client rows, an "All Chargeback" sheet combining
-    every agent's Cordoba Charge back rows (kept on its own tab, per owner request, so
-    it never gets mixed in with the cleared-client rows), then one sheet per agent with
-    just their own client rows — same underlying data as export_all_agents but split
-    into tabs instead of one flat CSV (matches the agent_client_details_by_agent style)."""
+    agent's cleared/pending/cancelled client rows (no chargebacks mixed in, per owner
+    request), an "All Chargeback" sheet combining every agent's Cordoba Charge back rows,
+    then one sheet per agent with their own client rows AND their own Cordoba Charge back
+    block appended below (same as before "All Chargeback" existed) — same underlying data
+    as export_all_agents but split into tabs (matches the agent_client_details_by_agent
+    style)."""
     period = CommissionPeriod.query.get_or_404(period_id)
     agents = AgentCommission.query.filter_by(period_id=period_id).order_by(AgentCommission.agent_name).all()
 
@@ -1144,6 +1115,12 @@ def export_by_agent(period_id):
         cordoba_chargeback_entries = CordobaChargebackEntry.query.filter_by(
             agent_name=agent.agent_name, period_label=period.period_label,
         ).order_by(CordobaChargebackEntry.uploaded_at).all()
+
+        if cordoba_chargeback_entries:
+            ws.append([])
+            _write_cordoba_header(ws)
+            _write_cordoba_rows(ws, cordoba_chargeback_entries, agent.agent_name)
+
         _write_cordoba_rows(chargeback_ws, cordoba_chargeback_entries, agent.agent_name)
 
     if not agents:
