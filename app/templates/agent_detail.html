@@ -265,34 +265,52 @@
 </div>
 {% endif %}
 
-<!-- Cordoba Marketing Payout Debt (informational only, not deducted) -->
-{% if marketing_payout_debt_entries %}
-<h2 style="margin-top:1.5rem;">Cordoba Marketing Payout Debt — For Reference Only ({{ marketing_payout_debt_entries|length }})</h2>
+<!-- Cordoba Charge back (informational only, not deducted) -->
+{% if cordoba_chargeback_entries %}
+<h2 style="margin-top:1.5rem;">Cordoba Charge back ({{ cordoba_chargeback_entries|length }})</h2>
 <p class="muted" style="margin-bottom:0.75rem;">
-  Raw "Marketing Payout Debt" amounts from Cordoba's Chargebacks tab for clients that dropped this period.
+  Verbatim rows from Cordoba's Chargebacks tab for clients matched to this agent that dropped this period.
   This is listed for reconciliation only — it has NOT been deducted from this agent's Gross or Net Commission above.
 </p>
 <div class="table-wrapper">
   <table class="data-table">
     <thead>
       <tr>
+        <th>Assigned Company</th>
+        <th>Enrolled Date</th>
         <th>ID</th>
-        <th>Client Name</th>
+        <th>Full Name</th>
+        <th>Status</th>
         <th>Marketing Payout Debt</th>
+        <th>1st Payment Cleared Date</th>
+        <th>Pay Freq.</th>
+        <th>Payments Made</th>
+        <th>Marketing Payment Cleared</th>
+        <th>Marketing Payment Chargeback</th>
+        <th>Dropped Date</th>
       </tr>
     </thead>
     <tbody>
-      {% for e in marketing_payout_debt_entries %}
+      {% for e in cordoba_chargeback_entries %}
       <tr>
+        <td>{{ e.assigned_company or '—' }}</td>
+        <td>{{ e.enrolled_date or '—' }}</td>
         <td class="muted">{{ e.crm_id or '—' }}</td>
         <td>{{ e.client_name or '—' }}</td>
-        <td>${{ "{:,.2f}".format(e.amount) }}</td>
+        <td>{{ e.status or '—' }}</td>
+        <td>${{ "{:,.2f}".format(e.marketing_payout_debt) }}</td>
+        <td>{{ e.first_payment_cleared_date or '—' }}</td>
+        <td>{{ e.pay_freq or '—' }}</td>
+        <td>{{ e.payments_made if e.payments_made is not none else '—' }}</td>
+        <td>{{ e.marketing_payment_cleared or '—' }}</td>
+        <td>{{ e.marketing_payment_chargeback or '—' }}</td>
+        <td>{{ e.file_dropped_date or '—' }}</td>
       </tr>
       {% endfor %}
       <tr>
-        <td></td>
-        <td class="muted">Total</td>
-        <td><strong>${{ "{:,.2f}".format(marketing_payout_debt_total) }}</strong></td>
+        <td colspan="5" class="muted">Total</td>
+        <td><strong>${{ "{:,.2f}".format(cordoba_chargeback_debt_total) }}</strong></td>
+        <td colspan="6"></td>
       </tr>
     </tbody>
   </table>

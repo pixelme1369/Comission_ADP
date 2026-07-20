@@ -154,7 +154,7 @@ def test_marketing_payout_debt_column_is_never_used(db):
     only from our own CRM-recorded Enrolled Debt. If we don't have one, the clawback
     computes to $0 (no fallback to the file's figure). The parser does now also
     extract this column (owner request), but only to feed the separate, display-only
-    _list_cordoba_marketing_payout_debt / CordobaMarketingPayoutDebtEntry listing —
+    _list_cordoba_chargebacks / CordobaChargebackEntry "Cordoba Charge back" listing —
     _apply_cordoba_chargebacks itself never reads it."""
     period, agent = seed_paid_june_client(db)
     ClientRecord.query.filter_by(crm_id=CRM_ID).update({"enrolled_debt": 0.0})

@@ -44,6 +44,17 @@ def _clean_amount(value) -> float:
         return 0.0
 
 
+def _clean_int(value):
+    if value is None or value == "":
+        return None
+    if isinstance(value, (int, float)):
+        return int(value)
+    try:
+        return int(str(value).strip())
+    except ValueError:
+        return None
+
+
 def _sheet_by_name(workbook, wanted_lower: str):
     for name in workbook.sheetnames:
         if name.strip().lower() == wanted_lower:
@@ -60,14 +71,17 @@ def _parse_chargebacks(workbook, errors: list) -> list:
     """Owner policy (confirmed July 2026): only the 'ID' column matters for the actual
     clawback deduction — it's cross-referenced against our own ClientRecord history in
     routes.py. The client's debt and the dropped-date-to-place-the-deduction still come
-    from OUR OWN records, not this file. 'Full Name' is read only to make skip/flash
-    messages readable.
+    from OUR OWN records, not this file.
 
-    'Marketing Payout Debt' (owner request, July 2026) is also read here, but ONLY for
-    the separate, display-only "listed at the bottom of the agent's commission report"
-    feature in routes.py (_list_cordoba_marketing_payout_debt / CordobaMarketingPayoutDebtEntry)
-    — it is never used for the real clawback math above, which still recalculates via
-    calculate_clawback_amount on our own enrolled_debt."""
+    Every other column on this tab (Assigned Company, Enrolled Date, Status, Marketing
+    Payout Debt, 1st Payment Cleared Date, Pay Freq., Payments Made, Marketing Payment
+    Cleared, Marketing Payment Chargeback, Dropped Date) is ALSO read here, but ONLY for
+    the separate, display-only "Cordoba Charge back" listing in routes.py
+    (_list_cordoba_chargebacks / CordobaChargebackEntry) — a verbatim snapshot of this
+    file's row, shown/exported for manual reconciliation. None of it is used by the real
+    clawback math above, which still recalculates via calculate_clawback_amount on our
+    own enrolled_debt and places the deduction using our own dropped_date, never this
+    file's own Dropped Date column."""
     sheet = _sheet_by_name(workbook, "chargebacks")
     if sheet is None:
         return []
@@ -92,6 +106,15 @@ def _parse_chargebacks(workbook, errors: list) -> list:
             "crm_id": crm_id,
             "client_name": cell(row, "full name") or "",
             "marketing_payout_debt": _clean_amount(cell(row, "marketing payout debt")),
+            "assigned_company": cell(row, "assigned company") or "",
+            "enrolled_date": _clean_date(cell(row, "enrolled date")),
+            "status": cell(row, "status") or "",
+            "first_payment_cleared_date": _clean_date(cell(row, "1st payment cleared date")),
+            "pay_freq": cell(row, "pay freq.") or "",
+            "payments_made": _clean_int(cell(row, "payments made")),
+            "marketing_payment_cleared": _clean_date(cell(row, "marketing payment cleared")),
+            "marketing_payment_chargeback": _clean_date(cell(row, "marketing payment chargeback")),
+            "file_dropped_date": _clean_date(cell(row, "dropped date")),
         })
     return rows
 
