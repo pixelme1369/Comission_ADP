@@ -49,7 +49,10 @@ NSF_FLAG_THRESHOLD = 3
 # Minimum payments before clawback protection kicks in, by payment frequency
 def _safe_payment_threshold(pay_freq: str) -> int:
     """Return the number of payments that protects against clawback."""
-    freq = (pay_freq or "").strip().lower()
+    # Normalize "Bi-Weekly" (the actual CRM export spelling) and "Biweekly" alike —
+    # a hyphen-sensitive match here previously fell through to the unknown/missing
+    # fallback (3) for every real Bi-Weekly row instead of the intended 4.
+    freq = (pay_freq or "").strip().lower().replace("-", "").replace(" ", "")
     if freq == "biweekly":
         return 4
     if freq == "monthly":

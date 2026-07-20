@@ -50,6 +50,12 @@ class TestSafeThreshold:
         assert _safe_payment_threshold(None) == 3
         assert _safe_payment_threshold("weird") == 3
 
+    def test_hyphenated_biweekly_matches_the_real_crm_spelling(self):
+        # The actual CRM export spells this "Bi-Weekly" (with a hyphen) — the
+        # comparison must not silently fall through to the unknown-freq fallback.
+        assert _safe_payment_threshold("Bi-Weekly") == 4
+        assert _safe_payment_threshold("bi-weekly") == 4
+
 
 class TestClassification:
     def test_cleared_clients_grouped_by_month(self):
