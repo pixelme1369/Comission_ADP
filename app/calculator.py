@@ -18,6 +18,7 @@ QUALITY_BONUS_THRESHOLD = 10.0         # < this triggers bonus eligibility
 # clients so a clawed-back client's rate matches what they were actually paid.
 AGENT_FIXED_RATES = {
     "alex tambouly": 0.02,
+    "peter godwin": 0.0175,
 }
 
 

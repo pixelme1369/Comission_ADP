@@ -43,6 +43,27 @@ class TestFixedRateOverride:
         )
         assert cb == pytest.approx(600.0)  # 30,000 x 2%
 
+    def test_peter_gets_flat_one_point_seven_five_percent_regardless_of_units(self):
+        r = calculate_agent_commission("Peter Godwin", 5, 100_000.0, 0.0)
+        assert r["tier_rate"] == pytest.approx(0.0175)
+        assert r["gross_commission"] == pytest.approx(1_750.0)
+
+    def test_peter_rate_is_case_and_whitespace_insensitive(self):
+        r = calculate_agent_commission("  peter GODWIN  ", 5, 100_000.0, 0.0)
+        assert r["tier_rate"] == pytest.approx(0.0175)
+
+    def test_peter_not_dropped_by_cancellation_penalty(self):
+        r = calculate_agent_commission("Peter Godwin", 25, 500_000.0, 50.0)
+        assert r["cancellation_penalty_applied"] is False
+        assert r["tier_rate"] == pytest.approx(0.0175)
+        assert r["gross_commission"] == pytest.approx(8_750.0)
+
+    def test_peter_clawback_uses_fixed_rate_not_tier_recalc(self):
+        cb = calculate_clawback_amount(
+            25, 500_000.0, 10_000.0, 0.0, 30_000.0, agent_name="Peter Godwin",
+        )
+        assert cb == pytest.approx(525.0)  # 30,000 x 1.75%
+
 
 class TestTierTable:
     @pytest.mark.parametrize("units,tier,rate", [
