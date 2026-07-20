@@ -3,6 +3,7 @@ import io
 import re
 from openpyxl import Workbook
 from openpyxl.styles import Font, PatternFill
+from openpyxl.utils import get_column_letter
 from flask import Blueprint, render_template, request, redirect, url_for, flash, Response
 from app import db
 from app.models import (
@@ -1062,18 +1063,21 @@ def _write_cordoba_header(ws):
 
 
 def _write_cordoba_rows(ws, entries, agent_name):
-    """Appends this agent's Cordoba Charge back data rows (no header) into ws."""
+    """Appends this agent's Cordoba Charge back data rows (no header) into ws.
+    Marketing Payout Debt is a real numeric currency cell (not a formatted string) so
+    the Dashboard Summary tab's Sum of To Subtract formula can SUMIF over it."""
     for e in entries:
         ws.append([
             agent_name,
             e.assigned_company or "", e.enrolled_date or "", e.crm_id or "",
             e.client_name or "", e.status or "",
-            f"${e.marketing_payout_debt:,.2f}",
+            e.marketing_payout_debt or 0.0,
             e.first_payment_cleared_date or "", e.pay_freq or "",
             e.payments_made if e.payments_made is not None else "",
             e.marketing_payment_cleared or "", e.marketing_payment_chargeback or "",
             e.file_dropped_date or "",
         ])
+        ws.cell(row=ws.max_row, column=7).number_format = CURRENCY_NUMBER_FORMAT
 
 
 DASHBOARD_TITLE_FONT = Font(bold=True, size=16)
@@ -1082,12 +1086,15 @@ DASHBOARD_HEADER_FONT = Font(bold=True, italic=True)
 DASHBOARD_NEGATIVE_CURRENCY_FORMAT = '$#,##0.00;($#,##0.00);"$ -"'
 
 
-def _write_dashboard_summary(ws, agent_rows):
-    """Writes the two-table period overview: "Enrolled debt by Rep" (debt/clawback/
-    units per agent, "RevShares" = units where Credit Score <= 500 per owner
-    definition, plus a Total Units column combining the two) and "Commission payout"
-    (rate/bonus/net commission per agent). Bonus is left blank for manual entry — the
-    app has no dollar bonus calculation (quality_bonus_eligible is display-only)."""
+def _write_dashboard_summary(ws, agent_rows, chargeback_sheet_title):
+    """Writes the two-table period overview: "Enrolled debt by Rep" (debt/units/
+    RevShares — units where Credit Score <= 500, per owner — per agent) and
+    "Commission payout" (rate/bonus/net commission per agent). Bonus is left blank
+    for manual entry — the app has no dollar bonus calculation (quality_bonus_eligible
+    is display-only). Sum of To Subtract, Total Units, and every Grand Total cell are
+    live Excel formulas (not precomputed numbers) so editing a value in this sheet, or
+    a Marketing Payout Debt value on the chargeback_sheet_title tab, recalculates the
+    totals automatically — per owner request."""
     LEFT_COL = 1     # A: Sales Rep
     # Left table spans A-F (6 columns); G is a blank gap; right table starts at H.
     RIGHT_COL = 8
@@ -1096,7 +1103,7 @@ def _write_dashboard_summary(ws, agent_rows):
     ws.cell(row=1, column=RIGHT_COL, value="Commission payout").font = DASHBOARD_TITLE_FONT
 
     left_headers = ["Sales Rep", "Sum of Enrolled Debt", "Sum of To Subtract", "Sum of Units",
-                     "RevShares (Credit Score <= 500)", "Total Units"]
+                     "RevShares", "Total Units"]
     right_headers = ["Sales Rep", "Rate %", "Bonus", "Total Commissions"]
 
     header_row = 2
@@ -1109,45 +1116,62 @@ def _write_dashboard_summary(ws, agent_rows):
         c.font = DASHBOARD_HEADER_FONT
         c.fill = DASHBOARD_HEADER_FILL
 
-    totals = dict(debt=0.0, to_subtract=0.0, units=0, revshares=0, total_units=0, commissions=0.0)
-    r = header_row + 1
+    agent_col = get_column_letter(LEFT_COL)
+    units_col = get_column_letter(LEFT_COL + 3)
+    revshares_col = get_column_letter(LEFT_COL + 4)
+    rate_col = get_column_letter(RIGHT_COL + 1)
+    cb_agent_col = "A"       # Agent Name column on the chargeback sheet
+    cb_debt_col = "G"        # Marketing Payout Debt column on the chargeback sheet
+
+    first_data_row = header_row + 1
+    r = first_data_row
     for row_data in agent_rows:
         ws.cell(row=r, column=LEFT_COL, value=row_data["agent_name"])
         ws.cell(row=r, column=LEFT_COL + 1, value=row_data["enrolled_debt"]).number_format = CURRENCY_NUMBER_FORMAT
-        ws.cell(row=r, column=LEFT_COL + 2, value=-row_data["to_subtract"] if row_data["to_subtract"] else 0.0) \
-            .number_format = DASHBOARD_NEGATIVE_CURRENCY_FORMAT
+        # Sum of To Subtract = SUM(Marketing Payout Debt) for this agent's chargeback
+        # rows x their rate% — sourced live from the chargeback tab and this row's own
+        # Rate % cell, so either one changing recalculates this automatically.
+        to_subtract_cell = ws.cell(
+            row=r, column=LEFT_COL + 2,
+            value=(f"=-SUMIF('{chargeback_sheet_title}'!${cb_agent_col}:${cb_agent_col},"
+                   f"{agent_col}{r},'{chargeback_sheet_title}'!${cb_debt_col}:${cb_debt_col})"
+                   f"*{rate_col}{r}"),
+        )
+        to_subtract_cell.number_format = DASHBOARD_NEGATIVE_CURRENCY_FORMAT
         ws.cell(row=r, column=LEFT_COL + 3, value=row_data["units"])
         ws.cell(row=r, column=LEFT_COL + 4, value=row_data["revshares"] or None)
-        ws.cell(row=r, column=LEFT_COL + 5, value=row_data["total_units"])
+        # Total Units = Sum of Units + RevShares, live — editing either recalculates it.
+        ws.cell(row=r, column=LEFT_COL + 5, value=f"={units_col}{r}+{revshares_col}{r}")
 
         ws.cell(row=r, column=RIGHT_COL, value=row_data["agent_name"])
         ws.cell(row=r, column=RIGHT_COL + 1, value=row_data["rate"]).number_format = "0.00%"
         # Bonus (RIGHT_COL + 2) intentionally left blank for manual entry.
         ws.cell(row=r, column=RIGHT_COL + 3, value=row_data["net_commission"]).number_format = CURRENCY_NUMBER_FORMAT
-
-        totals["debt"] += row_data["enrolled_debt"]
-        totals["to_subtract"] += row_data["to_subtract"]
-        totals["units"] += row_data["units"]
-        totals["revshares"] += row_data["revshares"]
-        totals["total_units"] += row_data["total_units"]
-        totals["commissions"] += row_data["net_commission"]
         r += 1
 
-    ws.cell(row=r, column=LEFT_COL, value="Grand Total").font = Font(bold=True)
-    ws.cell(row=r, column=LEFT_COL + 1, value=totals["debt"]).font = Font(bold=True)
-    ws.cell(row=r, column=LEFT_COL + 1).number_format = CURRENCY_NUMBER_FORMAT
-    to_subtract_cell = ws.cell(row=r, column=LEFT_COL + 2,
-                                value=-totals["to_subtract"] if totals["to_subtract"] else 0.0)
-    to_subtract_cell.font = Font(bold=True)
-    to_subtract_cell.number_format = DASHBOARD_NEGATIVE_CURRENCY_FORMAT
-    ws.cell(row=r, column=LEFT_COL + 3, value=totals["units"]).font = Font(bold=True)
-    ws.cell(row=r, column=LEFT_COL + 4, value=totals["revshares"]).font = Font(bold=True)
-    ws.cell(row=r, column=LEFT_COL + 5, value=totals["total_units"]).font = Font(bold=True)
+    last_data_row = r - 1
+    total_row = r
 
-    ws.cell(row=r, column=RIGHT_COL + 2, value="Total Commissions:").font = Font(bold=True)
-    commissions_cell = ws.cell(row=r, column=RIGHT_COL + 3, value=totals["commissions"])
-    commissions_cell.font = Font(bold=True)
-    commissions_cell.number_format = CURRENCY_NUMBER_FORMAT
+    ws.cell(row=total_row, column=LEFT_COL, value="Grand Total").font = Font(bold=True)
+    if last_data_row >= first_data_row:
+        for offset, fmt in ((1, CURRENCY_NUMBER_FORMAT), (2, DASHBOARD_NEGATIVE_CURRENCY_FORMAT),
+                             (3, None), (4, None), (5, None)):
+            col_letter = get_column_letter(LEFT_COL + offset)
+            cell = ws.cell(row=total_row, column=LEFT_COL + offset,
+                            value=f"=SUM({col_letter}{first_data_row}:{col_letter}{last_data_row})")
+            cell.font = Font(bold=True)
+            if fmt:
+                cell.number_format = fmt
+
+        commission_col = get_column_letter(RIGHT_COL + 3)
+        commission_cell = ws.cell(
+            row=total_row, column=RIGHT_COL + 3,
+            value=f"=SUM({commission_col}{first_data_row}:{commission_col}{last_data_row})",
+        )
+        commission_cell.font = Font(bold=True)
+        commission_cell.number_format = CURRENCY_NUMBER_FORMAT
+
+    ws.cell(row=total_row, column=RIGHT_COL + 2, value="Total Commissions:").font = Font(bold=True)
 
     ws.column_dimensions["A"].width = 20
     ws.column_dimensions["B"].width = 18
@@ -1206,10 +1230,8 @@ def export_by_agent(period_id):
         dashboard_rows.append({
             "agent_name": agent.agent_name,
             "enrolled_debt": agent.total_cleared_debt,
-            "to_subtract": agent.clawback_amount,
             "units": agent.units_cleared - revshares,
             "revshares": revshares,
-            "total_units": agent.units_cleared,
             "rate": agent.tier_rate,
             "net_commission": agent.net_commission,
         })
@@ -1225,7 +1247,7 @@ def export_by_agent(period_id):
 
         _write_cordoba_rows(chargeback_ws, cordoba_chargeback_entries, agent.agent_name)
 
-    _write_dashboard_summary(dashboard_ws, dashboard_rows)
+    _write_dashboard_summary(dashboard_ws, dashboard_rows, chargeback_ws.title)
 
     if not agents:
         workbook.create_sheet("No Agents")
