@@ -877,7 +877,7 @@ def export_all_agents(period_id):
 
     output = io.StringIO()
     writer = csv.writer(output)
-    writer.writerow(["Agent Name"] + CLIENT_EXPORT_COLUMNS)
+    writer.writerow(["Agent Name", "Tier", "Rate %"] + CLIENT_EXPORT_COLUMNS)
     for agent in agents:
         clients = ClientRecord.query.filter_by(agent_commission_id=agent.id).all()
         crm_ids = {c.crm_id for c in clients if c.crm_id}
@@ -886,7 +886,7 @@ def export_all_agents(period_id):
             CordobaChargebackMatchedClient.query.filter(CordobaChargebackMatchedClient.crm_id.in_(crm_ids)).all()
         } if crm_ids else set()
         for row in _client_export_rows(clients, cordoba_charged_back_ids):
-            writer.writerow([agent.agent_name] + row)
+            writer.writerow([agent.agent_name, agent.adjusted_tier, f"{agent.tier_rate*100:.2f}"] + row)
 
     return Response(
         output.getvalue(),
