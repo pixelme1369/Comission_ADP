@@ -4,7 +4,7 @@ from flask import Blueprint, render_template, request, redirect, url_for, flash,
 from app import db
 from app.models import (
     CommissionPeriod, AgentCommission, ClientRecord, CordobaPaidClient,
-    CordobaChargedBackClient, CordobaChargebackMatchedClient, CordobaMarketingPayoutDebtEntry,
+    CordobaChargedBackClient, CordobaChargebackMatchedClient, CordobaChargebackEntry,
 )
 from app.crm_parser import parse_crm_and_calculate, _parse_date, _period_of
 from app.cordoba_parser import parse_cordoba_payout
@@ -521,29 +521,30 @@ def _apply_cordoba_chargebacks(file, parsed):
             skipped_no_dropped_date)
 
 
-def _list_cordoba_marketing_payout_debt(file, parsed):
+def _list_cordoba_chargebacks(file, parsed):
     """
     Display-only companion to _apply_cordoba_chargebacks (owner request, July 2026,
     NOT the same policy as the gated clawback above — deliberately ungated): for every
-    ID in the Chargebacks tab that carries a nonzero 'Marketing Payout Debt' amount,
-    look up the agent and dropped month from OUR OWN ClientRecord history (any status —
-    no is_cleared/confirmed-paid/already-clawed-back checks) and record the raw file
-    amount in CordobaMarketingPayoutDebtEntry so it can be listed at the bottom of that
-    agent's commission report for that month. This never touches gross_commission,
-    net_commission, or clawback_amount — it's purely informational, for the amount to
-    be reconciled by hand. If the ID doesn't match any ClientRecord we have, or we
-    don't have a dropped date on file for it yet, it's skipped and reported back to
-    the uploader so it isn't silently dropped.
-    Returns (newly_listed_count, total_amount, skipped_no_match_labels).
+    ID in the Chargebacks tab, look up the agent and dropped month from OUR OWN
+    ClientRecord history (any status — no is_cleared/confirmed-paid/already-clawed-back
+    checks) and record a verbatim snapshot of that file row (Assigned Company, dates,
+    Pay Freq., Payments Made, Marketing Payout Debt, Marketing Payment Cleared/
+    Chargeback, the file's own Dropped Date) as a CordobaChargebackEntry, shown/
+    exported as "Cordoba Charge back". This never touches gross_commission,
+    net_commission, or clawback_amount — it's purely informational, for the row to be
+    reconciled by hand. If the ID doesn't match any ClientRecord we have, or we don't
+    have a dropped date on file for it yet (needed to know which period to show it
+    under), it's skipped and reported back to the uploader so it isn't silently dropped.
+    Returns (newly_listed_count, total_marketing_payout_debt, skipped_no_match_labels).
     """
     chargebacks = parsed.get("chargebacks", [])
-    incoming_ids = {row["crm_id"] for row in chargebacks if row["crm_id"] and row.get("marketing_payout_debt")}
+    incoming_ids = {row["crm_id"] for row in chargebacks if row["crm_id"]}
     if not incoming_ids:
         return 0, 0.0, []
 
     already_listed = {
-        r[0] for r in db.session.query(CordobaMarketingPayoutDebtEntry.crm_id)
-        .filter(CordobaMarketingPayoutDebtEntry.crm_id.in_(incoming_ids))
+        r[0] for r in db.session.query(CordobaChargebackEntry.crm_id)
+        .filter(CordobaChargebackEntry.crm_id.in_(incoming_ids))
     }
 
     listed = 0
@@ -552,8 +553,7 @@ def _list_cordoba_marketing_payout_debt(file, parsed):
     seen_this_file = set()
     for row in chargebacks:
         crm_id = row["crm_id"]
-        amount = row.get("marketing_payout_debt") or 0.0
-        if not crm_id or amount <= 0 or crm_id in seen_this_file:
+        if not crm_id or crm_id in seen_this_file:
             continue
         seen_this_file.add(crm_id)
 
@@ -567,12 +567,22 @@ def _list_cordoba_marketing_payout_debt(file, parsed):
             skipped_no_match.append(_client_label(row.get("client_name"), crm_id))
             continue
 
-        db.session.add(CordobaMarketingPayoutDebtEntry(
+        amount = row.get("marketing_payout_debt") or 0.0
+        db.session.add(CordobaChargebackEntry(
             crm_id=crm_id,
-            client_name=client_rec.client_name or row.get("client_name"),
             agent_name=client_rec.agent_name,
             period_label=dropped_period,
-            amount=amount,
+            assigned_company=row.get("assigned_company") or "",
+            enrolled_date=row.get("enrolled_date"),
+            client_name=row.get("client_name") or client_rec.client_name,
+            status=row.get("status") or "",
+            marketing_payout_debt=amount,
+            first_payment_cleared_date=row.get("first_payment_cleared_date"),
+            pay_freq=row.get("pay_freq") or "",
+            payments_made=row.get("payments_made"),
+            marketing_payment_cleared=row.get("marketing_payment_cleared"),
+            marketing_payment_chargeback=row.get("marketing_payment_chargeback"),
+            file_dropped_date=row.get("file_dropped_date"),
             uploaded_filename=file.filename,
         ))
         listed += 1
@@ -599,7 +609,7 @@ def _process_cordoba_file(file):
     (clawback_count, clawback_total, skipped_not_commissioned,
      skipped_not_confirmed_paid, skipped_already_clawed,
      skipped_no_dropped_date) = _apply_cordoba_chargebacks(file, parsed)
-    listed_count, listed_total, skipped_no_debt_match = _list_cordoba_marketing_payout_debt(file, parsed)
+    listed_count, listed_total, skipped_no_debt_match = _list_cordoba_chargebacks(file, parsed)
 
     db.session.commit()
     return (new_count, flipped, clawback_count, clawback_total,
@@ -657,9 +667,9 @@ def upload_cordoba_payout():
         )
     if listed_total > 0:
         flash(
-            f"Cordoba chargebacks: {listed_total} client(s) with a Marketing Payout Debt "
-            f"amount (${listed_amount_total:,.2f} total) listed on the relevant agents' "
-            f"commission reports for reference — informational only, not deducted.",
+            f"Cordoba Charge back: {listed_total} client(s) (${listed_amount_total:,.2f} total "
+            f"Marketing Payout Debt) listed on the relevant agents' commission reports for "
+            f"reference — informational only, not deducted.",
             "success",
         )
 
@@ -680,8 +690,8 @@ def upload_cordoba_payout():
                    "reflecting the drop, then re-upload this Chargebacks file")
     _flash_skipped(unmatched_chargeback_ids, "were not found in any of our commission reports — no match")
     _flash_skipped(skipped_no_debt_match,
-                   "had a Marketing Payout Debt amount but no Dropped Date on file yet — "
-                   "not listed on any agent's report")
+                   "were not found in our commission reports (or have no Dropped Date on file yet) — "
+                   "not listed under \"Cordoba Charge back\" on any agent's report")
     return redirect(url_for("main.index"))
 
 
@@ -839,13 +849,13 @@ def agent_detail(period_id, agent_id):
         CordobaChargebackMatchedClient.query.filter(CordobaChargebackMatchedClient.crm_id.in_(crm_ids)).all()
     } if crm_ids else set()
 
-    # Informational-only Cordoba "Marketing Payout Debt" line items for this agent in
-    # this period (matched by dropped month) — see _list_cordoba_marketing_payout_debt.
-    # Never affects gross_commission/net_commission/clawback_amount above.
-    marketing_payout_debt_entries = CordobaMarketingPayoutDebtEntry.query.filter_by(
+    # Informational-only "Cordoba Charge back" line items for this agent in this period
+    # (matched by dropped month) — see _list_cordoba_chargebacks. Never affects
+    # gross_commission/net_commission/clawback_amount above.
+    cordoba_chargeback_entries = CordobaChargebackEntry.query.filter_by(
         agent_name=agent.agent_name, period_label=period.period_label,
-    ).order_by(CordobaMarketingPayoutDebtEntry.uploaded_at).all()
-    marketing_payout_debt_total = sum(e.amount or 0.0 for e in marketing_payout_debt_entries)
+    ).order_by(CordobaChargebackEntry.uploaded_at).all()
+    cordoba_chargeback_debt_total = sum(e.marketing_payout_debt or 0.0 for e in cordoba_chargeback_entries)
 
     return render_template(
         "agent_detail.html",
@@ -854,8 +864,8 @@ def agent_detail(period_id, agent_id):
         clients=active_clients,
         clawback_clients=clawback_clients,
         cordoba_charged_back_ids=cordoba_charged_back_ids,
-        marketing_payout_debt_entries=marketing_payout_debt_entries,
-        marketing_payout_debt_total=marketing_payout_debt_total,
+        cordoba_chargeback_entries=cordoba_chargeback_entries,
+        cordoba_chargeback_debt_total=cordoba_chargeback_debt_total,
     )
 
 
@@ -898,7 +908,6 @@ CLIENT_EXPORT_COLUMNS = [
     "1st Payment Cleared Date", "2nd Payment Cleared Date", "Dropped Date",
     "Payments Made", "Pay Freq.", "# NSF", "Credit Score",
     "Commission on Client", "Clawback Amount", "Cordoba Payout", "Cordoba Clawback",
-    "Marketing Payout Debt (Not Deducted)",
 ]
 
 
@@ -918,7 +927,6 @@ def _client_export_rows(clients, cordoba_charged_back_ids=frozenset()):
             f"{c.commission_on_client:.2f}", "",
             ("Yes" if c.cordoba_paid else "No") if c.is_cleared else "",
             ("Yes" if c.crm_id in cordoba_charged_back_ids else "No") if c.is_cleared else "",
-            "",
         ])
     for c in clawback_clients:
         rows.append([
@@ -929,26 +937,40 @@ def _client_export_rows(clients, cordoba_charged_back_ids=frozenset()):
             c.payments_made, c.pay_freq or "", c.nsf_count,
             c.credit_score if c.credit_score is not None else "",
             "", f"-{c.clawback_amount:.2f}", "", "",
-            "",
         ])
     return rows
 
 
-def _marketing_payout_debt_export_rows(entries):
-    """Extra rows appended under an agent's client rows in the CSV exports, for
-    CordobaMarketingPayoutDebtEntry entries — the raw, display-only Chargebacks-tab
-    'Marketing Payout Debt' figure (see _list_cordoba_marketing_payout_debt). Never
-    part of Clawback Amount; kept in its own column and its own Status label so it
-    reads unambiguously as informational when the CSV is opened without this app."""
-    rows = []
+CORDOBA_CHARGEBACK_EXPORT_COLUMNS = [
+    "Assigned Company", "Enrolled Date", "ID", "Full Name", "Status",
+    "Marketing Payout Debt", "1st Payment Cleared Date", "Pay Freq.", "Payments Made",
+    "Marketing Payment Cleared", "Marketing Payment Chargeback", "Dropped Date",
+]
+
+
+def _write_cordoba_chargeback_block(writer, entries, agent_name=None):
+    """Writes a "Cordoba Charge back" block into a CSV export, verbatim in the same
+    column shape as the Chargebacks tab itself (see CordobaChargebackEntry / owner
+    request July 2026) — a separate mini-table (title, header, rows) rather than
+    columns woven into CLIENT_EXPORT_COLUMNS, so it reads exactly like the source file
+    for reconciliation. Purely informational — none of this feeds Clawback Amount.
+    agent_name is included in the title when writing into the combined all-agents
+    export, where a bare "Cordoba Charge back" title wouldn't say whose block it is."""
+    if not entries:
+        return
+    writer.writerow([])
+    writer.writerow([f"Cordoba Charge back — {agent_name}" if agent_name else "Cordoba Charge back"])
+    writer.writerow(CORDOBA_CHARGEBACK_EXPORT_COLUMNS)
     for e in entries:
-        rows.append([
-            "Cordoba Marketing Payout Debt", e.crm_id or "", e.client_name or "", "", "",
-            "Informational only — not deducted",
-            "", "", "", "", "", "", "", "", "", "", "",
-            f"{e.amount:.2f}",
+        writer.writerow([
+            e.assigned_company or "", e.enrolled_date or "", e.crm_id or "",
+            e.client_name or "", e.status or "",
+            f"${e.marketing_payout_debt:,.2f}",
+            e.first_payment_cleared_date or "", e.pay_freq or "",
+            e.payments_made if e.payments_made is not None else "",
+            e.marketing_payment_cleared or "", e.marketing_payment_chargeback or "",
+            e.file_dropped_date or "",
         ])
-    return rows
 
 
 @bp.route("/period/<int:period_id>/agent/<int:agent_id>/export")
@@ -962,17 +984,16 @@ def export_agent(period_id, agent_id):
         CordobaChargebackMatchedClient.query.filter(CordobaChargebackMatchedClient.crm_id.in_(crm_ids)).all()
     } if crm_ids else set()
 
-    marketing_payout_debt_entries = CordobaMarketingPayoutDebtEntry.query.filter_by(
+    cordoba_chargeback_entries = CordobaChargebackEntry.query.filter_by(
         agent_name=agent.agent_name, period_label=period.period_label,
-    ).order_by(CordobaMarketingPayoutDebtEntry.uploaded_at).all()
+    ).order_by(CordobaChargebackEntry.uploaded_at).all()
 
     output = io.StringIO()
     writer = csv.writer(output)
     writer.writerow(CLIENT_EXPORT_COLUMNS)
     for row in _client_export_rows(clients, cordoba_charged_back_ids):
         writer.writerow(row)
-    for row in _marketing_payout_debt_export_rows(marketing_payout_debt_entries):
-        writer.writerow(row)
+    _write_cordoba_chargeback_block(writer, cordoba_chargeback_entries)
 
     return Response(
         output.getvalue(),
@@ -996,14 +1017,13 @@ def export_all_agents(period_id):
             cb.crm_id for cb in
             CordobaChargebackMatchedClient.query.filter(CordobaChargebackMatchedClient.crm_id.in_(crm_ids)).all()
         } if crm_ids else set()
-        marketing_payout_debt_entries = CordobaMarketingPayoutDebtEntry.query.filter_by(
+        cordoba_chargeback_entries = CordobaChargebackEntry.query.filter_by(
             agent_name=agent.agent_name, period_label=period.period_label,
-        ).order_by(CordobaMarketingPayoutDebtEntry.uploaded_at).all()
+        ).order_by(CordobaChargebackEntry.uploaded_at).all()
 
         for row in _client_export_rows(clients, cordoba_charged_back_ids):
             writer.writerow([agent.agent_name, agent.adjusted_tier, f"{agent.tier_rate*100:.2f}"] + row)
-        for row in _marketing_payout_debt_export_rows(marketing_payout_debt_entries):
-            writer.writerow([agent.agent_name, agent.adjusted_tier, f"{agent.tier_rate*100:.2f}"] + row)
+        _write_cordoba_chargeback_block(writer, cordoba_chargeback_entries, agent_name=agent.agent_name)
 
     return Response(
         output.getvalue(),

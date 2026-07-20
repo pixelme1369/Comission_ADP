@@ -126,26 +126,28 @@ This is a Flask + SQLAlchemy web app for calculating agent commissions at Americ
    fragile to upload ordering (a client commissioned by the CRM before the Cordoba file arrived
    needed a whole retroactive-conversion path to fix) and required cross-referencing a second file
    at all. Credit Score lives directly in the CRM row, so there's nothing to reconcile.
-6. **Marketing Payout Debt (display-only listing, owner request July 2026):** the Chargebacks
-   tab's `Marketing Payout Debt` column — otherwise ignored everywhere else on this page — is
-   also read by `cordoba_parser.py::_parse_chargebacks` purely to feed this separate feature.
-   `routes.py::_list_cordoba_marketing_payout_debt` runs independently of
-   `_apply_cordoba_chargebacks` and is **deliberately ungated** (no is_cleared / confirmed-paid /
-   already-clawed-back checks — unlike the real deduction above): for every chargeback row with a
-   nonzero amount, it looks up ANY `ClientRecord` we have for that `crm_id` that carries our own
-   `dropped_date`, reads that record's `agent_name`, and records the raw file dollar amount in
-   `CordobaMarketingPayoutDebtEntry` (`crm_id` unique, so re-uploading the same file is a no-op)
-   keyed to that agent + the dropped month (`YYYY-MM`). If no `ClientRecord` matches, or none of
-   the matches has a dropped date on file yet, the ID is skipped with its own flash message.
-   **This never touches `gross_commission`, `net_commission`, or `clawback_amount`** — it is
-   purely informational, shown as a "Cordoba Marketing Payout Debt — For Reference Only" table at
-   the bottom of the agent detail page (`agent_detail.html`) for whichever period's `period_label`
-   matches the entry's stored month, so the owner/agent can reconcile Cordoba's own figure by hand
-   against the actual (separately computed) clawback amount above. Also included as extra rows in
-   both CSV exports (`export_agent`, `export_all_agents`) — a `Type = "Cordoba Marketing Payout
-   Debt"` row per entry, listed after that agent's normal client rows, with the amount in its own
-   `Marketing Payout Debt (Not Deducted)` column (`CLIENT_EXPORT_COLUMNS` in routes.py) so it can
-   never be mistaken for the `Clawback Amount` column.
+6. **"Cordoba Charge back" (display-only listing, owner request July 2026):** every column on the
+   Chargebacks tab — `Assigned Company`, `Enrolled Date`, `Status`, `Marketing Payout Debt`, `1st
+   Payment Cleared Date`, `Pay Freq.`, `Payments Made`, `Marketing Payment Cleared`, `Marketing
+   Payment Chargeback`, `Dropped Date` — otherwise ignored everywhere else on this page, is also
+   read verbatim by `cordoba_parser.py::_parse_chargebacks` purely to feed this separate feature.
+   `routes.py::_list_cordoba_chargebacks` runs independently of `_apply_cordoba_chargebacks` and is
+   **deliberately ungated** (no is_cleared / confirmed-paid / already-clawed-back checks — unlike
+   the real deduction above): for every chargeback row, it looks up ANY `ClientRecord` we have for
+   that `crm_id` that carries our own `dropped_date` (used only to decide which agent + period the
+   row displays under), and records a verbatim snapshot of the file row in `CordobaChargebackEntry`
+   (`crm_id` unique, so re-uploading the same file is a no-op). If no `ClientRecord` matches, or
+   none of the matches has a dropped date on file yet, the ID is skipped with its own flash message.
+   **This never touches `gross_commission`, `net_commission`, or `clawback_amount`** — it is purely
+   informational, shown as a "Cordoba Charge back" table at the bottom of the agent detail page
+   (`agent_detail.html`) for whichever period's `period_label` matches the entry's stored month
+   (from OUR OWN dropped date, never the file's own Dropped Date column), so the owner/agent can
+   reconcile Cordoba's own figures by hand against the actual (separately computed) clawback amount
+   above. Also included in both CSV exports (`export_agent`, `export_all_agents`) as a separate
+   "Cordoba Charge back" mini-table appended after that agent's normal client rows, in the exact
+   column shape of the Chargebacks tab itself (`CORDOBA_CHARGEBACK_EXPORT_COLUMNS` in routes.py) —
+   kept as its own block, not woven into `CLIENT_EXPORT_COLUMNS`, so it reads like the source file
+   and is never mistaken for the real `Clawback Amount` column.
 
 **Commission history backfill (pre-app paid history):**
 1. User uploads one or more prior account manager ledgers (.xlsx or .csv, NOT a CRM export) + a
@@ -180,7 +182,7 @@ This is a Flask + SQLAlchemy web app for calculating agent commissions at Americ
 - `app/crm_parser.py` — parses the full-history CRM export, classifies clients, calculates commissions and clawbacks in one pass, returns one dict per period
 - `app/cordoba_parser.py` — reads the Cordoba payout .xlsx (First Pays / EPF / Chargebacks tabs), returns raw normalized rows; no DB access. The EPF tab only feeds the paid-confirmation flag now (see above) — it no longer drives unit-crediting.
 - `app/commission_history_parser.py` — reads a prior account manager's ledger .xlsx (not a CRM export) to backfill pre-app commission history; no DB access
-- `app/models.py` — `CommissionPeriod`, `AgentCommission`, `ClientRecord`, `CordobaPaidClient`, `CordobaChargedBackClient`, `CordobaChargebackMatchedClient`, `CordobaMarketingPayoutDebtEntry`
+- `app/models.py` — `CommissionPeriod`, `AgentCommission`, `ClientRecord`, `CordobaPaidClient`, `CordobaChargedBackClient`, `CordobaChargebackMatchedClient`, `CordobaChargebackEntry`
 - `app/routes.py` — routes: `/`, `/upload-crm`, `/upload-cordoba-payout`, `/upload-commission-history`, `/period/<id>`, `/period/<id>/agent/<id>`, `/period/<id>/export`, `/period/<id>/agent/<id>/export`, `/period/<id>/delete`, `/history`
 
 ## Commission Business Rules (April 2026 Plan)

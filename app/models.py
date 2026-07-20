@@ -177,24 +177,43 @@ class CordobaChargebackMatchedClient(db.Model):
     uploaded_at = db.Column(db.DateTime, default=lambda: datetime.now(timezone.utc))
 
 
-class CordobaMarketingPayoutDebtEntry(db.Model):
+class CordobaChargebackEntry(db.Model):
     """
-    Display-only ledger of the Chargebacks tab's own 'Marketing Payout Debt' dollar
-    figure (owner request, July 2026). Unlike CordobaChargedBackClient, this does NOT
-    deduct anything from the agent's gross/net commission and is not gated on being
-    previously commissioned, confirmed paid, or not-already-clawed-back — it exists
-    purely so the raw file amount is visible at the bottom of the agent's commission
-    report for the month the client dropped (ClientRecord.dropped_date), for the agent
-    to reconcile manually. crm_id unique so re-uploading the same Chargebacks file is a
-    no-op.
+    Display-only ledger named "Cordoba Charge back" (owner request, July 2026): a
+    verbatim snapshot of a Chargebacks-tab row (Assigned Company, Enrolled Date,
+    Status, Marketing Payout Debt, 1st Payment Cleared Date, Pay Freq., Payments Made,
+    Marketing Payment Cleared, Marketing Payment Chargeback, and the FILE'S OWN Dropped
+    Date) for every ID that matched a client in OUR OWN commission reports. Unlike
+    CordobaChargedBackClient, this does NOT deduct anything from the agent's
+    gross/net commission and is not gated on being previously commissioned, confirmed
+    paid, or not-already-clawed-back — it exists purely so the raw file row is visible
+    at the bottom of the agent's commission report, for the agent/owner to reconcile
+    against Cordoba's own figures by hand.
+
+    agent_name and period_label — used only to decide WHERE to show this entry — still
+    come from OUR OWN ClientRecord (crm_id match, our own dropped_date), never from
+    this file's own Assigned Company / Dropped Date columns, consistent with the real
+    clawback deduction path. crm_id unique so re-uploading the same Chargebacks file is
+    a no-op.
     """
-    __tablename__ = "cordoba_marketing_payout_debt_entry"
+    __tablename__ = "cordoba_chargeback_entry"
 
     id = db.Column(db.Integer, primary_key=True)
     crm_id = db.Column(db.String(50), unique=True, nullable=False, index=True)
-    client_name = db.Column(db.String(255))
     agent_name = db.Column(db.String(255), nullable=False, index=True)
-    period_label = db.Column(db.String(10), nullable=False, index=True)  # YYYY-MM, from dropped_date
-    amount = db.Column(db.Float, default=0.0)
+    period_label = db.Column(db.String(10), nullable=False, index=True)  # YYYY-MM, from OUR dropped_date
+
+    assigned_company = db.Column(db.String(255))
+    enrolled_date = db.Column(db.String(50))
+    client_name = db.Column(db.String(255))
+    status = db.Column(db.String(100))
+    marketing_payout_debt = db.Column(db.Float, default=0.0)
+    first_payment_cleared_date = db.Column(db.String(50))
+    pay_freq = db.Column(db.String(50))
+    payments_made = db.Column(db.Integer)
+    marketing_payment_cleared = db.Column(db.String(50))
+    marketing_payment_chargeback = db.Column(db.String(50))
+    file_dropped_date = db.Column(db.String(50))  # the FILE's own Dropped Date, display-only
+
     uploaded_filename = db.Column(db.String(255))
     uploaded_at = db.Column(db.DateTime, default=lambda: datetime.now(timezone.utc))
