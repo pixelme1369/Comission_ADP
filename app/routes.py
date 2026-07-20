@@ -2,6 +2,7 @@ import csv
 import io
 import re
 from openpyxl import Workbook
+from openpyxl.styles import Font, PatternFill
 from flask import Blueprint, render_template, request, redirect, url_for, flash, Response
 from app import db
 from app.models import (
@@ -1059,10 +1060,58 @@ def _safe_sheet_title(name, used_titles):
     return title
 
 
+CURRENCY_NUMBER_FORMAT = "$#,##0.00"
+# Columns within a full ["Agent Name", "Tier", "Rate %"] + CLIENT_EXPORT_COLUMNS row
+# that should be written as real numeric currency cells, not text.
+_CURRENCY_COLUMN_INDICES = [
+    3 + CLIENT_EXPORT_COLUMNS.index("Enrolled Debt"),
+    3 + CLIENT_EXPORT_COLUMNS.index("Commission on Client"),
+]
+
+CORDOBA_HEADER_FILL = PatternFill(start_color="FFC00000", end_color="FFC00000", fill_type="solid")
+CORDOBA_HEADER_FONT = Font(bold=True, color="FFFFFFFF")
+CORDOBA_TITLE_FONT = Font(bold=True, italic=True)
+
+
+def _write_agent_client_rows(ws, agent, clients, cordoba_charged_back_ids):
+    """Appends this agent's client-detail rows into ws. Enrolled Debt and Commission
+    on Client are written as real numeric cells with a currency number format,
+    instead of the plain formatted-string values _client_export_rows returns (which
+    are fine for CSV but would show as text, not dollar amounts, in Excel)."""
+    for row in _client_export_rows(clients, cordoba_charged_back_ids):
+        full_row = [agent.agent_name, agent.adjusted_tier, f"{agent.tier_rate*100:.2f}"] + row
+        for idx in _CURRENCY_COLUMN_INDICES:
+            if full_row[idx] not in ("", None):
+                full_row[idx] = float(full_row[idx])
+        ws.append(full_row)
+        r = ws.max_row
+        for idx in _CURRENCY_COLUMN_INDICES:
+            if isinstance(full_row[idx], float):
+                ws.cell(row=r, column=idx + 1).number_format = CURRENCY_NUMBER_FORMAT
+
+
+def _write_agent_cordoba_block(ws, entries, agent_name=None):
+    """Writes the Cordoba Charge back mini-table via _write_cordoba_chargeback_block,
+    then colors its header row red/white and bolds+italicizes its title — matching
+    the reference agent_client_details_by_agent workbook's styling."""
+    rows_before = ws.max_row
+    _write_cordoba_chargeback_block(_WorksheetRowWriter(ws), entries, agent_name=agent_name)
+    if not entries:
+        return
+    title_row_num = rows_before + 2
+    header_row_num = rows_before + 3
+    ws.cell(row=title_row_num, column=1).font = CORDOBA_TITLE_FONT
+    for col in range(1, len(CORDOBA_CHARGEBACK_EXPORT_COLUMNS) + 1):
+        cell = ws.cell(row=header_row_num, column=col)
+        cell.fill = CORDOBA_HEADER_FILL
+        cell.font = CORDOBA_HEADER_FONT
+
+
 @bp.route("/period/<int:period_id>/export-by-agent")
 def export_by_agent(period_id):
-    """One .xlsx workbook for the whole period, one sheet per agent — same content
-    as export_all_agents (Agent Name/Tier/Rate % + CLIENT_EXPORT_COLUMNS, plus each
+    """One .xlsx workbook for the whole period: an "All Agents" sheet combining
+    every agent's rows first, then one sheet per agent — same content as
+    export_all_agents (Agent Name/Tier/Rate % + CLIENT_EXPORT_COLUMNS, plus each
     agent's own Cordoba Charge back block) but split into per-agent tabs instead of
     one flat CSV, per owner request (matches the agent_client_details_by_agent style)."""
     period = CommissionPeriod.query.get_or_404(period_id)
@@ -1071,6 +1120,9 @@ def export_by_agent(period_id):
     workbook = Workbook()
     workbook.remove(workbook.active)
     used_titles = set()
+
+    combined_ws = workbook.create_sheet(_safe_sheet_title("All Agents", used_titles))
+    combined_ws.append(["Agent Name", "Tier", "Rate %"] + CLIENT_EXPORT_COLUMNS)
 
     for agent in agents:
         ws = workbook.create_sheet(_safe_sheet_title(agent.agent_name, used_titles))
@@ -1083,13 +1135,14 @@ def export_by_agent(period_id):
             CordobaChargebackMatchedClient.query.filter(CordobaChargebackMatchedClient.crm_id.in_(crm_ids)).all()
         } if crm_ids else set()
 
-        for row in _client_export_rows(clients, cordoba_charged_back_ids):
-            ws.append([agent.agent_name, agent.adjusted_tier, f"{agent.tier_rate*100:.2f}"] + row)
+        _write_agent_client_rows(ws, agent, clients, cordoba_charged_back_ids)
+        _write_agent_client_rows(combined_ws, agent, clients, cordoba_charged_back_ids)
 
         cordoba_chargeback_entries = CordobaChargebackEntry.query.filter_by(
             agent_name=agent.agent_name, period_label=period.period_label,
         ).order_by(CordobaChargebackEntry.uploaded_at).all()
-        _write_cordoba_chargeback_block(_WorksheetRowWriter(ws), cordoba_chargeback_entries)
+        _write_agent_cordoba_block(ws, cordoba_chargeback_entries)
+        _write_agent_cordoba_block(combined_ws, cordoba_chargeback_entries, agent_name=agent.agent_name)
 
     if not agents:
         workbook.create_sheet("No Agents")
