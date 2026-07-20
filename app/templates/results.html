@@ -75,12 +75,11 @@
         <th data-col="3">Rate</th>
         <th data-col="4">Cleared Debt</th>
         <th data-col="5">Gross Commission</th>
-        <th data-col="6">Clawback</th>
-        <th data-col="7">Net Commission</th>
-        <th data-col="8">Cancel Rate</th>
-        <th data-col="9">Quality Bonus</th>
-        <th data-col="10">NSF</th>
-        <th data-col="11">Pending</th>
+        <th data-col="6">Net Commission</th>
+        <th data-col="7">Cancel Rate</th>
+        <th data-col="8">Quality Bonus</th>
+        <th data-col="9">NSF</th>
+        <th data-col="10">Pending</th>
         <th>Notes</th>
       </tr>
     </thead>
@@ -111,11 +110,6 @@
         <td>{% if a.units_cleared > 0 %}{{ "%.2f"|format(a.tier_rate * 100) }}%{% else %}—{% endif %}</td>
         <td>${{ "{:,.2f}".format(a.total_cleared_debt) }}</td>
         <td>${{ "{:,.2f}".format(a.gross_commission) }}</td>
-        <td>
-          {% if a.clawback_amount > 0 %}
-            <span style="color:#991b1b;font-weight:600;">-${{ "{:,.2f}".format(a.clawback_amount) }}</span>
-          {% else %}—{% endif %}
-        </td>
         <td><strong>${{ "{:,.2f}".format(a.net_commission) }}</strong></td>
         <td>{{ "%.1f"|format(a.cancellation_rate) }}%</td>
         <td>
