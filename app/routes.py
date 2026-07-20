@@ -1,5 +1,7 @@
 import csv
 import io
+import re
+from openpyxl import Workbook
 from flask import Blueprint, render_template, request, redirect, url_for, flash, Response
 from app import db
 from app.models import (
@@ -1027,6 +1029,82 @@ def export_all_agents(period_id):
         output.getvalue(),
         mimetype="text/csv",
         headers={"Content-Disposition": f"attachment; filename=all_agents_client_details_{period.period_label}.csv"},
+    )
+
+
+class _WorksheetRowWriter:
+    """Adapts an openpyxl worksheet to the csv.writer .writerow() interface so
+    _write_cordoba_chargeback_block can write into either without duplicating
+    its column layout/formatting logic."""
+
+    def __init__(self, worksheet):
+        self.worksheet = worksheet
+
+    def writerow(self, row):
+        self.worksheet.append(row)
+
+
+def _safe_sheet_title(name, used_titles):
+    """Excel sheet titles: max 31 chars, and : \\ / ? * [ ] are illegal — dedup
+    on collision (e.g. two agents sharing a truncated name)."""
+    cleaned = re.sub(r'[:\\/?*\[\]]', "", name or "").strip() or "Agent"
+    base = cleaned[:31]
+    title = base
+    n = 2
+    while title in used_titles:
+        suffix = f" ({n})"
+        title = base[:31 - len(suffix)] + suffix
+        n += 1
+    used_titles.add(title)
+    return title
+
+
+@bp.route("/period/<int:period_id>/export-by-agent")
+def export_by_agent(period_id):
+    """One .xlsx workbook for the whole period, one sheet per agent — same content
+    as export_all_agents (Agent Name/Tier/Rate % + CLIENT_EXPORT_COLUMNS, plus each
+    agent's own Cordoba Charge back block) but split into per-agent tabs instead of
+    one flat CSV, per owner request (matches the agent_client_details_by_agent style)."""
+    period = CommissionPeriod.query.get_or_404(period_id)
+    agents = AgentCommission.query.filter_by(period_id=period_id).order_by(AgentCommission.agent_name).all()
+
+    workbook = Workbook()
+    workbook.remove(workbook.active)
+    used_titles = set()
+
+    for agent in agents:
+        ws = workbook.create_sheet(_safe_sheet_title(agent.agent_name, used_titles))
+        ws.append(["Agent Name", "Tier", "Rate %"] + CLIENT_EXPORT_COLUMNS)
+
+        clients = ClientRecord.query.filter_by(agent_commission_id=agent.id).all()
+        crm_ids = {c.crm_id for c in clients if c.crm_id}
+        cordoba_charged_back_ids = {
+            cb.crm_id for cb in
+            CordobaChargebackMatchedClient.query.filter(CordobaChargebackMatchedClient.crm_id.in_(crm_ids)).all()
+        } if crm_ids else set()
+
+        for row in _client_export_rows(clients, cordoba_charged_back_ids):
+            ws.append([agent.agent_name, agent.adjusted_tier, f"{agent.tier_rate*100:.2f}"] + row)
+
+        cordoba_chargeback_entries = CordobaChargebackEntry.query.filter_by(
+            agent_name=agent.agent_name, period_label=period.period_label,
+        ).order_by(CordobaChargebackEntry.uploaded_at).all()
+        _write_cordoba_chargeback_block(_WorksheetRowWriter(ws), cordoba_chargeback_entries)
+
+    if not agents:
+        workbook.create_sheet("No Agents")
+
+    output = io.BytesIO()
+    workbook.save(output)
+    output.seek(0)
+
+    return Response(
+        output.getvalue(),
+        mimetype="application/vnd.openxmlformats-officedocument.spreadsheetml.sheet",
+        headers={
+            "Content-Disposition":
+                f"attachment; filename=agent_client_details_by_agent_{period.period_label}.xlsx"
+        },
     )
 
 

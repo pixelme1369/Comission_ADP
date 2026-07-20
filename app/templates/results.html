@@ -51,6 +51,7 @@
 <div class="table-actions">
   <a href="{{ url_for('main.export_period', period_id=period.id) }}" class="btn btn-primary">Export CSV</a>
   <a href="{{ url_for('main.export_all_agents', period_id=period.id) }}" class="btn btn-primary">Export All Client Details CSV</a>
+  <a href="{{ url_for('main.export_by_agent', period_id=period.id) }}" class="btn btn-primary">Export Client Details by Agent (Excel)</a>
   <form method="POST" action="{{ url_for('main.delete_period', period_id=period.id) }}" style="display:inline"
         onsubmit="return confirm('Delete period {{ period.period_label }}? This cannot be undone.')">
     <button type="submit" class="btn btn-danger">Delete Period</button>
