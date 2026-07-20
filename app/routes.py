@@ -898,6 +898,7 @@ CLIENT_EXPORT_COLUMNS = [
     "1st Payment Cleared Date", "2nd Payment Cleared Date", "Dropped Date",
     "Payments Made", "Pay Freq.", "# NSF", "Credit Score",
     "Commission on Client", "Clawback Amount", "Cordoba Payout", "Cordoba Clawback",
+    "Marketing Payout Debt (Not Deducted)",
 ]
 
 
@@ -917,6 +918,7 @@ def _client_export_rows(clients, cordoba_charged_back_ids=frozenset()):
             f"{c.commission_on_client:.2f}", "",
             ("Yes" if c.cordoba_paid else "No") if c.is_cleared else "",
             ("Yes" if c.crm_id in cordoba_charged_back_ids else "No") if c.is_cleared else "",
+            "",
         ])
     for c in clawback_clients:
         rows.append([
@@ -927,6 +929,24 @@ def _client_export_rows(clients, cordoba_charged_back_ids=frozenset()):
             c.payments_made, c.pay_freq or "", c.nsf_count,
             c.credit_score if c.credit_score is not None else "",
             "", f"-{c.clawback_amount:.2f}", "", "",
+            "",
+        ])
+    return rows
+
+
+def _marketing_payout_debt_export_rows(entries):
+    """Extra rows appended under an agent's client rows in the CSV exports, for
+    CordobaMarketingPayoutDebtEntry entries — the raw, display-only Chargebacks-tab
+    'Marketing Payout Debt' figure (see _list_cordoba_marketing_payout_debt). Never
+    part of Clawback Amount; kept in its own column and its own Status label so it
+    reads unambiguously as informational when the CSV is opened without this app."""
+    rows = []
+    for e in entries:
+        rows.append([
+            "Cordoba Marketing Payout Debt", e.crm_id or "", e.client_name or "", "", "",
+            "Informational only — not deducted",
+            "", "", "", "", "", "", "", "", "", "", "",
+            f"{e.amount:.2f}",
         ])
     return rows
 
@@ -942,10 +962,16 @@ def export_agent(period_id, agent_id):
         CordobaChargebackMatchedClient.query.filter(CordobaChargebackMatchedClient.crm_id.in_(crm_ids)).all()
     } if crm_ids else set()
 
+    marketing_payout_debt_entries = CordobaMarketingPayoutDebtEntry.query.filter_by(
+        agent_name=agent.agent_name, period_label=period.period_label,
+    ).order_by(CordobaMarketingPayoutDebtEntry.uploaded_at).all()
+
     output = io.StringIO()
     writer = csv.writer(output)
     writer.writerow(CLIENT_EXPORT_COLUMNS)
     for row in _client_export_rows(clients, cordoba_charged_back_ids):
+        writer.writerow(row)
+    for row in _marketing_payout_debt_export_rows(marketing_payout_debt_entries):
         writer.writerow(row)
 
     return Response(
@@ -970,7 +996,13 @@ def export_all_agents(period_id):
             cb.crm_id for cb in
             CordobaChargebackMatchedClient.query.filter(CordobaChargebackMatchedClient.crm_id.in_(crm_ids)).all()
         } if crm_ids else set()
+        marketing_payout_debt_entries = CordobaMarketingPayoutDebtEntry.query.filter_by(
+            agent_name=agent.agent_name, period_label=period.period_label,
+        ).order_by(CordobaMarketingPayoutDebtEntry.uploaded_at).all()
+
         for row in _client_export_rows(clients, cordoba_charged_back_ids):
+            writer.writerow([agent.agent_name, agent.adjusted_tier, f"{agent.tier_rate*100:.2f}"] + row)
+        for row in _marketing_payout_debt_export_rows(marketing_payout_debt_entries):
             writer.writerow([agent.agent_name, agent.adjusted_tier, f"{agent.tier_rate*100:.2f}"] + row)
 
     return Response(

@@ -141,8 +141,11 @@ This is a Flask + SQLAlchemy web app for calculating agent commissions at Americ
    purely informational, shown as a "Cordoba Marketing Payout Debt — For Reference Only" table at
    the bottom of the agent detail page (`agent_detail.html`) for whichever period's `period_label`
    matches the entry's stored month, so the owner/agent can reconcile Cordoba's own figure by hand
-   against the actual (separately computed) clawback amount above. Not currently included in any
-   CSV export.
+   against the actual (separately computed) clawback amount above. Also included as extra rows in
+   both CSV exports (`export_agent`, `export_all_agents`) — a `Type = "Cordoba Marketing Payout
+   Debt"` row per entry, listed after that agent's normal client rows, with the amount in its own
+   `Marketing Payout Debt (Not Deducted)` column (`CLIENT_EXPORT_COLUMNS` in routes.py) so it can
+   never be mistaken for the `Clawback Amount` column.
 
 **Commission history backfill (pre-app paid history):**
 1. User uploads one or more prior account manager ledgers (.xlsx or .csv, NOT a CRM export) + a
