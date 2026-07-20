@@ -855,7 +855,6 @@ def agent_detail(period_id, agent_id):
     cordoba_chargeback_entries = CordobaChargebackEntry.query.filter_by(
         agent_name=agent.agent_name, period_label=period.period_label,
     ).order_by(CordobaChargebackEntry.uploaded_at).all()
-    cordoba_chargeback_debt_total = sum(e.marketing_payout_debt or 0.0 for e in cordoba_chargeback_entries)
 
     return render_template(
         "agent_detail.html",
@@ -865,7 +864,6 @@ def agent_detail(period_id, agent_id):
         clawback_clients=clawback_clients,
         cordoba_charged_back_ids=cordoba_charged_back_ids,
         cordoba_chargeback_entries=cordoba_chargeback_entries,
-        cordoba_chargeback_debt_total=cordoba_chargeback_debt_total,
     )
 
 
