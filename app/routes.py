@@ -1076,14 +1076,100 @@ def _write_cordoba_rows(ws, entries, agent_name):
         ])
 
 
+DASHBOARD_TITLE_FONT = Font(bold=True, size=16)
+DASHBOARD_HEADER_FILL = PatternFill(start_color="FFD9E1F2", end_color="FFD9E1F2", fill_type="solid")
+DASHBOARD_HEADER_FONT = Font(bold=True, italic=True)
+DASHBOARD_NEGATIVE_CURRENCY_FORMAT = '$#,##0.00;($#,##0.00);"$ -"'
+
+
+def _write_dashboard_summary(ws, agent_rows):
+    """Writes the two-table period overview: "Enrolled debt by Rep" (debt/clawback/
+    units per agent, "RevShares" = units where Credit Score <= 500 per owner
+    definition, plus a Total Units column combining the two) and "Commission payout"
+    (rate/bonus/net commission per agent). Bonus is left blank for manual entry — the
+    app has no dollar bonus calculation (quality_bonus_eligible is display-only)."""
+    LEFT_COL = 1     # A: Sales Rep
+    # Left table spans A-F (6 columns); G is a blank gap; right table starts at H.
+    RIGHT_COL = 8
+
+    ws.cell(row=1, column=LEFT_COL, value="Enrolled debt by Rep").font = DASHBOARD_TITLE_FONT
+    ws.cell(row=1, column=RIGHT_COL, value="Commission payout").font = DASHBOARD_TITLE_FONT
+
+    left_headers = ["Sales Rep", "Sum of Enrolled Debt", "Sum of To Subtract", "Sum of Units",
+                     "RevShares (Credit Score <= 500)", "Total Units"]
+    right_headers = ["Sales Rep", "Rate %", "Bonus", "Total Commissions"]
+
+    header_row = 2
+    for i, h in enumerate(left_headers):
+        c = ws.cell(row=header_row, column=LEFT_COL + i, value=h)
+        c.font = DASHBOARD_HEADER_FONT
+        c.fill = DASHBOARD_HEADER_FILL
+    for i, h in enumerate(right_headers):
+        c = ws.cell(row=header_row, column=RIGHT_COL + i, value=h)
+        c.font = DASHBOARD_HEADER_FONT
+        c.fill = DASHBOARD_HEADER_FILL
+
+    totals = dict(debt=0.0, to_subtract=0.0, units=0, revshares=0, total_units=0, commissions=0.0)
+    r = header_row + 1
+    for row_data in agent_rows:
+        ws.cell(row=r, column=LEFT_COL, value=row_data["agent_name"])
+        ws.cell(row=r, column=LEFT_COL + 1, value=row_data["enrolled_debt"]).number_format = CURRENCY_NUMBER_FORMAT
+        ws.cell(row=r, column=LEFT_COL + 2, value=-row_data["to_subtract"] if row_data["to_subtract"] else 0.0) \
+            .number_format = DASHBOARD_NEGATIVE_CURRENCY_FORMAT
+        ws.cell(row=r, column=LEFT_COL + 3, value=row_data["units"])
+        ws.cell(row=r, column=LEFT_COL + 4, value=row_data["revshares"] or None)
+        ws.cell(row=r, column=LEFT_COL + 5, value=row_data["total_units"])
+
+        ws.cell(row=r, column=RIGHT_COL, value=row_data["agent_name"])
+        ws.cell(row=r, column=RIGHT_COL + 1, value=row_data["rate"]).number_format = "0.00%"
+        # Bonus (RIGHT_COL + 2) intentionally left blank for manual entry.
+        ws.cell(row=r, column=RIGHT_COL + 3, value=row_data["net_commission"]).number_format = CURRENCY_NUMBER_FORMAT
+
+        totals["debt"] += row_data["enrolled_debt"]
+        totals["to_subtract"] += row_data["to_subtract"]
+        totals["units"] += row_data["units"]
+        totals["revshares"] += row_data["revshares"]
+        totals["total_units"] += row_data["total_units"]
+        totals["commissions"] += row_data["net_commission"]
+        r += 1
+
+    ws.cell(row=r, column=LEFT_COL, value="Grand Total").font = Font(bold=True)
+    ws.cell(row=r, column=LEFT_COL + 1, value=totals["debt"]).font = Font(bold=True)
+    ws.cell(row=r, column=LEFT_COL + 1).number_format = CURRENCY_NUMBER_FORMAT
+    to_subtract_cell = ws.cell(row=r, column=LEFT_COL + 2,
+                                value=-totals["to_subtract"] if totals["to_subtract"] else 0.0)
+    to_subtract_cell.font = Font(bold=True)
+    to_subtract_cell.number_format = DASHBOARD_NEGATIVE_CURRENCY_FORMAT
+    ws.cell(row=r, column=LEFT_COL + 3, value=totals["units"]).font = Font(bold=True)
+    ws.cell(row=r, column=LEFT_COL + 4, value=totals["revshares"]).font = Font(bold=True)
+    ws.cell(row=r, column=LEFT_COL + 5, value=totals["total_units"]).font = Font(bold=True)
+
+    ws.cell(row=r, column=RIGHT_COL + 2, value="Total Commissions:").font = Font(bold=True)
+    commissions_cell = ws.cell(row=r, column=RIGHT_COL + 3, value=totals["commissions"])
+    commissions_cell.font = Font(bold=True)
+    commissions_cell.number_format = CURRENCY_NUMBER_FORMAT
+
+    ws.column_dimensions["A"].width = 20
+    ws.column_dimensions["B"].width = 18
+    ws.column_dimensions["C"].width = 16
+    ws.column_dimensions["D"].width = 12
+    ws.column_dimensions["E"].width = 26
+    ws.column_dimensions["F"].width = 12
+    ws.column_dimensions["H"].width = 20
+    ws.column_dimensions["I"].width = 10
+    ws.column_dimensions["J"].width = 12
+    ws.column_dimensions["K"].width = 18
+
+
 @bp.route("/period/<int:period_id>/export-by-agent")
 def export_by_agent(period_id):
-    """One .xlsx workbook for the whole period: an "All Agents" sheet combining every
-    agent's cleared/pending/cancelled client rows (no chargebacks mixed in, per owner
-    request), an "All Chargeback" sheet combining every agent's Cordoba Charge back rows,
-    then one sheet per agent with their own client rows AND their own Cordoba Charge back
-    block appended below (same as before "All Chargeback" existed) — same underlying data
-    as export_all_agents but split into tabs (matches the agent_client_details_by_agent
+    """One .xlsx workbook for the whole period: a "Dashboard Summary" sheet (enrolled
+    debt/units/clawback and commission payout per agent), an "All Agents" sheet
+    combining every agent's cleared/pending/cancelled client rows (no chargebacks
+    mixed in, per owner request), an "All Chargeback" sheet combining every agent's
+    Cordoba Charge back rows, then one sheet per agent with their own client rows AND
+    their own Cordoba Charge back block appended below — same underlying data as
+    export_all_agents but split into tabs (matches the agent_client_details_by_agent
     style)."""
     period = CommissionPeriod.query.get_or_404(period_id)
     agents = AgentCommission.query.filter_by(period_id=period_id).order_by(AgentCommission.agent_name).all()
@@ -1092,11 +1178,15 @@ def export_by_agent(period_id):
     workbook.remove(workbook.active)
     used_titles = set()
 
+    dashboard_ws = workbook.create_sheet(_safe_sheet_title("Dashboard Summary", used_titles))
+
     combined_ws = workbook.create_sheet(_safe_sheet_title("All Agents", used_titles))
     combined_ws.append(["Agent Name", "Tier", "Rate %"] + CLIENT_EXPORT_COLUMNS)
 
     chargeback_ws = workbook.create_sheet(_safe_sheet_title("All Chargeback", used_titles))
     _write_cordoba_header(chargeback_ws)
+
+    dashboard_rows = []
 
     for agent in agents:
         ws = workbook.create_sheet(_safe_sheet_title(agent.agent_name, used_titles))
@@ -1112,6 +1202,18 @@ def export_by_agent(period_id):
         _write_agent_client_rows(ws, agent, clients, cordoba_charged_back_ids)
         _write_agent_client_rows(combined_ws, agent, clients, cordoba_charged_back_ids)
 
+        revshares = sum(1 for c in clients if c.is_cleared and c.is_low_credit)
+        dashboard_rows.append({
+            "agent_name": agent.agent_name,
+            "enrolled_debt": agent.total_cleared_debt,
+            "to_subtract": agent.clawback_amount,
+            "units": agent.units_cleared - revshares,
+            "revshares": revshares,
+            "total_units": agent.units_cleared,
+            "rate": agent.tier_rate,
+            "net_commission": agent.net_commission,
+        })
+
         cordoba_chargeback_entries = CordobaChargebackEntry.query.filter_by(
             agent_name=agent.agent_name, period_label=period.period_label,
         ).order_by(CordobaChargebackEntry.uploaded_at).all()
@@ -1122,6 +1224,8 @@ def export_by_agent(period_id):
             _write_cordoba_rows(ws, cordoba_chargeback_entries, agent.agent_name)
 
         _write_cordoba_rows(chargeback_ws, cordoba_chargeback_entries, agent.agent_name)
+
+    _write_dashboard_summary(dashboard_ws, dashboard_rows)
 
     if not agents:
         workbook.create_sheet("No Agents")
