@@ -175,3 +175,26 @@ class CordobaChargebackMatchedClient(db.Model):
     client_name = db.Column(db.String(255))
     uploaded_filename = db.Column(db.String(255))
     uploaded_at = db.Column(db.DateTime, default=lambda: datetime.now(timezone.utc))
+
+
+class CordobaMarketingPayoutDebtEntry(db.Model):
+    """
+    Display-only ledger of the Chargebacks tab's own 'Marketing Payout Debt' dollar
+    figure (owner request, July 2026). Unlike CordobaChargedBackClient, this does NOT
+    deduct anything from the agent's gross/net commission and is not gated on being
+    previously commissioned, confirmed paid, or not-already-clawed-back — it exists
+    purely so the raw file amount is visible at the bottom of the agent's commission
+    report for the month the client dropped (ClientRecord.dropped_date), for the agent
+    to reconcile manually. crm_id unique so re-uploading the same Chargebacks file is a
+    no-op.
+    """
+    __tablename__ = "cordoba_marketing_payout_debt_entry"
+
+    id = db.Column(db.Integer, primary_key=True)
+    crm_id = db.Column(db.String(50), unique=True, nullable=False, index=True)
+    client_name = db.Column(db.String(255))
+    agent_name = db.Column(db.String(255), nullable=False, index=True)
+    period_label = db.Column(db.String(10), nullable=False, index=True)  # YYYY-MM, from dropped_date
+    amount = db.Column(db.Float, default=0.0)
+    uploaded_filename = db.Column(db.String(255))
+    uploaded_at = db.Column(db.DateTime, default=lambda: datetime.now(timezone.utc))

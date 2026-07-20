@@ -265,4 +265,38 @@
 </div>
 {% endif %}
 
+<!-- Cordoba Marketing Payout Debt (informational only, not deducted) -->
+{% if marketing_payout_debt_entries %}
+<h2 style="margin-top:1.5rem;">Cordoba Marketing Payout Debt — For Reference Only ({{ marketing_payout_debt_entries|length }})</h2>
+<p class="muted" style="margin-bottom:0.75rem;">
+  Raw "Marketing Payout Debt" amounts from Cordoba's Chargebacks tab for clients that dropped this period.
+  This is listed for reconciliation only — it has NOT been deducted from this agent's Gross or Net Commission above.
+</p>
+<div class="table-wrapper">
+  <table class="data-table">
+    <thead>
+      <tr>
+        <th>ID</th>
+        <th>Client Name</th>
+        <th>Marketing Payout Debt</th>
+      </tr>
+    </thead>
+    <tbody>
+      {% for e in marketing_payout_debt_entries %}
+      <tr>
+        <td class="muted">{{ e.crm_id or '—' }}</td>
+        <td>{{ e.client_name or '—' }}</td>
+        <td>${{ "{:,.2f}".format(e.amount) }}</td>
+      </tr>
+      {% endfor %}
+      <tr>
+        <td></td>
+        <td class="muted">Total</td>
+        <td><strong>${{ "{:,.2f}".format(marketing_payout_debt_total) }}</strong></td>
+      </tr>
+    </tbody>
+  </table>
+</div>
+{% endif %}
+
 {% endblock %}

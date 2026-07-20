@@ -33,6 +33,17 @@ def _clean_date(value):
     return str(value).strip() or None
 
 
+def _clean_amount(value) -> float:
+    if value is None or value == "":
+        return 0.0
+    if isinstance(value, (int, float)):
+        return float(value)
+    try:
+        return float(str(value).strip().replace("$", "").replace(",", "") or 0)
+    except ValueError:
+        return 0.0
+
+
 def _sheet_by_name(workbook, wanted_lower: str):
     for name in workbook.sheetnames:
         if name.strip().lower() == wanted_lower:
@@ -46,11 +57,17 @@ def _header_map(sheet) -> dict:
 
 
 def _parse_chargebacks(workbook, errors: list) -> list:
-    """Owner policy (confirmed July 2026): only the 'ID' column matters here — it's
-    cross-referenced against our own ClientRecord history in routes.py. Every other
-    column (client debt, dates, payments made, ...) is ignored; the agent, the client's
-    debt, and the dropped-date-to-place-the-deduction all come from OUR OWN records,
-    not this file. 'Full Name' is read only to make skip/flash messages readable."""
+    """Owner policy (confirmed July 2026): only the 'ID' column matters for the actual
+    clawback deduction — it's cross-referenced against our own ClientRecord history in
+    routes.py. The client's debt and the dropped-date-to-place-the-deduction still come
+    from OUR OWN records, not this file. 'Full Name' is read only to make skip/flash
+    messages readable.
+
+    'Marketing Payout Debt' (owner request, July 2026) is also read here, but ONLY for
+    the separate, display-only "listed at the bottom of the agent's commission report"
+    feature in routes.py (_list_cordoba_marketing_payout_debt / CordobaMarketingPayoutDebtEntry)
+    — it is never used for the real clawback math above, which still recalculates via
+    calculate_clawback_amount on our own enrolled_debt."""
     sheet = _sheet_by_name(workbook, "chargebacks")
     if sheet is None:
         return []
@@ -74,6 +91,7 @@ def _parse_chargebacks(workbook, errors: list) -> list:
         rows.append({
             "crm_id": crm_id,
             "client_name": cell(row, "full name") or "",
+            "marketing_payout_debt": _clean_amount(cell(row, "marketing payout debt")),
         })
     return rows
 

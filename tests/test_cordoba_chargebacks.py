@@ -150,9 +150,12 @@ def test_skipped_when_we_have_no_dropped_date_yet(db):
 
 def test_marketing_payout_debt_column_is_never_used(db):
     """Owner policy (confirmed July 2026): the Chargebacks tab's Marketing Payout Debt
-    column is ignored entirely — client debt comes only from our own CRM-recorded
-    Enrolled Debt. If we don't have one, the clawback computes to $0 (no fallback to
-    the file's figure, even though the parser no longer even extracts it)."""
+    column is ignored entirely by the actual clawback deduction — client debt comes
+    only from our own CRM-recorded Enrolled Debt. If we don't have one, the clawback
+    computes to $0 (no fallback to the file's figure). The parser does now also
+    extract this column (owner request), but only to feed the separate, display-only
+    _list_cordoba_marketing_payout_debt / CordobaMarketingPayoutDebtEntry listing —
+    _apply_cordoba_chargebacks itself never reads it."""
     period, agent = seed_paid_june_client(db)
     ClientRecord.query.filter_by(crm_id=CRM_ID).update({"enrolled_debt": 0.0})
     db.session.commit()
