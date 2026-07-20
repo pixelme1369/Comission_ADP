@@ -1033,18 +1033,6 @@ def export_all_agents(period_id):
     )
 
 
-class _WorksheetRowWriter:
-    """Adapts an openpyxl worksheet to the csv.writer .writerow() interface so
-    _write_cordoba_chargeback_block can write into either without duplicating
-    its column layout/formatting logic."""
-
-    def __init__(self, worksheet):
-        self.worksheet = worksheet
-
-    def writerow(self, row):
-        self.worksheet.append(row)
-
-
 def _safe_sheet_title(name, used_titles):
     """Excel sheet titles: max 31 chars, and : \\ / ? * [ ] are illegal — dedup
     on collision (e.g. two agents sharing a truncated name)."""
@@ -1070,7 +1058,7 @@ _CURRENCY_COLUMN_INDICES = [
 
 CORDOBA_HEADER_FILL = PatternFill(start_color="FFC00000", end_color="FFC00000", fill_type="solid")
 CORDOBA_HEADER_FONT = Font(bold=True, color="FFFFFFFF")
-CORDOBA_TITLE_FONT = Font(bold=True, italic=True)
+CORDOBA_CHARGEBACK_XLSX_COLUMNS = ["Agent Name"] + CORDOBA_CHARGEBACK_EXPORT_COLUMNS
 
 
 def _write_agent_client_rows(ws, agent, clients, cordoba_charged_back_ids):
@@ -1090,21 +1078,32 @@ def _write_agent_client_rows(ws, agent, clients, cordoba_charged_back_ids):
                 ws.cell(row=r, column=idx + 1).number_format = CURRENCY_NUMBER_FORMAT
 
 
-def _write_agent_cordoba_block(ws, entries, agent_name=None):
-    """Writes the Cordoba Charge back mini-table via _write_cordoba_chargeback_block,
-    then colors its header row red/white and bolds+italicizes its title — matching
-    the reference agent_client_details_by_agent workbook's styling."""
-    rows_before = ws.max_row
-    _write_cordoba_chargeback_block(_WorksheetRowWriter(ws), entries, agent_name=agent_name)
+def _write_agent_cordoba_block(ws, entries, agent_name):
+    """Writes the Cordoba Charge back mini-table with Agent Name as its own leading
+    column (no separate title row above it, per owner request) — a solid red,
+    white-bold header row followed by one data row per entry."""
     if not entries:
         return
-    title_row_num = rows_before + 2
-    header_row_num = rows_before + 3
-    ws.cell(row=title_row_num, column=1).font = CORDOBA_TITLE_FONT
-    for col in range(1, len(CORDOBA_CHARGEBACK_EXPORT_COLUMNS) + 1):
+    ws.append([])
+    ws.append(CORDOBA_CHARGEBACK_XLSX_COLUMNS)
+    # ws.max_row only advances once a row holds a real value, so it's read AFTER
+    # appending the header (not after the blank spacer row) to land on the right row.
+    header_row_num = ws.max_row
+    for col in range(1, len(CORDOBA_CHARGEBACK_XLSX_COLUMNS) + 1):
         cell = ws.cell(row=header_row_num, column=col)
         cell.fill = CORDOBA_HEADER_FILL
         cell.font = CORDOBA_HEADER_FONT
+    for e in entries:
+        ws.append([
+            agent_name,
+            e.assigned_company or "", e.enrolled_date or "", e.crm_id or "",
+            e.client_name or "", e.status or "",
+            f"${e.marketing_payout_debt:,.2f}",
+            e.first_payment_cleared_date or "", e.pay_freq or "",
+            e.payments_made if e.payments_made is not None else "",
+            e.marketing_payment_cleared or "", e.marketing_payment_chargeback or "",
+            e.file_dropped_date or "",
+        ])
 
 
 @bp.route("/period/<int:period_id>/export-by-agent")
@@ -1141,8 +1140,8 @@ def export_by_agent(period_id):
         cordoba_chargeback_entries = CordobaChargebackEntry.query.filter_by(
             agent_name=agent.agent_name, period_label=period.period_label,
         ).order_by(CordobaChargebackEntry.uploaded_at).all()
-        _write_agent_cordoba_block(ws, cordoba_chargeback_entries)
-        _write_agent_cordoba_block(combined_ws, cordoba_chargeback_entries, agent_name=agent.agent_name)
+        _write_agent_cordoba_block(ws, cordoba_chargeback_entries, agent.agent_name)
+        _write_agent_cordoba_block(combined_ws, cordoba_chargeback_entries, agent.agent_name)
 
     if not agents:
         workbook.create_sheet("No Agents")
