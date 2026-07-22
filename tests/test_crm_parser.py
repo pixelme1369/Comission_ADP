@@ -56,6 +56,14 @@ class TestSafeThreshold:
         assert _safe_payment_threshold("Bi-Weekly") == 4
         assert _safe_payment_threshold("bi-weekly") == 4
 
+    def test_semimonthly_is_treated_same_as_biweekly(self):
+        # Owner confirmed (July 2026): Semi-Monthly pays out on the same cadence
+        # as Bi-Weekly for clawback-safety purposes, so it needs the same 4-payment
+        # threshold rather than falling into the generic unknown-freq fallback.
+        assert _safe_payment_threshold("Semi-Monthly") == 4
+        assert _safe_payment_threshold("semimonthly") == 4
+        assert _safe_payment_threshold("Semi Monthly") == 4
+
 
 class TestClassification:
     def test_cleared_clients_grouped_by_month(self):

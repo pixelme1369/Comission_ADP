@@ -234,6 +234,7 @@ Checked in this order — the payments-made safe threshold is evaluated before t
 |---|---|
 | Monthly | 2 |
 | Biweekly | 4 |
+| Semi-Monthly | 4 (owner-confirmed: same cadence as Biweekly) |
 | Missing / unknown | 3 (legacy fallback) |
 
 Implemented in `_safe_payment_threshold(pay_freq)` in `crm_parser.py`. Also applies to clients still marked "Pending Affiliate Cancellation": if they've already hit the safe threshold, they're classified as `cleared` instead of held in `pending`.
