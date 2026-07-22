@@ -53,7 +53,7 @@ def _safe_payment_threshold(pay_freq: str) -> int:
     # a hyphen-sensitive match here previously fell through to the unknown/missing
     # fallback (3) for every real Bi-Weekly row instead of the intended 4.
     freq = (pay_freq or "").strip().lower().replace("-", "").replace(" ", "")
-    if freq == "biweekly":
+    if freq in ("biweekly", "semimonthly"):
         return 4
     if freq == "monthly":
         return 2
