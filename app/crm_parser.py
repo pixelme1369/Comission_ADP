@@ -10,7 +10,10 @@ For each client row:
 
   - If 1st Payment Cleared Date filled + Dropped Date filled + different month + Payments Made
     hits the safe threshold for their Pay Freq. (Monthly=2, Biweekly=4, unknown=3) before dropping
-    → SAFE_CANCEL: no clawback, regardless of whether the drop happened before or after the payout date
+    → SAFE_CANCEL: no clawback, regardless of whether the drop happened before or after the payout
+    date. Still counts as a full unit toward the agent's tier for that month (owner policy, July
+    2026) — but earns $0 commission and is excluded from the cancellation-rate denominator, same
+    "unit credited, no dollars" treatment as a Credit Score <= 500 client (see below).
 
   - If 1st Payment Cleared Date filled + Dropped Date filled + different month + never hit the safe
     threshold + dropped before the 25th payout date
@@ -310,14 +313,23 @@ def parse_crm_and_calculate(file_bytes: bytes, filename: str, already_cleared_cr
     # Step 1: Build per-agent per-period cleared unit counts
     # (agent, cleared_period) → list of cleared clients
     # ---------------------------------------------------------------
-    cleared_buckets = defaultdict(list)   # (agent, period) → cleared clients
-    cancel_buckets = defaultdict(list)    # (agent, period) → cancelled clients (for cancel rate)
-    pending_buckets = defaultdict(list)   # (agent, period) → pending clients
+    cleared_buckets = defaultdict(list)      # (agent, period) → cleared clients
+    cancel_buckets = defaultdict(list)       # (agent, period) → cancelled clients (for cancel rate)
+    pending_buckets = defaultdict(list)      # (agent, period) → pending clients
+    safe_cancel_buckets = defaultdict(list)  # (agent, period) → safe-cancel clients
 
     for c in all_clients:
         key = (c["agent_name"], c["cleared_period"])
         if c["unit_status"] == "cleared":
             cleared_buckets[key].append(c)
+        elif c["unit_status"] == "safe_cancel":
+            # OWNER POLICY (confirmed July 2026): a safe_cancel client protected the
+            # agent's commission (enough payments landed before they dropped), but the
+            # client's own dollars don't belong in the payout — same "unit credited,
+            # $0 commission" treatment Credit Score gets (see Step 2). Kept in its own
+            # bucket rather than merged into cleared_buckets so the cancellation-rate
+            # denominator below still excludes them, per the locked cancel-rate policy.
+            safe_cancel_buckets[key].append(c)
         elif c["unit_status"] == "clawback":
             # Only clawback clients count toward cancel rate
             # same_month_cancel and safe_cancel are excluded.
@@ -337,24 +349,41 @@ def parse_crm_and_calculate(file_bytes: bytes, filename: str, already_cleared_cr
     # ---------------------------------------------------------------
     agent_period_results = {}  # (agent, cleared_period) → result dict
 
-    for (agent_name, period_label), cleared in cleared_buckets.items():
-        cancelled = cancel_buckets.get((agent_name, period_label), [])
-        pending = pending_buckets.get((agent_name, period_label), [])
+    # Union of keys, since an agent/period can have safe-cancel units with no
+    # ordinary "cleared" client at all (e.g. everyone who cleared that month later
+    # dropped, but stayed protected by the safe-payment threshold).
+    tier_keys = set(cleared_buckets.keys()) | set(safe_cancel_buckets.keys())
 
-        units_cleared = len(cleared)
+    for agent_name, period_label in tier_keys:
+        key = (agent_name, period_label)
+        cleared = cleared_buckets.get(key, [])
+        safe_cancels = safe_cancel_buckets.get(key, [])
+        cancelled = cancel_buckets.get(key, [])
+        pending = pending_buckets.get(key, [])
+
+        # OWNER POLICY (confirmed July 2026): safe-cancel clients still count as a full
+        # unit toward the agent's tier (same "unit credited, $0 commission" treatment as
+        # a Credit Score <= 500 client below) even though they later dropped — the agent
+        # already earned the protection by hitting the safe payment threshold.
+        tier_units = cleared + safe_cancels
+        units_cleared = len(tier_units)
         # Credit Score <= 500 clients (owner policy, July 2026) still count as a full
         # unit toward the agent's tier, but their debt is excluded from the dollar
         # basis entirely — they earn zero commission, individually or in aggregate.
-        low_credit_clients = [c for c in cleared if c["is_low_credit"]]
-        total_cleared_debt = sum(c["enrolled_debt"] for c in cleared if not c["is_low_credit"])
+        low_credit_clients = [c for c in tier_units if c["is_low_credit"]]
+        total_cleared_debt = sum(
+            c["enrolled_debt"] for c in tier_units
+            if not c["is_low_credit"] and c["unit_status"] != "safe_cancel"
+        )
         # Cancel rate = clawback clients / (cleared + clawback clients)
-        # Same-month cancels, safe cancels, and pending are excluded from both sides.
+        # Same-month cancels, safe cancels, and pending are excluded from both sides —
+        # so the rate denominator uses only true "cleared" clients, not safe_cancels.
         # Low-credit clients are still real ClientRecords/units, so they stay included
         # on the cleared side same as any other cleared client.
-        total_for_rate = units_cleared + len(cancelled)
+        total_for_rate = len(cleared) + len(cancelled)
         cancel_rate_pct = (len(cancelled) / total_for_rate * 100) if total_for_rate > 0 else 0.0
         nsf_flagged = any(c["nsf_count"] >= NSF_FLAG_THRESHOLD
-                          for c in cleared + cancelled + pending)
+                          for c in tier_units + cancelled + pending)
 
         result = calculate_agent_commission(
             agent_name=agent_name,
@@ -369,8 +398,8 @@ def parse_crm_and_calculate(file_bytes: bytes, filename: str, already_cleared_cr
         result["pending_units"] = len(pending)
         result["pending_debt"] = sum(c["enrolled_debt"] for c in pending)
         result["source"] = "crm"
-        result["_cleared_clients"] = cleared
-        result["_all_period_clients"] = cleared + cancelled + pending
+        result["_cleared_clients"] = tier_units
+        result["_all_period_clients"] = tier_units + cancelled + pending
 
         if len(pending) > 0:
             result["notes"] += f" | {len(pending)} unit(s) pending Affiliate Cancellation review"
@@ -381,9 +410,14 @@ def parse_crm_and_calculate(file_bytes: bytes, filename: str, already_cleared_cr
                 f" | {len(low_credit_clients)} unit(s) counted at $0 commission "
                 "(Credit Score <= 500)"
             )
+        if safe_cancels:
+            result["notes"] += (
+                f" | {len(safe_cancels)} unit(s) counted at $0 commission "
+                "(safe cancel — payment threshold met before drop)"
+            )
 
         # Note any late activations included in this period
-        late_activations = [c for c in cleared if c.get("is_late_activation")]
+        late_activations = [c for c in tier_units if c.get("is_late_activation")]
         if late_activations:
             periods = sorted({c["original_cleared_period"] for c in late_activations})
             result["notes"] += (
@@ -391,10 +425,11 @@ def parse_crm_and_calculate(file_bytes: bytes, filename: str, already_cleared_cr
                 f"{', '.join(periods)}, commission credited this period"
             )
 
-        # Commission per cleared client — zero for low-credit clients
-        for c in cleared:
+        # Commission per cleared client — zero for low-credit and safe-cancel clients
+        for c in tier_units:
             c["commission_on_client"] = (
-                0.0 if c["is_low_credit"] else round(c["enrolled_debt"] * result["tier_rate"], 2)
+                0.0 if (c["is_low_credit"] or c["unit_status"] == "safe_cancel")
+                else round(c["enrolled_debt"] * result["tier_rate"], 2)
             )
 
         agent_period_results[(agent_name, period_label)] = result
