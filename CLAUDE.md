@@ -239,6 +239,20 @@ Checked in this order — the payments-made safe threshold is evaluated before t
 
 Implemented in `_safe_payment_threshold(pay_freq)` in `crm_parser.py`. Also applies to clients still marked "Pending Affiliate Cancellation": if they've already hit the safe threshold, they're classified as `cleared` instead of held in `pending`.
 
+**`safe_cancel` clients still count as a $0-commission unit (OWNER POLICY, confirmed July 2026):** a
+safe-cancel client still counts as a full unit toward the agent's tier for their cleared month —
+they earned the protection by hitting the safe payment threshold before dropping — but their own
+`enrolled_debt` is excluded from `total_cleared_debt` and their `commission_on_client` is `$0.00`,
+same "unit credited, no dollars" treatment as a Credit Score <= 500 client (see "Credit Score (Low-
+Value Client) Handling" below). They are **excluded** from the cancellation-rate denominator (the
+`Cancel rate formula` above still only counts true `cleared` + `clawback` clients — this does not
+change). `ClientRecord.is_cleared` stays `False` for them (so they remain ineligible for a Cordoba
+chargeback — no clawback ever, per the table above). Shown under the agent detail page's Cancelled
+section (they did drop) with a `$0.00` commission and a `"N unit(s) counted at $0 commission (safe
+cancel — payment threshold met before drop)"` note on the period. Regression-tested in
+`tests/test_crm_parser.py::TestClassification::test_safe_cancel_counts_as_zero_dollar_unit` and
+`test_safe_cancel_only_period_still_gets_a_result`.
+
 **Tier recalculation on clawback:** if removing the cancelled unit drops the agent's tier for the original cleared month, the clawback = full commission difference on all that month's debt (not just the one client's share). If the tier is unchanged, the clawback is just that client's share (`enrolled_debt × orig_rate`). If the agent has no commission result at all for the original cleared month (e.g. they had 0 net cleared units there after other cancels), the clawback falls back to a flat `enrolled_debt × 1%` (lowest tier rate).
 
 **Clawbacks land on the LATEST period found in the file, not the client's own dropped month

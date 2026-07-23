@@ -114,6 +114,43 @@ class TestClassification:
         assert result["clawback_amount"] == 0.0
         assert result["cancellation_rate"] == 0.0  # safe cancels don't count in the rate
 
+    def test_safe_cancel_counts_as_zero_dollar_unit(self):
+        # OWNER POLICY (confirmed July 2026): a safe-cancel client still counts as a
+        # full unit toward the agent's tier (they protected the commission by hitting
+        # the payment threshold before dropping) but earns $0 commission themselves —
+        # same "unit credited, no dollars" treatment as a Credit Score <= 500 client.
+        data = crm_csv([
+            client("A1", cleared="06/10/2026", debt="10000"),
+            client("A2", cleared="06/12/2026", dropped="08/03/2026",
+                   payments="2", debt="10000"),
+        ])
+        periods = by_period(parse_crm_and_calculate(
+            data, "f.csv", already_cleared_crm_ids={"A1", "A2"}))
+        (result,) = periods["2026-06"]["results"]
+        assert result["units_cleared"] == 2  # A1 cleared + A2 safe_cancel
+        assert result["total_cleared_debt"] == pytest.approx(10000.0)  # A2's debt excluded
+        assert result["gross_commission"] == pytest.approx(100.0)  # only A1's debt x 1%
+        assert "safe cancel" in result["notes"]
+
+        clients_by_id = {c["crm_id"]: c for c in result["_all_period_clients"]}
+        assert clients_by_id["A2"]["unit_status"] == "safe_cancel"
+        assert clients_by_id["A2"]["commission_on_client"] == 0.0
+        assert clients_by_id["A2"]["is_cleared"] is False  # never eligible for a Cordoba clawback
+
+    def test_safe_cancel_only_period_still_gets_a_result(self):
+        # An agent/period with ONLY a safe-cancel unit (no plain "cleared" client at
+        # all) must still produce a commission result carrying that unit — not be
+        # silently dropped because cleared_buckets has no entry for the key.
+        data = crm_csv([
+            client("A1", cleared="06/12/2026", dropped="08/03/2026", payments="2"),
+        ])
+        periods = by_period(parse_crm_and_calculate(
+            data, "f.csv", already_cleared_crm_ids={"A1"}))
+        (result,) = periods["2026-06"]["results"]
+        assert result["units_cleared"] == 1
+        assert result["total_cleared_debt"] == 0.0
+        assert result["gross_commission"] == 0.0
+
     def test_biweekly_needs_four_payments_to_be_safe(self):
         data = crm_csv([
             client("A1", cleared="06/10/2026"),
