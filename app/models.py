@@ -1,5 +1,29 @@
 from datetime import datetime, timezone
+from flask_login import UserMixin
 from app import db
+
+
+class AgentUser(UserMixin, db.Model):
+    """Login account. Identifies either an agent (agent_name set, matched
+    case/whitespace-insensitively against AgentCommission.agent_name/ClientRecord.agent_name
+    via calculator.normalize_agent_name) or the admin/owner (is_admin=True, agent_name None).
+    Created manually by the admin — no self-signup."""
+    __tablename__ = "agent_user"
+
+    id = db.Column(db.Integer, primary_key=True)
+    username = db.Column(db.String(80), unique=True, nullable=False, index=True)
+    password_hash = db.Column(db.String(255), nullable=False)
+    agent_name = db.Column(db.String(255), nullable=True)
+    is_admin = db.Column(db.Boolean, default=False, server_default=db.text("0"))
+    active = db.Column(db.Boolean, default=True, server_default=db.text("1"))
+    created_at = db.Column(db.DateTime, default=lambda: datetime.now(timezone.utc))
+    last_login_at = db.Column(db.DateTime, nullable=True)
+
+    @property
+    def is_active(self):
+        # Named to avoid clashing with the `active` column while still satisfying
+        # flask_login.UserMixin's expected `is_active` property.
+        return self.active
 
 
 class CommissionPeriod(db.Model):

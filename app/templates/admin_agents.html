@@ -1,0 +1,77 @@
+{% extends "base.html" %}
+{% block title %}Agent Logins — ADP{% endblock %}
+
+{% block content %}
+<div class="page-header">
+  <h1>Agent Logins</h1>
+</div>
+
+<h2>Add Agent Login</h2>
+<div class="card" style="max-width:480px; padding:1.5rem; margin-bottom:1.5rem;">
+  <form method="post" action="{{ url_for('auth.admin_agents') }}">
+    <div style="margin-bottom:1rem;">
+      <label for="agent_name" style="display:block; margin-bottom:0.35rem;">Agent Name</label>
+      <select id="agent_name" name="agent_name" required style="width:100%; padding:0.5rem; border:1px solid #d1d5db; border-radius:4px;">
+        <option value="" disabled selected>Select an agent…</option>
+        {% for name in known_agent_names %}
+        <option value="{{ name }}">{{ name }}</option>
+        {% endfor %}
+      </select>
+    </div>
+    <div style="margin-bottom:1rem;">
+      <label for="username" style="display:block; margin-bottom:0.35rem;">Username</label>
+      <input type="text" id="username" name="username" required
+             style="width:100%; padding:0.5rem; border:1px solid #d1d5db; border-radius:4px;">
+    </div>
+    <div style="margin-bottom:1.25rem;">
+      <label for="password" style="display:block; margin-bottom:0.35rem;">Temporary Password</label>
+      <input type="text" id="password" name="password" required
+             style="width:100%; padding:0.5rem; border:1px solid #d1d5db; border-radius:4px;">
+    </div>
+    <button type="submit" class="btn btn-primary">Create Login</button>
+  </form>
+</div>
+
+<h2>Existing Logins</h2>
+<div class="table-wrapper">
+  <table class="data-table">
+    <thead>
+      <tr>
+        <th>Username</th>
+        <th>Agent Name</th>
+        <th>Role</th>
+        <th>Status</th>
+        <th>Last Login</th>
+        <th>Actions</th>
+      </tr>
+    </thead>
+    <tbody>
+      {% for u in agent_users %}
+      <tr>
+        <td>{{ u.username }}</td>
+        <td>{{ u.agent_name or '—' }}</td>
+        <td>{% if u.is_admin %}<span class="badge badge-purple">Admin</span>{% else %}Agent{% endif %}</td>
+        <td>{% if u.active %}<span class="badge badge-green">Active</span>{% else %}<span class="badge badge-amber">Disabled</span>{% endif %}</td>
+        <td>{{ u.last_login_at.strftime('%Y-%m-%d %H:%M') if u.last_login_at else 'Never' }}</td>
+        <td>
+          {% if not u.is_admin %}
+          <form method="post" action="{{ url_for('auth.reset_agent_password', user_id=u.id) }}" style="display:inline-flex; gap:0.25rem; align-items:center;">
+            <input type="text" name="password" placeholder="new password" required
+                   style="padding:0.25rem; border:1px solid #d1d5db; border-radius:4px; font-size:0.8rem; width:110px;">
+            <button type="submit" class="btn btn-secondary btn-sm">Reset PW</button>
+          </form>
+          <form method="post" action="{{ url_for('auth.toggle_agent_active', user_id=u.id) }}" style="display:inline;">
+            <button type="submit" class="btn btn-sm {{ 'btn-danger' if u.active else 'btn-secondary' }}">
+              {{ 'Disable' if u.active else 'Enable' }}
+            </button>
+          </form>
+          {% endif %}
+        </td>
+      </tr>
+      {% else %}
+      <tr><td colspan="6" class="muted" style="padding:1rem;">No agent logins created yet.</td></tr>
+      {% endfor %}
+    </tbody>
+  </table>
+</div>
+{% endblock %}

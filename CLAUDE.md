@@ -13,7 +13,14 @@ python run.py          # starts Flask dev server at http://127.0.0.1:5000
 
 The SQLite database (`instance/commissions.db`) is created automatically on first run via `db.create_all()` in `run.py`.
 
-If you change models, delete `instance/commissions.db` and restart — there are no migrations.
+**Local dev (SQLite): no migrations.** If you change models, delete `instance/commissions.db` and restart.
+
+**Production (Vercel Postgres): real migrations via Flask-Migrate/Alembic.** The app now has a real
+production database (agent/admin login was added — see "Authentication & Agent Access" below), so
+`db.create_all()` alone is no longer safe for schema changes there. After changing a model, run
+`flask db migrate -m "..."` locally, commit the generated file under `migrations/versions/`, then run
+`flask db upgrade` once against the production `DATABASE_URL` (see `DEPLOYMENT.md`) — never
+automatically on app startup, since serverless cold starts are frequent and concurrent.
 
 ## Tests
 
@@ -178,12 +185,50 @@ This is a Flask + SQLAlchemy web app for calculating agent commissions at Americ
    re-import.
 
 **Key files:**
-- `app/calculator.py` — pure commission logic, no Flask deps. All tier/penalty/bonus rules live here, including `calculate_clawback_amount` (shared by both the CRM-driven and Cordoba-chargeback-driven clawback paths).
+- `app/calculator.py` — pure commission logic, no Flask deps. All tier/penalty/bonus rules live here, including `calculate_clawback_amount` (shared by both the CRM-driven and Cordoba-chargeback-driven clawback paths), and `normalize_agent_name` (case/whitespace-insensitive agent-name matching, used by both `get_fixed_rate` and login ownership checks).
 - `app/crm_parser.py` — parses the full-history CRM export, classifies clients, calculates commissions and clawbacks in one pass, returns one dict per period
 - `app/cordoba_parser.py` — reads the Cordoba payout .xlsx (First Pays / EPF / Chargebacks tabs), returns raw normalized rows; no DB access. The EPF tab only feeds the paid-confirmation flag now (see above) — it no longer drives unit-crediting.
 - `app/commission_history_parser.py` — reads a prior account manager's ledger .xlsx (not a CRM export) to backfill pre-app commission history; no DB access
-- `app/models.py` — `CommissionPeriod`, `AgentCommission`, `ClientRecord`, `CordobaPaidClient`, `CordobaChargedBackClient`, `CordobaChargebackMatchedClient`, `CordobaChargebackEntry`
+- `app/models.py` — `AgentUser` (login accounts), `CommissionPeriod`, `AgentCommission`, `ClientRecord`, `CordobaPaidClient`, `CordobaChargedBackClient`, `CordobaChargebackMatchedClient`, `CordobaChargebackEntry`
+- `app/auth.py` — `admin_required` decorator, `_agent_owns` ownership-check helper
+- `app/auth_routes.py` — routes: `/login`, `/logout`, `/my-dashboard`, `/admin/agents`, `/admin/agents/<id>/reset-password`, `/admin/agents/<id>/toggle-active`
 - `app/routes.py` — routes: `/`, `/upload-crm`, `/upload-cordoba-payout`, `/upload-commission-history`, `/period/<id>`, `/period/<id>/agent/<id>`, `/period/<id>/export`, `/period/<id>/agent/<id>/export`, `/period/<id>/delete`, `/history`
+
+## Authentication & Agent Access
+
+The app has real login now (owner request, agent self-service dashboard for Vercel deployment). There
+is no self-signup — the admin creates every login manually from `/admin/agents`, picking the agent's
+name from a dropdown of names already seen in `AgentCommission.agent_name` (typo-proof; an agent needs
+at least one CRM upload under their name before their login can be created).
+
+**Two roles, one table (`AgentUser`):** `is_admin=True` accounts (the owner) have `agent_name=None`
+and can reach every route. `is_admin=False` accounts have `agent_name` set and can only reach
+`/my-dashboard` and their own `/period/<id>/agent/<id>` (+ its `/export`) — every other route,
+including the raw CRM/Cordoba/history upload routes, `/reset-all`, `/period/<id>/delete`, and the
+all-agents views (`/`, `/history`, `/period/<id>`, `/period/<id>/export`, `/period/<id>/export-by-agent`),
+is admin-only. `app/routes.py::agent_detail` and `export_agent` are the only two routes an agent role
+can reach beyond `/my-dashboard`, gated by `app/auth.py::_agent_owns` rather than `admin_required`.
+
+**Ownership matching is normalized, not exact-string.** `AgentUser.agent_name` (canonical display-case,
+set by the admin from the known-names dropdown) is compared against `AgentCommission.agent_name` /
+`ClientRecord.agent_name` via `calculator.normalize_agent_name` (`.strip().lower()`) on both sides —
+the same precedent `get_fixed_rate` already established for Alex Tambouly / Peter Godwin. CRM data
+entry isn't perfectly consistent about casing/whitespace, so an exact match would be fragile. Do not
+add a raw `==` ownership check anywhere — always compare through `normalize_agent_name` (or
+`app/auth.py::_agent_owns`, which already does this).
+
+**"Next commission" on `/my-dashboard` is NOT a forward-looking projection** — the app has no
+projection logic. It's the agent's most recently computed `CommissionPeriod`'s `net_commission`,
+labeled with its actual payout date via the existing `crm_parser._payment_date_for_period` (25th of
+the following month). Do not build actual forecasting without a clear owner request — it would need
+data this app doesn't have.
+
+**Password resets are admin-manual** (`/admin/agents/<id>/reset-password`) — there is no email-sending
+capability in this app, so the admin relays the new password to the agent out-of-band. There is
+deliberately no self-service "forgot password" flow.
+
+**Production database + migrations:** see the "Local dev (SQLite): no migrations" / "Production
+(Vercel Postgres): real migrations" split above, and `DEPLOYMENT.md` for the full deploy checklist.
 
 ## Commission Business Rules (April 2026 Plan)
 

@@ -10,8 +10,18 @@
   <nav class="navbar">
     <div class="nav-brand">ADP Commission Calculator</div>
     <div class="nav-links">
-      <a href="{{ url_for('main.index') }}">Upload</a>
-      <a href="{{ url_for('main.history') }}">History</a>
+      {% if current_user.is_authenticated %}
+        {% if current_user.is_admin %}
+          <a href="{{ url_for('main.index') }}">Upload</a>
+          <a href="{{ url_for('main.history') }}">History</a>
+          <a href="{{ url_for('auth.admin_agents') }}">Agent Logins</a>
+        {% else %}
+          <a href="{{ url_for('auth.my_dashboard') }}">My Dashboard</a>
+        {% endif %}
+        <form method="post" action="{{ url_for('auth.logout') }}" class="logout-form">
+          <button type="submit" class="link-button">Logout ({{ current_user.username }})</button>
+        </form>
+      {% endif %}
     </div>
   </nav>
 

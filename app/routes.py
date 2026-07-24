@@ -4,7 +4,8 @@ import re
 from openpyxl import Workbook
 from openpyxl.styles import Font, PatternFill
 from openpyxl.utils import get_column_letter
-from flask import Blueprint, render_template, request, redirect, url_for, flash, Response
+from flask import Blueprint, render_template, request, redirect, url_for, flash, Response, abort
+from flask_login import login_required
 from app import db
 from app.models import (
     CommissionPeriod, AgentCommission, ClientRecord, CordobaPaidClient,
@@ -14,6 +15,7 @@ from app.crm_parser import parse_crm_and_calculate, _parse_date, _period_of
 from app.cordoba_parser import parse_cordoba_payout
 from app.commission_history_parser import parse_commission_history
 from app.calculator import calculate_clawback_amount, get_fixed_rate
+from app.auth import admin_required, _agent_owns
 
 bp = Blueprint("main", __name__)
 
@@ -70,12 +72,14 @@ def _new_client_record(period_id, agent_commission_id, cr, **overrides):
 
 
 @bp.route("/")
+@admin_required
 def index():
     recent_periods = CommissionPeriod.query.order_by(CommissionPeriod.uploaded_at.desc()).limit(12).all()
     return render_template("index.html", periods=recent_periods)
 
 
 @bp.route("/reset-all", methods=["POST"])
+@admin_required
 def reset_all():
     # Per-object delete (not a bulk Query.delete()) so the ORM cascade on
     # CommissionPeriod actually fires and takes AgentCommission + ClientRecord with it.
@@ -90,6 +94,7 @@ def reset_all():
 
 
 @bp.route("/upload-crm", methods=["POST"])
+@admin_required
 def upload_crm():
     file = request.files.get("csv_file")
     if not file or file.filename == "":
@@ -623,6 +628,7 @@ def _process_cordoba_file(file):
 
 
 @bp.route("/upload-cordoba-payout", methods=["POST"])
+@admin_required
 def upload_cordoba_payout():
     """Upload one or more Cordoba payout files (.xlsx): First Pays/EPF flag confirmed
     payouts, Chargebacks tab triggers agent clawbacks for previously-paid clients."""
@@ -743,6 +749,7 @@ def _save_commission_history_period(period_label, results, filename, already_cor
 
 
 @bp.route("/upload-commission-history", methods=["POST"])
+@admin_required
 def upload_commission_history():
     """Backfill past commission history from a prior account manager's ledger (.xlsx or
     .csv, NOT a CRM export — see commission_history_parser.py for the expected columns).
@@ -806,6 +813,7 @@ def upload_commission_history():
 
 
 @bp.route("/period/<int:period_id>")
+@admin_required
 def period_detail(period_id):
     period = CommissionPeriod.query.get_or_404(period_id)
     agents = AgentCommission.query.filter_by(period_id=period_id).order_by(AgentCommission.agent_name).all()
@@ -833,9 +841,12 @@ def period_detail(period_id):
 
 
 @bp.route("/period/<int:period_id>/agent/<int:agent_id>")
+@login_required
 def agent_detail(period_id, agent_id):
     period = CommissionPeriod.query.get_or_404(period_id)
     agent = AgentCommission.query.get_or_404(agent_id)
+    if not _agent_owns(agent):
+        abort(403)
     clients = ClientRecord.query.filter_by(agent_commission_id=agent_id).all()
     clawback_clients = [c for c in clients if c.clawback_applied]
     active_clients = [c for c in clients if not c.clawback_applied]
@@ -872,6 +883,7 @@ def agent_detail(period_id, agent_id):
 
 
 @bp.route("/period/<int:period_id>/export")
+@admin_required
 def export_period(period_id):
     period = CommissionPeriod.query.get_or_404(period_id)
     agents = AgentCommission.query.filter_by(period_id=period_id).order_by(AgentCommission.agent_name).all()
@@ -976,9 +988,12 @@ def _write_cordoba_chargeback_block(writer, entries, agent_name=None):
 
 
 @bp.route("/period/<int:period_id>/agent/<int:agent_id>/export")
+@login_required
 def export_agent(period_id, agent_id):
     period = CommissionPeriod.query.get_or_404(period_id)
     agent = AgentCommission.query.get_or_404(agent_id)
+    if not _agent_owns(agent):
+        abort(403)
     clients = ClientRecord.query.filter_by(agent_commission_id=agent_id).all()
     crm_ids = {c.crm_id for c in clients if c.crm_id}
     cordoba_charged_back_ids = {
@@ -1186,6 +1201,7 @@ def _write_dashboard_summary(ws, agent_rows, chargeback_sheet_title):
 
 
 @bp.route("/period/<int:period_id>/export-by-agent")
+@admin_required
 def export_by_agent(period_id):
     """One .xlsx workbook for the whole period: a "Dashboard Summary" sheet (enrolled
     debt/units/clawback and commission payout per agent), an "All Agents" sheet
@@ -1267,6 +1283,7 @@ def export_by_agent(period_id):
 
 
 @bp.route("/period/<int:period_id>/delete", methods=["POST"])
+@admin_required
 def delete_period(period_id):
     period = CommissionPeriod.query.get_or_404(period_id)
     db.session.delete(period)
@@ -1276,6 +1293,7 @@ def delete_period(period_id):
 
 
 @bp.route("/history")
+@admin_required
 def history():
     periods = CommissionPeriod.query.order_by(CommissionPeriod.uploaded_at.desc()).all()
     return render_template("history.html", periods=periods)

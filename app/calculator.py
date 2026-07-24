@@ -22,9 +22,16 @@ AGENT_FIXED_RATES = {
 }
 
 
+def normalize_agent_name(agent_name: str) -> str:
+    """Case/whitespace-insensitive key for matching a free-text agent name — CRM data
+    entry isn't perfectly consistent, so every agent-name comparison in the app
+    (fixed-rate lookup, login ownership checks) goes through this one function."""
+    return (agent_name or "").strip().lower()
+
+
 def get_fixed_rate(agent_name: str):
     """Return the contractual fixed rate for an agent, or None if they're on the standard tier table."""
-    return AGENT_FIXED_RATES.get((agent_name or "").strip().lower())
+    return AGENT_FIXED_RATES.get(normalize_agent_name(agent_name))
 
 
 def get_tier(units: int) -> tuple:

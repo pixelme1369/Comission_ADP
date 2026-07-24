@@ -22,6 +22,12 @@ body {
 .nav-brand { font-weight: 700; font-size: 1.1rem; letter-spacing: 0.5px; }
 .nav-links a { color: #c9d1e0; text-decoration: none; margin-left: 1.5rem; font-size: 0.9rem; }
 .nav-links a:hover { color: #fff; }
+.logout-form { display: inline; margin-left: 1.5rem; }
+.link-button {
+  background: none; border: none; cursor: pointer; padding: 0;
+  color: #c9d1e0; text-decoration: none; font-size: 0.9rem; font-family: inherit;
+}
+.link-button:hover { color: #fff; }
 
 /* Container */
 .container { max-width: 1400px; margin: 0 auto; padding: 1.5rem; }

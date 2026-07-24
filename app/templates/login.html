@@ -1,0 +1,24 @@
+{% extends "base.html" %}
+{% block title %}Login — ADP{% endblock %}
+
+{% block content %}
+<div class="page-header">
+  <h1>Log In</h1>
+</div>
+
+<div class="card" style="max-width:360px; padding:1.5rem;">
+  <form method="post" action="{{ url_for('auth.login') }}">
+    <div style="margin-bottom:1rem;">
+      <label for="username" style="display:block; margin-bottom:0.35rem;">Username</label>
+      <input type="text" id="username" name="username" required autofocus
+             style="width:100%; padding:0.5rem; border:1px solid #d1d5db; border-radius:4px;">
+    </div>
+    <div style="margin-bottom:1.25rem;">
+      <label for="password" style="display:block; margin-bottom:0.35rem;">Password</label>
+      <input type="password" id="password" name="password" required
+             style="width:100%; padding:0.5rem; border:1px solid #d1d5db; border-radius:4px;">
+    </div>
+    <button type="submit" class="btn btn-primary" style="width:100%;">Log In</button>
+  </form>
+</div>
+{% endblock %}
