@@ -1,6 +1,7 @@
 import csv
 import io
 import re
+from datetime import datetime
 from openpyxl import Workbook
 from openpyxl.styles import Font, PatternFill
 from openpyxl.utils import get_column_letter
@@ -1004,6 +1005,15 @@ def export_agent(period_id, agent_id):
     )
 
 
+def _period_display_label(period_label):
+    """Formats the stored "YYYY-MM" period_label as "June 2026" for display in
+    exports. Falls back to the raw label if it's ever in an unexpected shape."""
+    try:
+        return datetime.strptime(period_label, "%Y-%m").strftime("%B %Y")
+    except (ValueError, TypeError):
+        return period_label
+
+
 def _safe_sheet_title(name, used_titles):
     """Excel sheet titles: max 31 chars, and : \\ / ? * [ ] are illegal — dedup
     on collision (e.g. two agents sharing a truncated name)."""
@@ -1032,13 +1042,16 @@ CORDOBA_HEADER_FONT = Font(bold=True, color="FFFFFFFF")
 CORDOBA_CHARGEBACK_XLSX_COLUMNS = ["Agent Name"] + CORDOBA_CHARGEBACK_EXPORT_COLUMNS
 
 
-def _write_agent_client_rows(ws, agent, clients, cordoba_charged_back_ids):
+def _write_agent_client_rows(ws, agent, clients, cordoba_charged_back_ids, period_display_label):
     """Appends this agent's client-detail rows into ws. Enrolled Debt and Commission
     on Client are written as real numeric cells with a currency number format,
     instead of the plain formatted-string values _client_export_rows returns (which
-    are fine for CSV but would show as text, not dollar amounts, in Excel)."""
+    are fine for CSV but would show as text, not dollar amounts, in Excel). The
+    Commission Period column is appended at the end of each row rather than inserted
+    among CLIENT_EXPORT_COLUMNS, so _CURRENCY_COLUMN_INDICES (computed off that list's
+    original positions) stays valid."""
     for row in _client_export_rows(clients, cordoba_charged_back_ids):
-        full_row = [agent.agent_name, agent.adjusted_tier, f"{agent.tier_rate*100:.2f}"] + row
+        full_row = [agent.agent_name, agent.adjusted_tier, f"{agent.tier_rate*100:.2f}"] + row + [period_display_label]
         for idx in _CURRENCY_COLUMN_INDICES:
             if full_row[idx] not in ("", None):
                 full_row[idx] = float(full_row[idx])
@@ -1051,21 +1064,25 @@ def _write_agent_client_rows(ws, agent, clients, cordoba_charged_back_ids):
 
 def _write_cordoba_header(ws):
     """Writes the Cordoba Charge back header row — Agent Name plus the Chargebacks-tab
-    columns — as solid red with white bold text."""
-    ws.append(CORDOBA_CHARGEBACK_XLSX_COLUMNS)
+    columns, plus a trailing Commission Period column — as solid red with white bold
+    text."""
+    header = CORDOBA_CHARGEBACK_XLSX_COLUMNS + ["Commission Period"]
+    ws.append(header)
     # ws.max_row only advances once a row holds a real value, so it's always safe to
     # read right after appending an actually-populated row like this header.
     header_row_num = ws.max_row
-    for col in range(1, len(CORDOBA_CHARGEBACK_XLSX_COLUMNS) + 1):
+    for col in range(1, len(header) + 1):
         cell = ws.cell(row=header_row_num, column=col)
         cell.fill = CORDOBA_HEADER_FILL
         cell.font = CORDOBA_HEADER_FONT
 
 
-def _write_cordoba_rows(ws, entries, agent_name):
+def _write_cordoba_rows(ws, entries, agent_name, period_display_label):
     """Appends this agent's Cordoba Charge back data rows (no header) into ws.
     Marketing Payout Debt is a real numeric currency cell (not a formatted string) so
-    the Dashboard Summary tab's Sum of To Subtract formula can SUMIF over it."""
+    the Dashboard Summary tab's Sum of To Subtract formula can SUMIF over it. The
+    Commission Period column is appended at the end so column G (Marketing Payout
+    Debt), referenced by that SUMIF, stays put."""
     for e in entries:
         ws.append([
             agent_name,
@@ -1076,6 +1093,7 @@ def _write_cordoba_rows(ws, entries, agent_name):
             e.payments_made if e.payments_made is not None else "",
             e.marketing_payment_cleared or "", e.marketing_payment_chargeback or "",
             e.file_dropped_date or "",
+            period_display_label,
         ])
         ws.cell(row=ws.max_row, column=7).number_format = CURRENCY_NUMBER_FORMAT
 
@@ -1086,7 +1104,7 @@ DASHBOARD_HEADER_FONT = Font(bold=True, italic=True)
 DASHBOARD_NEGATIVE_CURRENCY_FORMAT = '$#,##0.00;($#,##0.00);"$ -"'
 
 
-def _write_dashboard_summary(ws, agent_rows, chargeback_sheet_title):
+def _write_dashboard_summary(ws, agent_rows, chargeback_sheet_title, period_display_label):
     """Writes the two-table period overview: "Enrolled debt by Rep" (debt/units/
     RevShares — units where Credit Score <= 500, per owner — per agent) and
     "Commission payout" (rate/bonus/net commission per agent). Bonus is left blank
@@ -1096,14 +1114,15 @@ def _write_dashboard_summary(ws, agent_rows, chargeback_sheet_title):
     a Marketing Payout Debt value on the chargeback_sheet_title tab, recalculates the
     totals automatically — per owner request."""
     LEFT_COL = 1     # A: Sales Rep
-    # Left table spans A-F (6 columns); G is a blank gap; right table starts at H.
-    RIGHT_COL = 8
+    # Left table spans A-G (7 columns, incl. trailing Commission Period); H is a
+    # blank gap; right table starts at I.
+    RIGHT_COL = 9
 
     ws.cell(row=1, column=LEFT_COL, value="Enrolled debt by Rep").font = DASHBOARD_TITLE_FONT
     ws.cell(row=1, column=RIGHT_COL, value="Commission payout").font = DASHBOARD_TITLE_FONT
 
     left_headers = ["Sales Rep", "Sum of Enrolled Debt", "Sum of To Subtract", "Sum of Units",
-                     "RevShares", "Total Units"]
+                     "RevShares", "Total Units", "Commission Period"]
     right_headers = ["Sales Rep", "Rate %", "Bonus", "Total Commissions"]
 
     header_row = 2
@@ -1142,6 +1161,7 @@ def _write_dashboard_summary(ws, agent_rows, chargeback_sheet_title):
         ws.cell(row=r, column=LEFT_COL + 4, value=row_data["revshares"] or None)
         # Total Units = Sum of Units + RevShares, live — editing either recalculates it.
         ws.cell(row=r, column=LEFT_COL + 5, value=f"={units_col}{r}+{revshares_col}{r}")
+        ws.cell(row=r, column=LEFT_COL + 6, value=period_display_label)
 
         ws.cell(row=r, column=RIGHT_COL, value=row_data["agent_name"])
         ws.cell(row=r, column=RIGHT_COL + 1, value=row_data["rate"]).number_format = "0.00%"
@@ -1179,10 +1199,11 @@ def _write_dashboard_summary(ws, agent_rows, chargeback_sheet_title):
     ws.column_dimensions["D"].width = 12
     ws.column_dimensions["E"].width = 26
     ws.column_dimensions["F"].width = 12
-    ws.column_dimensions["H"].width = 20
-    ws.column_dimensions["I"].width = 10
-    ws.column_dimensions["J"].width = 12
-    ws.column_dimensions["K"].width = 18
+    ws.column_dimensions["G"].width = 16
+    ws.column_dimensions["I"].width = 20
+    ws.column_dimensions["J"].width = 10
+    ws.column_dimensions["K"].width = 12
+    ws.column_dimensions["L"].width = 18
 
 
 @bp.route("/period/<int:period_id>/export-by-agent")
@@ -1197,6 +1218,7 @@ def export_by_agent(period_id):
     style)."""
     period = CommissionPeriod.query.get_or_404(period_id)
     agents = AgentCommission.query.filter_by(period_id=period_id).order_by(AgentCommission.agent_name).all()
+    period_display_label = _period_display_label(period.period_label)
 
     workbook = Workbook()
     workbook.remove(workbook.active)
@@ -1205,7 +1227,7 @@ def export_by_agent(period_id):
     dashboard_ws = workbook.create_sheet(_safe_sheet_title("Dashboard Summary", used_titles))
 
     combined_ws = workbook.create_sheet(_safe_sheet_title("All Agents", used_titles))
-    combined_ws.append(["Agent Name", "Tier", "Rate %"] + CLIENT_EXPORT_COLUMNS)
+    combined_ws.append(["Agent Name", "Tier", "Rate %"] + CLIENT_EXPORT_COLUMNS + ["Commission Period"])
 
     chargeback_ws = workbook.create_sheet(_safe_sheet_title("All Chargeback", used_titles))
     _write_cordoba_header(chargeback_ws)
@@ -1214,7 +1236,7 @@ def export_by_agent(period_id):
 
     for agent in agents:
         ws = workbook.create_sheet(_safe_sheet_title(agent.agent_name, used_titles))
-        ws.append(["Agent Name", "Tier", "Rate %"] + CLIENT_EXPORT_COLUMNS)
+        ws.append(["Agent Name", "Tier", "Rate %"] + CLIENT_EXPORT_COLUMNS + ["Commission Period"])
 
         clients = ClientRecord.query.filter_by(agent_commission_id=agent.id).all()
         crm_ids = {c.crm_id for c in clients if c.crm_id}
@@ -1223,8 +1245,8 @@ def export_by_agent(period_id):
             CordobaChargebackMatchedClient.query.filter(CordobaChargebackMatchedClient.crm_id.in_(crm_ids)).all()
         } if crm_ids else set()
 
-        _write_agent_client_rows(ws, agent, clients, cordoba_charged_back_ids)
-        _write_agent_client_rows(combined_ws, agent, clients, cordoba_charged_back_ids)
+        _write_agent_client_rows(ws, agent, clients, cordoba_charged_back_ids, period_display_label)
+        _write_agent_client_rows(combined_ws, agent, clients, cordoba_charged_back_ids, period_display_label)
 
         revshares = sum(1 for c in clients if c.is_cleared and c.is_low_credit)
         dashboard_rows.append({
@@ -1243,11 +1265,11 @@ def export_by_agent(period_id):
         if cordoba_chargeback_entries:
             ws.append([])
             _write_cordoba_header(ws)
-            _write_cordoba_rows(ws, cordoba_chargeback_entries, agent.agent_name)
+            _write_cordoba_rows(ws, cordoba_chargeback_entries, agent.agent_name, period_display_label)
 
-        _write_cordoba_rows(chargeback_ws, cordoba_chargeback_entries, agent.agent_name)
+        _write_cordoba_rows(chargeback_ws, cordoba_chargeback_entries, agent.agent_name, period_display_label)
 
-    _write_dashboard_summary(dashboard_ws, dashboard_rows, chargeback_ws.title)
+    _write_dashboard_summary(dashboard_ws, dashboard_rows, chargeback_ws.title, period_display_label)
 
     if not agents:
         workbook.create_sheet("No Agents")
