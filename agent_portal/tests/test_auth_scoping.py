@@ -5,7 +5,7 @@ single-user tool. Also checks admin-only routes reject non-admin logins."""
 import csv
 import io
 
-from agent_portal.models import Agent, AgentAlias, CommissionPeriod, AgentCommission
+from agent_portal.models import Agent, AgentAlias, CommissionPeriod, AgentCommission, ClientRecord
 
 
 def _make_agent(db, email, display_name, agent_name, is_admin=False, password="pw12345"):
@@ -347,3 +347,92 @@ class TestClearedClientsDisplay:
         assert 'id="clients-table"' in html
         assert 'class="data-table sortable" id="clients-table"' in html
         assert 'data-col="0"' in html
+
+
+class TestDeletePeriod:
+    """A period already uploaded before a parser fix ships never picks up
+    that fix on its own (uploads are skipped once a period exists) — admin
+    needs a way to delete it and re-import. Mirrors the internal app's own
+    delete_period route."""
+
+    def _csv(self, rows):
+        headers = [
+            "ID", "Sales Rep", "Full Name", "1st Payment Cleared Date", "Dropped Date",
+            "Status", "Enrolled Debt", "# NSF", "Payments Made", "Pay Freq.", "Credit Score",
+        ]
+        out = io.StringIO()
+        writer = csv.DictWriter(out, fieldnames=headers)
+        writer.writeheader()
+        for r in rows:
+            writer.writerow({h: r.get(h, "") for h in headers})
+        return out.getvalue().encode("utf-8")
+
+    def test_admin_can_delete_a_period_and_cascade_removes_its_data(self, app, db, client):
+        with app.app_context():
+            _make_agent(db, "saman@example.com", "Saman", "Saman Agent", is_admin=True)
+            row = _make_period_row(db, "2026-01", "Alice Agent")
+            period_id = row.period_id
+
+        _login(client, "saman@example.com")
+        resp = client.post(f"/admin/period/{period_id}/delete", follow_redirects=True)
+        assert b"Period 2026-01 deleted" in resp.data
+
+        with app.app_context():
+            assert CommissionPeriod.query.get(period_id) is None
+            assert AgentCommission.query.filter_by(period_id=period_id).first() is None
+
+    def test_non_admin_cannot_delete_a_period(self, app, db, client):
+        with app.app_context():
+            _make_agent(db, "alice@example.com", "Alice", "Alice Agent", is_admin=False)
+            row = _make_period_row(db, "2026-01", "Alice Agent")
+            period_id = row.period_id
+
+        _login(client, "alice@example.com")
+        resp = client.post(f"/admin/period/{period_id}/delete", follow_redirects=True)
+        assert b"Admin access required" in resp.data
+        with app.app_context():
+            assert CommissionPeriod.query.get(period_id) is not None
+
+    def test_delete_then_reupload_lets_same_month_cancel_client_appear(self, app, db, client):
+        """The exact real-world scenario: a period uploaded before this
+        feature existed has to be deleted and re-imported to pick it up."""
+        with app.app_context():
+            _make_agent(db, "saman@example.com", "Saman", "Saman Agent", is_admin=True)
+            _make_agent(db, "maria@example.com", "Maria", "Maria")
+
+        _login(client, "saman@example.com")
+        # First upload has only the kept client — simulates the period having
+        # been imported before the same-month-cancel fix existed.
+        first_csv = self._csv([
+            {"ID": "1", "Sales Rep": "Maria", "Full Name": "Kept Client",
+             "1st Payment Cleared Date": "06/10/2026", "Status": "Active", "Enrolled Debt": "10000"},
+        ])
+        client.post("/admin/upload-csv", data={"csv_file": (io.BytesIO(first_csv), "crm1.csv")},
+                    content_type="multipart/form-data", follow_redirects=True)
+
+        with app.app_context():
+            period_id = CommissionPeriod.query.filter_by(period_label="2026-06").one().id
+
+        # Re-uploading without deleting is a no-op (period already exists)
+        second_csv = self._csv([
+            {"ID": "1", "Sales Rep": "Maria", "Full Name": "Kept Client",
+             "1st Payment Cleared Date": "06/10/2026", "Status": "Active", "Enrolled Debt": "10000"},
+            {"ID": "2", "Sales Rep": "Maria", "Full Name": "Dropped Client",
+             "1st Payment Cleared Date": "06/05/2026", "Dropped Date": "06/20/2026",
+             "Status": "Cancelled", "Enrolled Debt": "8000"},
+        ])
+        resp = client.post("/admin/upload-csv", data={"csv_file": (io.BytesIO(second_csv), "crm2.csv")},
+                            content_type="multipart/form-data", follow_redirects=True)
+        assert b"No new periods were created" in resp.data
+        with app.app_context():
+            assert ClientRecord.query.filter_by(crm_id="2").first() is None
+
+        # Delete then re-upload: now it picks up the dropped client
+        client.post(f"/admin/period/{period_id}/delete", follow_redirects=True)
+        client.post("/admin/upload-csv", data={"csv_file": (io.BytesIO(second_csv), "crm2.csv")},
+                    content_type="multipart/form-data", follow_redirects=True)
+        with app.app_context():
+            dropped = ClientRecord.query.filter_by(crm_id="2").first()
+            assert dropped is not None
+            assert dropped.is_cancelled is True
+            assert dropped.commission_on_client == 0.0

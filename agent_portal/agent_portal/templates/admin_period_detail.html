@@ -8,6 +8,13 @@
   <p class="muted">{{ agents|length }} agent(s) &nbsp;|&nbsp; File: {{ period.filename or '—' }}</p>
 </div>
 
+<div class="table-actions">
+  <form method="post" action="{{ url_for('admin.delete_period', period_id=period.id) }}"
+        onsubmit="return confirm('Delete period {{ period.period_label }}? This removes every agent and client record in it. You would need to re-upload its CRM export to get it back. This cannot be undone.');">
+    <button type="submit" class="btn btn-danger">Delete Period</button>
+  </form>
+</div>
+
 <div class="table-wrapper">
   <table class="data-table sortable">
     <thead>
