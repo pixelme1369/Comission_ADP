@@ -1,0 +1,79 @@
+{% extends "base.html" %}
+{% block title %}Admin — ADP Agent Portal{% endblock %}
+
+{% block content %}
+<div class="page-header">
+  <h1>Admin</h1>
+  {% if drive_configured %}
+  <p class="muted">
+    {% if last_sync %}
+      Last Drive sync: {{ last_sync.synced_at.strftime('%Y-%m-%d %H:%M UTC') }} — "{{ last_sync.drive_file_name }}" ({{ last_sync.periods_created }} period(s) created)
+    {% else %}
+      No Drive sync has run yet.
+    {% endif %}
+  </p>
+  {% endif %}
+</div>
+
+<div class="upload-grid">
+  {% if drive_configured %}
+  <div class="card upload-card">
+    <h2>Sync from Google Drive</h2>
+    <p class="form-hint">Pulls the newest CRM export from the <code>Cordoba_ADP</code> Drive folder and imports any new periods. Runs automatically once a day via cron — use this to sync on demand.</p>
+    <form method="post" action="{{ url_for('admin.sync_now') }}">
+      <button type="submit" class="btn btn-primary">Sync Now</button>
+    </form>
+  </div>
+  {% endif %}
+
+  <div class="card upload-card">
+    <h2>Import CRM Export</h2>
+    <p class="form-hint">Download the day's CRM export from the <code>Cordoba_ADP</code> Drive folder and upload it here — same file format used everywhere else in this system.</p>
+    <form method="post" action="{{ url_for('admin.upload_csv') }}" enctype="multipart/form-data">
+      <div class="form-group">
+        <input type="file" name="csv_file" accept=".csv" required>
+      </div>
+      <button type="submit" class="btn btn-primary">Import CSV</button>
+    </form>
+  </div>
+</div>
+
+<h2>Commission Periods</h2>
+<div class="table-wrapper">
+  <table class="data-table">
+    <thead><tr><th>Period</th><th>Agents</th><th>Filename</th><th>Uploaded</th></tr></thead>
+    <tbody>
+      {% for p in periods %}
+      <tr>
+        <td>{{ p.period_label }}</td>
+        <td>{{ p.total_agents }}</td>
+        <td class="muted">{{ p.filename or '—' }}</td>
+        <td>{{ p.uploaded_at.strftime('%Y-%m-%d %H:%M') }}</td>
+      </tr>
+      {% else %}
+      <tr><td colspan="4" class="muted" style="padding:1rem;">No periods yet.</td></tr>
+      {% endfor %}
+    </tbody>
+  </table>
+</div>
+
+<h2>Agent Accounts ({{ agents|length }})</h2>
+<p class="form-hint"><a href="{{ url_for('admin.manage_agents') }}">Manage agents and name mappings →</a></p>
+<div class="table-wrapper">
+  <table class="data-table">
+    <thead><tr><th>Display Name</th><th>Email</th><th>Admin</th><th>Mapped CRM Name(s)</th></tr></thead>
+    <tbody>
+      {% for a in agents %}
+      <tr>
+        <td>{{ a.display_name }}</td>
+        <td>{{ a.email }}</td>
+        <td>{{ "Yes" if a.is_admin else "—" }}</td>
+        <td>{{ a.alias_names()|join(', ') or '—' }}</td>
+      </tr>
+      {% else %}
+      <tr><td colspan="4" class="muted" style="padding:1rem;">No agent accounts yet.</td></tr>
+      {% endfor %}
+    </tbody>
+  </table>
+</div>
+{% endblock %}
