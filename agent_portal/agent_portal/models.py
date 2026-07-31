@@ -16,7 +16,7 @@ class Agent(db.Model, UserMixin):
     email = db.Column(db.String(255), unique=True, nullable=False, index=True)
     password_hash = db.Column(db.String(255), nullable=False)
     display_name = db.Column(db.String(255), nullable=False)
-    is_admin = db.Column(db.Boolean, default=False, server_default=db.text("0"))
+    is_admin = db.Column(db.Boolean, default=False, server_default=db.false())
     created_at = db.Column(db.DateTime, default=lambda: datetime.now(timezone.utc))
 
     aliases = db.relationship("AgentAlias", backref="agent", lazy=True, cascade="all, delete-orphan")
@@ -135,7 +135,7 @@ class ClientRecord(db.Model):
     enrolled_debt = db.Column(db.Float, default=0.0)
 
     credit_score = db.Column(db.Integer, nullable=True)
-    is_low_credit = db.Column(db.Boolean, default=False, server_default=db.text("0"))
+    is_low_credit = db.Column(db.Boolean, default=False, server_default=db.false())
 
     is_cleared = db.Column(db.Boolean, default=False)
     is_pending = db.Column(db.Boolean, default=False)
