@@ -30,20 +30,41 @@ independently.
 1. Create a free project at [neon.tech](https://neon.tech).
 2. Copy the connection string (starts with `postgres://` or `postgresql://`) — this is `DATABASE_URL`.
 
-### 2. Google Drive access — service account
+### 2. Google Drive access — two options, both free
 
-The Drive sync needs read access to the `Cordoba_ADP` folder without a human clicking "Allow"
-each time, so it uses a service account rather than OAuth:
+**A Google Cloud service account costs nothing** for this use case — creating a project, enabling
+the Drive API, and making read-only calls at this volume has no charge and doesn't require a
+credit card on file. That said, there are two valid paths:
 
-1. In Google Cloud Console, create (or reuse) a project, enable the **Google Drive API**.
-2. Create a **Service Account**, then create a JSON key for it and download it.
-3. Share the `Cordoba_ADP` Drive folder (or its parent, if easier) with the service account's
-   email address (looks like `something@project-id.iam.gserviceaccount.com`) — **Viewer** access
-   is enough, read-only.
-4. `GOOGLE_SERVICE_ACCOUNT_JSON` = the entire downloaded JSON key file, as a single-line string
-   env var.
-5. `DRIVE_FOLDER_ID` — defaults to the `Cordoba_ADP` folder found during setup
-   (`1YQDdZ1bYTDqgricxO9f_TyDyWredgDzg`); override only if the folder changes.
+**Option A — automatic daily sync (service account, ~10 min one-time setup, free):**
+
+1. Go to [console.cloud.google.com](https://console.cloud.google.com), sign in with any Google
+   account, and create a new project (top-left project dropdown → **New Project**). Skip/ignore
+   any billing prompt — it's not required for this.
+2. **APIs & Services → Library** → search **Google Drive API** → **Enable**.
+3. **APIs & Services → Credentials → Create Credentials → Service account**. Give it any name
+   (e.g. `agent-portal-drive-sync`), skip the optional role/access steps, **Done**.
+4. Click into the new service account → **Keys** tab → **Add Key → Create new key → JSON** —
+   this downloads a `.json` file. Its full contents (as-is) becomes the `GOOGLE_SERVICE_ACCOUNT_JSON`
+   env var in Vercel.
+5. Note the service account's email, shown on its details page — looks like
+   `agent-portal-drive-sync@your-project-id.iam.gserviceaccount.com`.
+6. In Google Drive, open the `Cordoba_ADP` folder → **Share** → paste that email → set role
+   **Viewer** → Share (you can uncheck "notify," it's not a real inbox).
+7. `DRIVE_FOLDER_ID` defaults to the `Cordoba_ADP` folder already found
+   (`1YQDdZ1bYTDqgricxO9f_TyDyWredgDzg`) — no action needed unless the folder changes.
+
+With this set up, the portal syncs automatically once a day via Vercel Cron, and the admin
+**Sync Now** button works too.
+
+**Option B — skip Google Cloud entirely (zero setup, fully manual, free):**
+
+Don't set `GOOGLE_SERVICE_ACCOUNT_JSON` at all. Instead, use **Manual CSV Import** on `/admin` —
+download the day's CRM export from the `Cordoba_ADP` folder yourself (exactly the same manual
+step already used with the internal app today) and upload it there. No Google Cloud project, no
+service account, no automation — just a daily click. `drive_sync.py` and the cron route simply
+won't be used; everything else in the portal (login, per-agent scoping, dashboards) works the
+same either way.
 
 ### 3. Deploy to Vercel
 
@@ -51,11 +72,12 @@ each time, so it uses a service account rather than OAuth:
 2. Set environment variables in the Vercel project settings:
    - `DATABASE_URL` — from step 1
    - `SECRET_KEY` — any long random string (Flask session signing)
-   - `GOOGLE_SERVICE_ACCOUNT_JSON` — from step 2
-   - `DRIVE_FOLDER_ID` — from step 2 (optional, has a default)
+   - `GOOGLE_SERVICE_ACCOUNT_JSON` — only if using Option A above; leave unset for Option B
+   - `DRIVE_FOLDER_ID` — optional, has a default (only relevant to Option A)
    - `CRON_SECRET` — any long random string; Vercel Cron sends it back automatically as
      `Authorization: Bearer <value>` when hitting `/cron/sync` — this is what stops that route
-     from being an open, unauthenticated "trigger a sync" endpoint
+     from being an open, unauthenticated "trigger a sync" endpoint (harmless to set even if
+     using Option B, since nothing will call it)
 3. Deploy. `api/index.py` creates any missing tables on cold start (no migrations, same
    `db.create_all()` pattern as the internal app — see the internal app's own `CLAUDE.md` note on
    this).
@@ -64,23 +86,22 @@ each time, so it uses a service account rather than OAuth:
 
 ### 4. Create the first admin account
 
-There's no signup page by design (owner-provisioned accounts only). Create the first admin
-directly against the database once, e.g. with a one-off Python shell against `DATABASE_URL`:
+There's no signup page by design (owner-provisioned accounts only). Run `create_admin.py` once,
+locally, pointed at the same `DATABASE_URL` Vercel uses:
 
-```python
-from agent_portal import create_app, db
-from agent_portal.models import Agent
-
-app = create_app()
-with app.app_context():
-    admin = Agent(email="saman@americandp.com", display_name="Saman", is_admin=True)
-    admin.set_password("choose-a-real-password")
-    db.session.add(admin)
-    db.session.commit()
+```bash
+cd agent_portal
+python -m venv .venv && source .venv/bin/activate
+pip install -r requirements.txt
+export DATABASE_URL="postgresql://...your Neon connection string..."
+python create_admin.py
 ```
 
-After that, use `/admin/agents` in the browser to create every agent's login and map it to their
-exact CRM "Sales Rep" spelling (the CRM export has no stable agent ID, only that name string).
+It prompts for email, display name, password, and whether the account is an admin — answer
+"y" for the first one. After that, use `/admin/agents` in the browser (logged in as that admin)
+to create every agent's login and map it to their exact CRM "Sales Rep" spelling (the CRM export
+has no stable agent ID, only that name string) — `create_admin.py` can also be re-run for any
+agent you'd rather provision from the command line instead of the browser form.
 
 ## Local development
 
