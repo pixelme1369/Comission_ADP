@@ -34,28 +34,50 @@
   </form>
 </div>
 
-<h2>Existing Agents</h2>
-{% for a in agents %}
-<div class="card">
-  <strong>{{ a.display_name }}</strong> — {{ a.email }} {% if a.is_admin %}<span class="badge badge-purple">Admin</span>{% endif %}
-  <ul class="alias-list">
-    {% for alias in a.aliases %}
-    <li>
-      {{ alias.agent_name }}
-      <form method="post" action="{{ url_for('admin.delete_alias', alias_id=alias.id) }}">
-        <button type="submit" title="Remove mapping">×</button>
+<h2>Existing Agents ({{ agents|length }})</h2>
+{% if agents %}
+<div class="user-list">
+  {% for a in agents %}
+  {% set parts = a.display_name.split() %}
+  <div class="user-row">
+    <div class="user-avatar{% if a.is_admin %} is-admin{% endif %}">
+      {% if parts|length >= 2 %}{{ (parts[0][0] + parts[1][0])|upper }}{% else %}{{ a.display_name[:2]|upper }}{% endif %}
+    </div>
+    <div class="user-main">
+      <div class="user-identity">
+        <span class="user-name">{{ a.display_name }}</span>
+        {% if a.is_admin %}<span class="badge badge-purple">Admin</span>{% endif %}
+      </div>
+      <div class="user-email">{{ a.email }}</div>
+
+      <div class="user-section-label">Mapped CRM Name(s)</div>
+      <div class="user-actions" style="margin-bottom:0.4rem;">
+        {% for alias in a.aliases %}
+        <span class="chip">
+          {{ alias.agent_name }}
+          <form method="post" action="{{ url_for('admin.delete_alias', alias_id=alias.id) }}">
+            <button type="submit" title="Remove mapping">×</button>
+          </form>
+        </span>
+        {% else %}
+        <span class="chip-empty">No CRM name mapped yet</span>
+        {% endfor %}
+      </div>
+      <form method="post" action="{{ url_for('admin.add_alias', agent_id=a.id) }}" class="user-actions">
+        <input type="text" name="agent_name" placeholder="Add another CRM name spelling">
+        <button type="submit" class="btn btn-secondary btn-sm">Add</button>
       </form>
-    </li>
-    {% else %}
-    <li class="muted">No CRM name mapped yet</li>
-    {% endfor %}
-  </ul>
-  <form method="post" action="{{ url_for('admin.add_alias', agent_id=a.id) }}" style="margin-top:0.75rem; display:flex; gap:0.5rem;">
-    <input type="text" name="agent_name" placeholder="Add another CRM name spelling" style="flex:1;">
-    <button type="submit" class="btn btn-secondary btn-sm">Add</button>
-  </form>
+
+      <div class="user-section-label">Password</div>
+      <form method="post" action="{{ url_for('admin.reset_password', agent_id=a.id) }}" class="user-actions">
+        <input type="password" name="password" placeholder="New password" minlength="6" required>
+        <button type="submit" class="btn btn-secondary btn-sm">Reset Password</button>
+      </form>
+    </div>
+  </div>
+  {% endfor %}
 </div>
 {% else %}
 <p class="muted">No agent accounts yet.</p>
-{% endfor %}
+{% endif %}
 {% endblock %}

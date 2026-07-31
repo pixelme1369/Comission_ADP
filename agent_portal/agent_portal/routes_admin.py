@@ -207,8 +207,6 @@ def upload_commission_history():
 
     return redirect(url_for("admin.dashboard"))
 
-    return redirect(url_for("admin.dashboard"))
-
 
 @bp.route("/agents", methods=["GET", "POST"])
 @admin_required
@@ -262,6 +260,20 @@ def delete_alias(alias_id):
     db.session.delete(alias)
     db.session.commit()
     flash("Alias removed.", "success")
+    return redirect(url_for("admin.manage_agents"))
+
+
+@bp.route("/agents/<int:agent_id>/password", methods=["POST"])
+@admin_required
+def reset_password(agent_id):
+    agent = Agent.query.get_or_404(agent_id)
+    new_password = request.form.get("password") or ""
+    if len(new_password) < 6:
+        flash("Password must be at least 6 characters.", "error")
+    else:
+        agent.set_password(new_password)
+        db.session.commit()
+        flash(f"Password updated for {agent.display_name}.", "success")
     return redirect(url_for("admin.manage_agents"))
 
 
