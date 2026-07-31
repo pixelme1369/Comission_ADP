@@ -1,11 +1,13 @@
 """Shared CRM-import persistence logic used by both drive_sync.py (automated
 daily Drive sync) and the admin manual-CSV-upload fallback, so the two entry
 points can never drift on how a parsed CRM export gets saved to the DB.
-Mirrors app/routes.py's upload_crm handler and _new_client_record helper,
-minus the Cordoba payout-file ingestion (out of scope for this portal)."""
+Mirrors app/routes.py's upload_crm handler and _new_client_record helper."""
 
 from agent_portal import db
-from agent_portal.models import AgentCommission, ClientRecord, CommissionPeriod
+from agent_portal.models import (
+    AgentCommission, ClientRecord, CommissionPeriod,
+    CordobaChargedBackClient, CordobaPaidClient,
+)
 
 
 def _new_client_record(period_id, agent_commission_id, cr, **overrides):
@@ -42,17 +44,22 @@ def _new_client_record(period_id, agent_commission_id, cr, **overrides):
 
 def already_known_crm_id_sets():
     """crm_ids this DB already knows about, for the parser's late-activation /
-    clawback-guard / low-credit-guard logic. already_charged_back is always
-    empty here — this portal doesn't ingest Cordoba chargeback files."""
+    clawback-guard / low-credit-guard logic. already_charged_back comes from
+    the Cordoba chargeback ledger (see cordoba_ingest.py) so a CRM upload
+    reflecting a drop already clawed back via a Cordoba Chargebacks file never
+    double-charges the agent."""
     already_cleared = {
         r[0] for r in db.session.query(ClientRecord.crm_id)
         .filter(ClientRecord.is_cleared.is_(True)) if r[0]
+    }
+    already_charged_back = {
+        r[0] for r in db.session.query(CordobaChargedBackClient.crm_id) if r[0]
     }
     already_low_credit = {
         r[0] for r in db.session.query(ClientRecord.crm_id)
         .filter(ClientRecord.is_low_credit.is_(True)) if r[0]
     }
-    return already_cleared, set(), already_low_credit
+    return already_cleared, already_charged_back, already_low_credit
 
 
 def save_period_results(period_results, filename, source_label="drive"):
@@ -104,6 +111,10 @@ def save_period_results(period_results, filename, source_label="drive"):
         db.session.add(period)
         db.session.flush()
 
+        # A client already confirmed paid via a prior Cordoba First Pays/EPF
+        # upload should come in pre-flagged even though this file predates it.
+        already_cordoba_paid_ids = {r[0] for r in db.session.query(CordobaPaidClient.crm_id)}
+
         agent_obj_map = {}
         for r in parsed["results"]:
             all_period_clients = r.pop("_all_period_clients", [])
@@ -128,6 +139,7 @@ def save_period_results(period_results, filename, source_label="drive"):
                     period.id, agent_obj.id, cr,
                     is_late_activation=cr.get("is_late_activation", False),
                     original_cleared_period=cr.get("original_cleared_period"),
+                    cordoba_paid=cr.get("crm_id") in already_cordoba_paid_ids,
                 ))
             for cr in data["clawback_clients"]:
                 db.session.add(_new_client_record(

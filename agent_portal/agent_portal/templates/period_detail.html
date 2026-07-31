@@ -67,7 +67,8 @@
     <thead>
       <tr>
         <th>ID</th><th>Client Name</th><th>Enrolled Date</th><th>Enrolled Debt</th>
-        <th>Credit Score</th><th>Commission on Client</th><th>1st Payment Cleared</th>
+        <th>Credit Score</th><th>Commission on Client</th><th>Cordoba Payout</th>
+        <th>Cordoba Clawback</th><th>1st Payment Cleared</th>
         <th>Payments Made</th><th>Pay Freq.</th><th># NSF</th><th>Status</th>
       </tr>
     </thead>
@@ -88,6 +89,12 @@
           {% if c.is_low_credit %}<span class="badge badge-amber" title="Credit Score <= 500 — counts toward tier, no commission">$0</span>{% endif %}
         </td>
         <td><strong>${{ "{:,.2f}".format(c.commission_on_client) }}</strong></td>
+        <td>
+          {% if c.cordoba_paid %}<span class="badge badge-green">Yes</span>{% else %}<span class="badge badge-amber">No</span>{% endif %}
+        </td>
+        <td>
+          {% if c.crm_id in cordoba_charged_back_ids %}<span class="badge badge-red">Yes</span>{% else %}<span class="badge badge-amber">No</span>{% endif %}
+        </td>
         <td>{{ c.first_payment_cleared_date }}</td>
         <td>{{ c.payments_made }}</td>
         <td>{{ c.pay_freq or '—' }}</td>
@@ -95,7 +102,7 @@
         <td>{{ c.status }}</td>
       </tr>
       {% else %}
-      <tr><td colspan="11" class="muted" style="padding:1rem;">No cleared clients this period.</td></tr>
+      <tr><td colspan="13" class="muted" style="padding:1rem;">No cleared clients this period.</td></tr>
       {% endfor %}
     </tbody>
   </table>
@@ -168,6 +175,44 @@
         <td>{{ c.dropped_date }}</td>
         <td>{{ c.payments_made }}</td>
         <td>{{ c.pay_freq or '—' }}</td>
+      </tr>
+      {% endfor %}
+    </tbody>
+  </table>
+</div>
+{% endif %}
+
+{% if cordoba_chargeback_entries %}
+<h2 style="margin-top:1.5rem;">Cordoba Charge back ({{ cordoba_chargeback_entries|length }})</h2>
+<p class="muted" style="margin-bottom:0.75rem;">
+  Verbatim rows from Cordoba's Chargebacks tab for clients matched to you that dropped this period.
+  This is listed for reconciliation only — it has NOT been deducted from your Gross or Net Commission above.
+</p>
+<div class="table-wrapper">
+  <table class="data-table">
+    <thead>
+      <tr>
+        <th>Assigned Company</th><th>Enrolled Date</th><th>ID</th><th>Full Name</th>
+        <th>Status</th><th>Marketing Payout Debt</th><th>1st Payment Cleared Date</th>
+        <th>Pay Freq.</th><th>Payments Made</th><th>Marketing Payment Cleared</th>
+        <th>Marketing Payment Chargeback</th><th>Dropped Date</th>
+      </tr>
+    </thead>
+    <tbody>
+      {% for e in cordoba_chargeback_entries %}
+      <tr>
+        <td>{{ e.assigned_company or '—' }}</td>
+        <td>{{ e.enrolled_date or '—' }}</td>
+        <td class="muted">{{ e.crm_id or '—' }}</td>
+        <td>{{ e.client_name or '—' }}</td>
+        <td>{{ e.status or '—' }}</td>
+        <td>${{ "{:,.2f}".format(e.marketing_payout_debt) }}</td>
+        <td>{{ e.first_payment_cleared_date or '—' }}</td>
+        <td>{{ e.pay_freq or '—' }}</td>
+        <td>{{ e.payments_made if e.payments_made is not none else '—' }}</td>
+        <td>{{ e.marketing_payment_cleared or '—' }}</td>
+        <td>{{ e.marketing_payment_chargeback or '—' }}</td>
+        <td>{{ e.file_dropped_date or '—' }}</td>
       </tr>
       {% endfor %}
     </tbody>

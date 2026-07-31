@@ -2,6 +2,7 @@ from flask import Blueprint, current_app, jsonify, render_template, request, red
 
 from agent_portal import db
 from agent_portal.auth import admin_required
+from agent_portal.cordoba_ingest import process_cordoba_file
 from agent_portal.crm_parser import parse_crm_and_calculate
 from agent_portal.drive_sync import sync_from_drive
 from agent_portal.ingest import already_known_crm_id_sets, save_period_results
@@ -66,6 +67,80 @@ def upload_csv():
         flash("No new periods were created.", "error")
     for w in outcome["warnings"]:
         flash(w, "error")
+    return redirect(url_for("admin.dashboard"))
+
+
+@bp.route("/upload-cordoba-payout", methods=["POST"])
+@admin_required
+def upload_cordoba_payout():
+    """Upload one or more Cordoba payout files (.xlsx): First Pays/EPF flag
+    confirmed payouts, Chargebacks tab triggers agent clawbacks for
+    previously-paid clients. Same logic as the internal app's flow."""
+    files = [f for f in request.files.getlist("cordoba_file") if f and f.filename]
+    if not files:
+        flash("No file selected.", "error")
+        return redirect(url_for("admin.dashboard"))
+
+    bad_names = [f.filename for f in files if not f.filename.lower().endswith(".xlsx")]
+    if bad_names:
+        flash(f"Only .xlsx files are accepted for Cordoba payout uploads: {', '.join(bad_names)}", "error")
+        return redirect(url_for("admin.dashboard"))
+
+    results = [process_cordoba_file(file) for file in files]
+
+    for r in results:
+        for err in r["errors"]:
+            flash(err, "error")
+
+    new_total = sum(r["new_paid_count"] for r in results)
+    flipped_total = sum(r["flipped_count"] for r in results)
+    matched_total = sum(r["matched_count"] for r in results)
+    clawback_count_total = sum(r["clawback_count"] for r in results)
+    clawback_amount_total = sum(r["clawback_total"] for r in results)
+    listed_total = sum(r["listed_count"] for r in results)
+    listed_amount_total = sum(r["listed_total"] for r in results)
+
+    file_word = "file" if len(files) == 1 else f"{len(files)} files"
+    flash(
+        f"Cordoba payout processed ({file_word}): {new_total} newly recorded ID(s) in the ledger, "
+        f"{flipped_total} client record(s) marked Cordoba Payout = Yes.",
+        "success",
+    )
+    if matched_total > 0:
+        flash(f"Cordoba chargebacks: {matched_total} client(s) matched and marked \"Cordoba Clawback: Yes\".", "success")
+    if clawback_count_total > 0:
+        flash(
+            f"Cordoba chargebacks: {clawback_count_total} client(s) charged back, "
+            f"${clawback_amount_total:,.2f} clawed back from agent commissions.",
+            "success",
+        )
+    if listed_total > 0:
+        flash(
+            f"Cordoba Charge back: {listed_total} client(s) (${listed_amount_total:,.2f} total "
+            "Marketing Payout Debt) listed for reference — informational only, not deducted.",
+            "success",
+        )
+
+    def _flash_skipped(names, reason):
+        if not names:
+            return
+        shown = ", ".join(names[:10])
+        more = f" and {len(names) - 10} more" if len(names) > 10 else ""
+        flash(f"{len(names)} charged-back client(s) {reason}: {shown}{more}.", "error")
+
+    for r in results:
+        _flash_skipped(r["skipped_not_commissioned"], "were never recorded as commissioned here — no clawback applied")
+        _flash_skipped(r["skipped_not_confirmed_paid"],
+                       "were never confirmed paid via a First Pays/EPF upload — no clawback applied")
+        _flash_skipped(r["skipped_already_clawed"], "were already clawed back elsewhere — not deducted twice")
+        _flash_skipped(r["skipped_no_dropped_date"],
+                       "have no Dropped Date recorded in our own CRM data yet — import a CRM export "
+                       "reflecting the drop, then re-upload this Chargebacks file")
+        _flash_skipped(r["unmatched_chargeback_ids"], "were not found in any of our commission reports — no match")
+        _flash_skipped(r["skipped_no_debt_match"],
+                       "were not found in our commission reports (or have no Dropped Date on file yet) — "
+                       "not listed under \"Cordoba Charge back\"")
+
     return redirect(url_for("admin.dashboard"))
 
 

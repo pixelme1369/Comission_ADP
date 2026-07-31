@@ -36,6 +36,17 @@
       <button type="submit" class="btn btn-primary">Import CSV</button>
     </form>
   </div>
+
+  <div class="card upload-card">
+    <h2>Cordoba Payout Check</h2>
+    <p class="form-hint">Upload one or more Cordoba payout exports (.xlsx). First Pays/EPF tabs confirm Cordoba paid us; the Chargebacks tab claws back an agent's commission for previously-paid clients that Cordoba took the payout back on.</p>
+    <form method="post" action="{{ url_for('admin.upload_cordoba_payout') }}" enctype="multipart/form-data">
+      <div class="form-group">
+        <input type="file" name="cordoba_file" accept=".xlsx" multiple required>
+      </div>
+      <button type="submit" class="btn btn-primary">Process Cordoba File(s)</button>
+    </form>
+  </div>
 </div>
 
 <h2>Commission Periods</h2>

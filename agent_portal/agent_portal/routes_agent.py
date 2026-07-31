@@ -5,7 +5,10 @@ from flask import Blueprint, render_template, abort, Response
 from flask_login import login_required, current_user
 
 from agent_portal.auth import agent_scope_names
-from agent_portal.models import AgentCommission, ClientRecord, CommissionPeriod
+from agent_portal.models import (
+    AgentCommission, ClientRecord, CommissionPeriod,
+    CordobaChargebackEntry, CordobaChargebackMatchedClient,
+)
 
 bp = Blueprint("agent", __name__, url_prefix="/portal")
 
@@ -17,6 +20,21 @@ CLIENT_EXPORT_COLUMNS = [
     ("dropped_date", "Dropped Date"), ("payments_made", "Payments Made"),
     ("pay_freq", "Pay Freq."), ("nsf_count", "# NSF"), ("status", "Status"),
 ]
+
+
+def _cordoba_context(agent_row, clients):
+    """Per-client "Cordoba Clawback" flag (matched, not necessarily deducted —
+    see CordobaChargebackMatchedClient's docstring) plus the display-only
+    "Cordoba Charge back" reconciliation rows for this agent's current period."""
+    crm_ids = {c.crm_id for c in clients if c.crm_id}
+    cordoba_charged_back_ids = {
+        cb.crm_id for cb in
+        CordobaChargebackMatchedClient.query.filter(CordobaChargebackMatchedClient.crm_id.in_(crm_ids)).all()
+    } if crm_ids else set()
+    cordoba_chargeback_entries = CordobaChargebackEntry.query.filter_by(
+        agent_name=agent_row.agent_name, period_label=agent_row.period.period_label,
+    ).order_by(CordobaChargebackEntry.uploaded_at).all()
+    return cordoba_charged_back_ids, cordoba_chargeback_entries
 
 
 def _latest_period():
@@ -58,9 +76,13 @@ def period_detail(period_id, agent_commission_id):
     agent_row = _get_scoped_agent_commission(period_id, agent_commission_id)
     clients = ClientRecord.query.filter_by(agent_commission_id=agent_row.id).all()
     clawback_clients = [c for c in clients if c.clawback_applied]
+    active_clients = [c for c in clients if not c.clawback_applied]
+    cordoba_charged_back_ids, cordoba_chargeback_entries = _cordoba_context(agent_row, active_clients)
     return render_template(
         "period_detail.html", agent=agent_row, period=agent_row.period,
-        clients=clients, clawback_clients=clawback_clients,
+        clients=active_clients, clawback_clients=clawback_clients,
+        cordoba_charged_back_ids=cordoba_charged_back_ids,
+        cordoba_chargeback_entries=cordoba_chargeback_entries,
     )
 
 
@@ -69,12 +91,16 @@ def period_detail(period_id, agent_commission_id):
 def export_period(period_id, agent_commission_id):
     agent_row = _get_scoped_agent_commission(period_id, agent_commission_id)
     clients = ClientRecord.query.filter_by(agent_commission_id=agent_row.id).all()
+    cordoba_charged_back_ids, _ = _cordoba_context(agent_row, clients)
 
     output = io.StringIO()
     writer = csv.writer(output)
-    writer.writerow([label for _, label in CLIENT_EXPORT_COLUMNS])
+    writer.writerow([label for _, label in CLIENT_EXPORT_COLUMNS] + ["Cordoba Payout", "Cordoba Clawback"])
     for c in clients:
-        writer.writerow([getattr(c, field) for field, _ in CLIENT_EXPORT_COLUMNS])
+        row = [getattr(c, field) for field, _ in CLIENT_EXPORT_COLUMNS]
+        row.append(("Yes" if c.cordoba_paid else "No") if c.is_cleared else "")
+        row.append(("Yes" if c.crm_id in cordoba_charged_back_ids else "No") if c.is_cleared else "")
+        writer.writerow(row)
 
     filename = f"{current_user.display_name}_{agent_row.period.period_label}.csv"
     return Response(

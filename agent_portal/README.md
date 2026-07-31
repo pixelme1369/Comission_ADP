@@ -13,21 +13,25 @@ code path (Option A) is still in the codebase and can be turned on later without
 see "Google Drive access" below.
 
 This app does not read or write anything in `app/` — it vendors its own copies of
-`calculator.py` and `crm_parser.py` (see "What's vendored" below) so the two apps can evolve
-independently.
+`calculator.py`, `crm_parser.py`, and `cordoba_parser.py` (see "What's vendored" below) so the two
+apps can evolve independently.
 
 ## What's vendored vs. new
 
-- `agent_portal/calculator.py`, `agent_portal/crm_parser.py` — byte-for-byte copies of the
-  business logic in `app/calculator.py` / `app/crm_parser.py` (only the internal import path was
-  changed). If the tier table, clawback rules, or classification logic ever change in the main
-  app, copy the updated file here too — there's no shared import between the two apps by design.
-- Everything else (`models.py`, `auth.py`, `drive_sync.py`, `ingest.py`, `routes_agent.py`,
-  `routes_admin.py`, templates) is new, built for this portal.
-- **Out of scope for v1**: the Cordoba payout-file ingestion (First Pays / EPF / Chargebacks
-  tabs) that the internal app supports is not ported here — this portal only ingests the CRM
-  export. `ClientRecord.cordoba_paid` and Cordoba chargeback badges from the internal app are not
-  present in this portal's UI.
+- `agent_portal/calculator.py`, `agent_portal/crm_parser.py`, `agent_portal/cordoba_parser.py` —
+  byte-for-byte copies of the business logic in `app/`'s equivalents (only the internal import
+  path was changed). If the tier table, clawback rules, or classification logic ever change in
+  the main app, copy the updated file here too — there's no shared import between the two apps by
+  design.
+- Everything else (`models.py`, `auth.py`, `drive_sync.py`, `ingest.py`, `cordoba_ingest.py`,
+  `routes_agent.py`, `routes_admin.py`, templates) is new, built for this portal.
+- **Cordoba payout check is supported**: `/admin` has a "Cordoba Payout Check" upload for the
+  First Pays/EPF/Chargebacks `.xlsx` export — same gates and clawback math as the internal app
+  (`cordoba_ingest.py`). Agents see the "Cordoba Payout"/"Cordoba Clawback" badges and the
+  "Cordoba Charge back" reconciliation table on their own current period.
+- **Still out of scope**: the commission-history backfill importer (`/upload-commission-history`
+  in the internal app) is not ported here — with agents only ever seeing the current period (see
+  below), backfilling months before this portal existed wouldn't be visible to them anyway.
 
 ## One-time setup
 
