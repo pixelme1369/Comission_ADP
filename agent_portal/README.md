@@ -2,9 +2,15 @@
 
 A standalone Flask app, separate from the internal `app/` tool at the repo root, that lets each
 agent log in and see **only their own** commission history — periods, cleared/pending clients,
-and clawbacks. Data is pulled automatically once a day from the `Cordoba_ADP` Google Drive folder
-(daily full-history CRM export snapshots), run through the same tested commission math as the
-internal tool, and stored in Postgres so it survives Vercel's stateless/ephemeral filesystem.
+and clawbacks. Data comes from the same daily CRM export snapshots as the `Cordoba_ADP` Google
+Drive folder, run through the same tested commission math as the internal tool, and stored in
+Postgres so it survives Vercel's stateless/ephemeral filesystem.
+
+**Current setup: manual CSV import (Option B below).** Someone downloads the day's CRM export
+from `Cordoba_ADP` and uploads it on `/admin` — same file, same manual step already used with the
+internal app today, just no Google Cloud project or automation involved. The automatic Drive-sync
+code path (Option A) is still in the codebase and can be turned on later without any rebuilding —
+see "Google Drive access" below.
 
 This app does not read or write anything in `app/` — it vendors its own copies of
 `calculator.py` and `crm_parser.py` (see "What's vendored" below) so the two apps can evolve
@@ -30,13 +36,14 @@ independently.
 1. Create a free project at [neon.tech](https://neon.tech).
 2. Copy the connection string (starts with `postgres://` or `postgresql://`) — this is `DATABASE_URL`.
 
-### 2. Google Drive access — two options, both free
+### 2. Google Drive access — two options, both free (Option B is what's currently set up)
 
 **A Google Cloud service account costs nothing** for this use case — creating a project, enabling
 the Drive API, and making read-only calls at this volume has no charge and doesn't require a
-credit card on file. That said, there are two valid paths:
+credit card on file. That said, Option B (no Google Cloud at all) is what's actually configured
+right now — nothing below is required unless you decide to switch to Option A later.
 
-**Option A — automatic daily sync (service account, ~10 min one-time setup, free):**
+**Option A — automatic daily sync (service account, ~10 min one-time setup, free) — not currently used:**
 
 1. Go to [console.cloud.google.com](https://console.cloud.google.com), sign in with any Google
    account, and create a new project (top-left project dropdown → **New Project**). Skip/ignore
@@ -54,17 +61,23 @@ credit card on file. That said, there are two valid paths:
 7. `DRIVE_FOLDER_ID` defaults to the `Cordoba_ADP` folder already found
    (`1YQDdZ1bYTDqgricxO9f_TyDyWredgDzg`) — no action needed unless the folder changes.
 
-With this set up, the portal syncs automatically once a day via Vercel Cron, and the admin
-**Sync Now** button works too.
+Turning this on later also means adding back a `crons` block to `vercel.json` (removed for now
+since Option B doesn't need it):
+```json
+"crons": [{ "path": "/cron/sync", "schedule": "0 12 * * *" }]
+```
+and setting `CRON_SECRET` (any long random string — Vercel Cron sends it back automatically as
+`Authorization: Bearer <value>`, which is what stops `/cron/sync` from being an open,
+unauthenticated endpoint). Once `GOOGLE_SERVICE_ACCOUNT_JSON` is set, the admin dashboard
+automatically shows a **Sync Now** button too — it's hidden while unconfigured.
 
-**Option B — skip Google Cloud entirely (zero setup, fully manual, free):**
+**Option B — skip Google Cloud entirely (zero setup, fully manual, free) — this is what's set up:**
 
-Don't set `GOOGLE_SERVICE_ACCOUNT_JSON` at all. Instead, use **Manual CSV Import** on `/admin` —
+`GOOGLE_SERVICE_ACCOUNT_JSON` is left unset. Instead, use **Import CRM Export** on `/admin` —
 download the day's CRM export from the `Cordoba_ADP` folder yourself (exactly the same manual
 step already used with the internal app today) and upload it there. No Google Cloud project, no
-service account, no automation — just a daily click. `drive_sync.py` and the cron route simply
-won't be used; everything else in the portal (login, per-agent scoping, dashboards) works the
-same either way.
+service account, no automation — just a daily click. Everything else in the portal (login,
+per-agent scoping, dashboards) works exactly the same either way.
 
 ### 3. Deploy to Vercel
 
@@ -72,17 +85,13 @@ same either way.
 2. Set environment variables in the Vercel project settings:
    - `DATABASE_URL` — from step 1
    - `SECRET_KEY` — any long random string (Flask session signing)
-   - `GOOGLE_SERVICE_ACCOUNT_JSON` — only if using Option A above; leave unset for Option B
-   - `DRIVE_FOLDER_ID` — optional, has a default (only relevant to Option A)
-   - `CRON_SECRET` — any long random string; Vercel Cron sends it back automatically as
-     `Authorization: Bearer <value>` when hitting `/cron/sync` — this is what stops that route
-     from being an open, unauthenticated "trigger a sync" endpoint (harmless to set even if
-     using Option B, since nothing will call it)
+   - Nothing Drive-related is needed for the current (Option B) setup — see "Google Drive
+     access" above if that ever changes.
 3. Deploy. `api/index.py` creates any missing tables on cold start (no migrations, same
    `db.create_all()` pattern as the internal app — see the internal app's own `CLAUDE.md` note on
    this).
-4. Log in with an admin account (see below) and click **Sync Now** on `/admin` to pull the first
-   CRM export.
+4. Log in with an admin account (see below) and use **Import CRM Export** on `/admin` to bring in
+   the first CRM export.
 
 ### 4. Create the first admin account
 
@@ -115,8 +124,7 @@ export FLASK_APP=api/index.py
 flask run
 ```
 
-`GOOGLE_SERVICE_ACCOUNT_JSON`/`DRIVE_FOLDER_ID` are only needed to exercise the real Drive sync —
-use **Manual CSV Import** on `/admin` instead for local testing with a sample CRM export.
+Use **Import CRM Export** on `/admin` to load a sample CRM export locally.
 
 ## Tests
 

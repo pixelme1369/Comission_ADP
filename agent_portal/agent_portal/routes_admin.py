@@ -17,7 +17,11 @@ def dashboard():
     periods = CommissionPeriod.query.order_by(CommissionPeriod.period_label.desc()).all()
     agents = Agent.query.order_by(Agent.display_name).all()
     last_sync = SyncedFile.query.order_by(SyncedFile.synced_at.desc()).first()
-    return render_template("admin_dashboard.html", periods=periods, agents=agents, last_sync=last_sync)
+    drive_configured = bool(current_app.config.get("GOOGLE_SERVICE_ACCOUNT_JSON"))
+    return render_template(
+        "admin_dashboard.html", periods=periods, agents=agents, last_sync=last_sync,
+        drive_configured=drive_configured,
+    )
 
 
 @bp.route("/sync", methods=["POST"])

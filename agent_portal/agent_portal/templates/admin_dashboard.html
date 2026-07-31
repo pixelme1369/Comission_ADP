@@ -4,6 +4,7 @@
 {% block content %}
 <div class="page-header">
   <h1>Admin</h1>
+  {% if drive_configured %}
   <p class="muted">
     {% if last_sync %}
       Last Drive sync: {{ last_sync.synced_at.strftime('%Y-%m-%d %H:%M UTC') }} — "{{ last_sync.drive_file_name }}" ({{ last_sync.periods_created }} period(s) created)
@@ -11,9 +12,11 @@
       No Drive sync has run yet.
     {% endif %}
   </p>
+  {% endif %}
 </div>
 
 <div class="upload-grid">
+  {% if drive_configured %}
   <div class="card upload-card">
     <h2>Sync from Google Drive</h2>
     <p class="form-hint">Pulls the newest CRM export from the <code>Cordoba_ADP</code> Drive folder and imports any new periods. Runs automatically once a day via cron — use this to sync on demand.</p>
@@ -21,15 +24,16 @@
       <button type="submit" class="btn btn-primary">Sync Now</button>
     </form>
   </div>
+  {% endif %}
 
   <div class="card upload-card">
-    <h2>Manual CSV Import</h2>
-    <p class="form-hint">Fallback for testing without waiting on Drive — same full-history CRM export format as the Drive sync.</p>
+    <h2>Import CRM Export</h2>
+    <p class="form-hint">Download the day's CRM export from the <code>Cordoba_ADP</code> Drive folder and upload it here — same file format used everywhere else in this system.</p>
     <form method="post" action="{{ url_for('admin.upload_csv') }}" enctype="multipart/form-data">
       <div class="form-group">
         <input type="file" name="csv_file" accept=".csv" required>
       </div>
-      <button type="submit" class="btn btn-secondary">Import CSV</button>
+      <button type="submit" class="btn btn-primary">Import CSV</button>
     </form>
   </div>
 </div>
