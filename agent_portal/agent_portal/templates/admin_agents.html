@@ -1,0 +1,61 @@
+{% extends "base.html" %}
+{% block title %}Manage Agents — ADP Agent Portal{% endblock %}
+
+{% block content %}
+<div class="page-header">
+  <a href="{{ url_for('admin.dashboard') }}" class="back-link">← Back to Admin</a>
+  <h1>Manage Agents</h1>
+  <p class="muted">Create a login for each agent, then map it to the exact "Sales Rep" spelling(s) that appear in the CRM export.</p>
+</div>
+
+<div class="card" style="max-width:480px;">
+  <h2 style="margin-top:0;">Create Agent Account</h2>
+  <form method="post" action="{{ url_for('admin.manage_agents') }}">
+    <div class="form-group">
+      <label for="display_name">Display Name</label>
+      <input type="text" id="display_name" name="display_name" required>
+    </div>
+    <div class="form-group">
+      <label for="email">Email</label>
+      <input type="email" id="email" name="email" required>
+    </div>
+    <div class="form-group">
+      <label for="password">Temporary Password</label>
+      <input type="password" id="password" name="password" required>
+    </div>
+    <div class="form-group">
+      <label for="agent_name">CRM "Sales Rep" Name (optional, can add more later)</label>
+      <input type="text" id="agent_name" name="agent_name" placeholder="e.g. Alon Yomorta">
+    </div>
+    <div class="form-group">
+      <label><input type="checkbox" name="is_admin"> Admin access</label>
+    </div>
+    <button type="submit" class="btn btn-primary">Create Account</button>
+  </form>
+</div>
+
+<h2>Existing Agents</h2>
+{% for a in agents %}
+<div class="card">
+  <strong>{{ a.display_name }}</strong> — {{ a.email }} {% if a.is_admin %}<span class="badge badge-purple">Admin</span>{% endif %}
+  <ul class="alias-list">
+    {% for alias in a.aliases %}
+    <li>
+      {{ alias.agent_name }}
+      <form method="post" action="{{ url_for('admin.delete_alias', alias_id=alias.id) }}">
+        <button type="submit" title="Remove mapping">×</button>
+      </form>
+    </li>
+    {% else %}
+    <li class="muted">No CRM name mapped yet</li>
+    {% endfor %}
+  </ul>
+  <form method="post" action="{{ url_for('admin.add_alias', agent_id=a.id) }}" style="margin-top:0.75rem; display:flex; gap:0.5rem;">
+    <input type="text" name="agent_name" placeholder="Add another CRM name spelling" style="flex:1;">
+    <button type="submit" class="btn btn-secondary btn-sm">Add</button>
+  </form>
+</div>
+{% else %}
+<p class="muted">No agent accounts yet.</p>
+{% endfor %}
+{% endblock %}

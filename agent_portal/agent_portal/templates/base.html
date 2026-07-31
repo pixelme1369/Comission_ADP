@@ -1,0 +1,59 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+  <meta charset="UTF-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1.0">
+  <title>{% block title %}ADP Agent Portal{% endblock %}</title>
+  <link rel="stylesheet" href="{{ url_for('static', filename='style.css') }}">
+</head>
+<body>
+  <nav class="navbar">
+    <div class="nav-brand">ADP Agent Portal</div>
+    <div class="nav-links">
+      {% if current_user.is_authenticated %}
+        {% if current_user.is_admin %}
+          <a href="{{ url_for('admin.dashboard') }}">Admin</a>
+          <a href="{{ url_for('admin.manage_agents') }}">Manage Agents</a>
+        {% endif %}
+        <a href="{{ url_for('agent.dashboard') }}">My Commissions</a>
+        <a href="{{ url_for('auth.logout') }}">Log out ({{ current_user.display_name }})</a>
+      {% endif %}
+    </div>
+  </nav>
+
+  <main class="container">
+    {% with messages = get_flashed_messages(with_categories=true) %}
+      {% if messages %}
+        {% set errors = messages | selectattr('0', 'equalto', 'error') | list %}
+        {% set successes = messages | selectattr('0', 'equalto', 'success') | list %}
+        <div class="flash-container">
+          {% for category, message in successes %}
+            <div class="flash flash-success">{{ message }}</div>
+          {% endfor %}
+          {% if errors %}
+            {% if errors | length == 1 %}
+              <div class="flash flash-error">{{ errors[0][1] }}</div>
+            {% else %}
+              <div class="flash flash-error flash-collapsible">
+                <div class="flash-summary" onclick="this.parentElement.classList.toggle('open')">
+                  ⚠ {{ errors | length }} warnings — click to view
+                  <span class="flash-chevron">▾</span>
+                </div>
+                <ul class="flash-detail-list">
+                  {% for _, message in errors %}
+                    <li>{{ message }}</li>
+                  {% endfor %}
+                </ul>
+              </div>
+            {% endif %}
+          {% endif %}
+        </div>
+      {% endif %}
+    {% endwith %}
+
+    {% block content %}{% endblock %}
+  </main>
+
+  <script src="{{ url_for('static', filename='app.js') }}"></script>
+</body>
+</html>

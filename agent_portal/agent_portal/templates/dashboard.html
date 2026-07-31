@@ -1,0 +1,54 @@
+{% extends "base.html" %}
+{% block title %}My Commissions — ADP Agent Portal{% endblock %}
+
+{% block content %}
+<div class="page-header">
+  <h1>My Commissions</h1>
+  <p class="muted">{{ current_user.display_name }} — commission is paid on the 25th of the month following the cleared month.</p>
+</div>
+
+{% if not rows %}
+<div class="card">
+  <p class="muted">No commission periods yet. If this is a new account, ask your admin to confirm your name is mapped correctly, or check back after the next sync.</p>
+</div>
+{% else %}
+<div class="table-wrapper">
+  <table class="data-table sortable">
+    <thead>
+      <tr>
+        <th data-col="0">Period</th>
+        <th data-col="1">Units Cleared</th>
+        <th data-col="2">Tier</th>
+        <th data-col="3">Rate</th>
+        <th data-col="4">Gross Commission</th>
+        <th data-col="5">Clawback</th>
+        <th data-col="6">Net Commission</th>
+        <th data-col="7">Cancellation Rate</th>
+        <th></th>
+      </tr>
+    </thead>
+    <tbody>
+      {% for r in rows %}
+      <tr>
+        <td>{{ r.period.period_label }}</td>
+        <td>{{ r.units_cleared }}</td>
+        <td>
+          {% if r.cancellation_penalty_applied %}
+            <span class="tier-badge tier-penalty">{{ r.raw_tier }}→{{ r.adjusted_tier }}</span>
+          {% else %}
+            <span class="tier-badge">{{ r.adjusted_tier }}</span>
+          {% endif %}
+        </td>
+        <td>{{ "%.2f"|format(r.tier_rate * 100) }}%</td>
+        <td>${{ "{:,.2f}".format(r.gross_commission) }}</td>
+        <td>{% if r.clawback_amount > 0 %}<span class="badge badge-red">-${{ "{:,.2f}".format(r.clawback_amount) }}</span>{% else %}—{% endif %}</td>
+        <td><strong>${{ "{:,.2f}".format(r.net_commission) }}</strong></td>
+        <td>{{ "%.1f"|format(r.cancellation_rate) }}%</td>
+        <td><a class="agent-link" href="{{ url_for('agent.period_detail', period_id=r.period_id, agent_commission_id=r.id) }}">View →</a></td>
+      </tr>
+      {% endfor %}
+    </tbody>
+  </table>
+</div>
+{% endif %}
+{% endblock %}
