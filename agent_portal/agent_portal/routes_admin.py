@@ -38,6 +38,21 @@ def period_detail(period_id):
     return render_template("admin_period_detail.html", period=period, agents=agents)
 
 
+@bp.route("/period/<int:period_id>/delete", methods=["POST"])
+@admin_required
+def delete_period(period_id):
+    """Deletes a period so it can be re-imported — e.g. after a parser fix
+    that only takes effect on rows processed after the fix shipped. Cascades
+    to that period's AgentCommission and ClientRecord rows via the model
+    relationships (mirrors the internal app's own delete_period route)."""
+    period = CommissionPeriod.query.get_or_404(period_id)
+    period_label = period.period_label
+    db.session.delete(period)
+    db.session.commit()
+    flash(f"Period {period_label} deleted. Re-upload its CRM export to re-import it.", "success")
+    return redirect(url_for("admin.dashboard"))
+
+
 @bp.route("/period/<int:period_id>/agent/<int:agent_commission_id>")
 @admin_required
 def agent_detail(period_id, agent_commission_id):
