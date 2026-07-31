@@ -162,3 +162,47 @@ class TestAdminScoping:
         _login(client, "alice@example.com")
         resp = client.get(f"/admin/period/{period_id}", follow_redirects=True)
         assert b"Admin access required" in resp.data
+
+    def test_admin_can_reset_an_agents_password(self, app, db, client):
+        with app.app_context():
+            _make_agent(db, "saman@example.com", "Saman", "Saman Agent", is_admin=True)
+            alice = _make_agent(db, "alice@example.com", "Alice", "Alice Agent")
+            alice_id = alice.id
+
+        _login(client, "saman@example.com")
+        resp = client.post(
+            f"/admin/agents/{alice_id}/password",
+            data={"password": "brand-new-password"}, follow_redirects=True,
+        )
+        assert b"Password updated for Alice" in resp.data
+        client.get("/logout")
+
+        # Old password no longer works, new one does
+        resp = _login(client, "alice@example.com", password="pw12345")
+        assert b"Invalid email or password" in resp.data
+        resp = _login(client, "alice@example.com", password="brand-new-password")
+        assert resp.request.path == "/portal/"
+
+    def test_password_reset_rejects_too_short_password(self, app, db, client):
+        with app.app_context():
+            _make_agent(db, "saman@example.com", "Saman", "Saman Agent", is_admin=True)
+            alice = _make_agent(db, "alice@example.com", "Alice", "Alice Agent")
+            alice_id = alice.id
+
+        _login(client, "saman@example.com")
+        resp = client.post(
+            f"/admin/agents/{alice_id}/password", data={"password": "abc"}, follow_redirects=True,
+        )
+        assert b"Password must be at least 6 characters" in resp.data
+
+    def test_non_admin_cannot_reset_passwords(self, app, db, client):
+        with app.app_context():
+            alice = _make_agent(db, "alice@example.com", "Alice", "Alice Agent")
+            bob = _make_agent(db, "bob@example.com", "Bob", "Bob Agent")
+            bob_id = bob.id
+
+        _login(client, "alice@example.com")
+        resp = client.post(
+            f"/admin/agents/{bob_id}/password", data={"password": "sneaky123"}, follow_redirects=True,
+        )
+        assert b"Admin access required" in resp.data
