@@ -47,6 +47,21 @@
       <button type="submit" class="btn btn-primary">Process Cordoba File(s)</button>
     </form>
   </div>
+
+  <div class="card upload-card">
+    <h2>Commission History Backfill</h2>
+    <p class="form-hint">Import a prior account manager's ledger (.xlsx or .csv, NOT a CRM export) to backfill months from before this portal existed — so Cordoba chargebacks can find and claw back agents paid on those clients. The Month column has no year, so enter one.</p>
+    <form method="post" action="{{ url_for('admin.upload_commission_history') }}" enctype="multipart/form-data">
+      <div class="form-group">
+        <label for="history_year">Year</label>
+        <input type="text" id="history_year" name="history_year" placeholder="2026" style="max-width:120px;" required>
+      </div>
+      <div class="form-group">
+        <input type="file" name="history_file" accept=".xlsx,.csv" multiple required>
+      </div>
+      <button type="submit" class="btn btn-primary">Import History</button>
+    </form>
+  </div>
 </div>
 
 <h2>Commission Periods</h2>

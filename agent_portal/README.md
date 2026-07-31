@@ -18,20 +18,25 @@ apps can evolve independently.
 
 ## What's vendored vs. new
 
-- `agent_portal/calculator.py`, `agent_portal/crm_parser.py`, `agent_portal/cordoba_parser.py` —
-  byte-for-byte copies of the business logic in `app/`'s equivalents (only the internal import
-  path was changed). If the tier table, clawback rules, or classification logic ever change in
-  the main app, copy the updated file here too — there's no shared import between the two apps by
-  design.
+- `agent_portal/calculator.py`, `agent_portal/crm_parser.py`, `agent_portal/cordoba_parser.py`,
+  `agent_portal/commission_history_parser.py` — byte-for-byte copies of the business logic in
+  `app/`'s equivalents (only the internal import path was changed). If the tier table, clawback
+  rules, or classification logic ever change in the main app, copy the updated file here too —
+  there's no shared import between the two apps by design.
 - Everything else (`models.py`, `auth.py`, `drive_sync.py`, `ingest.py`, `cordoba_ingest.py`,
-  `routes_agent.py`, `routes_admin.py`, templates) is new, built for this portal.
+  `history_ingest.py`, `routes_agent.py`, `routes_admin.py`, templates) is new, built for this
+  portal.
 - **Cordoba payout check is supported**: `/admin` has a "Cordoba Payout Check" upload for the
   First Pays/EPF/Chargebacks `.xlsx` export — same gates and clawback math as the internal app
   (`cordoba_ingest.py`). Agents see the "Cordoba Payout"/"Cordoba Clawback" badges and the
   "Cordoba Charge back" reconciliation table on their own current period.
-- **Still out of scope**: the commission-history backfill importer (`/upload-commission-history`
-  in the internal app) is not ported here — with agents only ever seeing the current period (see
-  below), backfilling months before this portal existed wouldn't be visible to them anyway.
+- **Commission history backfill is supported**: `/admin` has a "Commission History Backfill"
+  upload for a prior account manager's ledger (`.xlsx`/`.csv`, not a CRM export) plus a Year
+  field. This matters for clawbacks specifically: a client whose original commission was only
+  ever recorded in the *internal app's* database doesn't exist in this portal's database at all
+  (they're two entirely separate stores), so a later Cordoba chargeback or CRM-reflected drop for
+  that client would find nothing to claw back. Backfilling that history into this portal's own DB
+  via this upload fixes that.
 
 ## One-time setup
 

@@ -5,6 +5,7 @@ from agent_portal.auth import admin_required
 from agent_portal.cordoba_ingest import process_cordoba_file
 from agent_portal.crm_parser import parse_crm_and_calculate
 from agent_portal.drive_sync import sync_from_drive
+from agent_portal.history_ingest import allowed_history_file, import_commission_history_files
 from agent_portal.ingest import already_known_crm_id_sets, save_period_results
 from agent_portal.models import Agent, AgentAlias, CommissionPeriod, SyncedFile
 
@@ -140,6 +141,41 @@ def upload_cordoba_payout():
         _flash_skipped(r["skipped_no_debt_match"],
                        "were not found in our commission reports (or have no Dropped Date on file yet) — "
                        "not listed under \"Cordoba Charge back\"")
+
+
+@bp.route("/upload-commission-history", methods=["POST"])
+@admin_required
+def upload_commission_history():
+    """Backfill past commission history from a prior account manager's ledger
+    (.xlsx or .csv, NOT a CRM export). Recreates real periods so a later
+    Cordoba Chargebacks upload can find and claw back agents paid on a
+    client before this portal existed."""
+    files = [f for f in request.files.getlist("history_file") if f and f.filename]
+    if not files:
+        flash("No file selected.", "error")
+        return redirect(url_for("admin.dashboard"))
+
+    bad_names = [f.filename for f in files if not allowed_history_file(f.filename)]
+    if bad_names:
+        flash(f"Only .xlsx or .csv files are accepted for commission history uploads: {', '.join(bad_names)}", "error")
+        return redirect(url_for("admin.dashboard"))
+
+    year_raw = (request.form.get("history_year") or "").strip()
+    if not year_raw.isdigit():
+        flash("Please enter a valid year for the commission history file (the Month column has no year).", "error")
+        return redirect(url_for("admin.dashboard"))
+    year = int(year_raw)
+
+    outcome = import_commission_history_files(files, year)
+
+    if outcome["saved_period_ids"]:
+        flash(f"Commission history import: {len(outcome['saved_period_ids'])} month(s) backfilled.", "success")
+    if outcome["periods_skipped"]:
+        flash(f"{outcome['periods_skipped']} month(s) skipped because a period already existed.", "error")
+    for w in outcome["warnings"]:
+        flash(w, "error")
+
+    return redirect(url_for("admin.dashboard"))
 
     return redirect(url_for("admin.dashboard"))
 
