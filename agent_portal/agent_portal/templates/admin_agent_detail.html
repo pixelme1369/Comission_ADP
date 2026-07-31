@@ -1,11 +1,11 @@
 {% extends "base.html" %}
-{% block title %}{{ period.period_label }} — ADP Agent Portal{% endblock %}
+{% block title %}{{ agent.agent_name }} — {{ period.period_label }} — Admin — ADP Agent Portal{% endblock %}
 
 {% block content %}
 <div class="page-header">
-  <a href="{{ url_for('agent.dashboard') }}" class="back-link">← Back to My Commissions</a>
-  <h1>{{ period.period_label }}</h1>
-  <p class="muted">Paid on the 25th of the following month</p>
+  <a href="{{ url_for('admin.period_detail', period_id=period.id) }}" class="back-link">← Back to {{ period.period_label }}</a>
+  <h1>{{ agent.agent_name }}</h1>
+  <p class="muted">Commission period: {{ period.period_label }} &nbsp;|&nbsp; Paid on the 25th of the following month</p>
 </div>
 
 <div class="summary-cards" style="margin-bottom:1.5rem;">
@@ -181,8 +181,8 @@
 {% if cordoba_chargeback_entries %}
 <h2 style="margin-top:1.5rem;">Cordoba Charge back ({{ cordoba_chargeback_entries|length }})</h2>
 <p class="muted" style="margin-bottom:0.75rem;">
-  Verbatim rows from Cordoba's Chargebacks tab for clients matched to you that dropped this period.
-  This is listed for reconciliation only — it has NOT been deducted from your Gross or Net Commission above.
+  Verbatim rows from Cordoba's Chargebacks tab for clients matched to this agent that dropped this period.
+  This is listed for reconciliation only — it has NOT been deducted from Gross or Net Commission above.
 </p>
 <div class="table-wrapper">
   <table class="data-table">

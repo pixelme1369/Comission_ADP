@@ -71,7 +71,7 @@
     <tbody>
       {% for p in periods %}
       <tr>
-        <td>{{ p.period_label }}</td>
+        <td><a href="{{ url_for('admin.period_detail', period_id=p.id) }}" class="agent-link">{{ p.period_label }}</a></td>
         <td>{{ p.total_agents }}</td>
         <td class="muted">{{ p.filename or '—' }}</td>
         <td>{{ p.uploaded_at.strftime('%Y-%m-%d %H:%M') }}</td>

@@ -20,6 +20,22 @@ def _client_label(client_name, crm_id):
     return f"{client_name} (ID {crm_id})" if client_name else crm_id
 
 
+def cordoba_display_context(agent_row, clients):
+    """Per-client "Cordoba Clawback" flag (matched, not necessarily deducted —
+    see CordobaChargebackMatchedClient's docstring) plus the display-only
+    "Cordoba Charge back" reconciliation rows for one agent's one period.
+    Shared by both the agent-facing and admin-facing detail views."""
+    crm_ids = {c.crm_id for c in clients if c.crm_id}
+    cordoba_charged_back_ids = {
+        cb.crm_id for cb in
+        CordobaChargebackMatchedClient.query.filter(CordobaChargebackMatchedClient.crm_id.in_(crm_ids)).all()
+    } if crm_ids else set()
+    cordoba_chargeback_entries = CordobaChargebackEntry.query.filter_by(
+        agent_name=agent_row.agent_name, period_label=agent_row.period.period_label,
+    ).order_by(CordobaChargebackEntry.uploaded_at).all()
+    return cordoba_charged_back_ids, cordoba_chargeback_entries
+
+
 def _get_or_create_agent_period_row(period_label, agent_name, filename):
     """Find (or create a zero-unit) AgentCommission row to carry a clawback that
     has no cleared units of its own in this period."""
