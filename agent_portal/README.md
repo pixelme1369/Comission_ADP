@@ -18,11 +18,19 @@ apps can evolve independently.
 
 ## What's vendored vs. new
 
-- `agent_portal/calculator.py`, `agent_portal/crm_parser.py`, `agent_portal/cordoba_parser.py`,
+- `agent_portal/calculator.py`, `agent_portal/cordoba_parser.py`,
   `agent_portal/commission_history_parser.py` — byte-for-byte copies of the business logic in
   `app/`'s equivalents (only the internal import path was changed). If the tier table, clawback
   rules, or classification logic ever change in the main app, copy the updated file here too —
   there's no shared import between the two apps by design.
+- `agent_portal/crm_parser.py` — same as above, with **one intentional divergence**: it also
+  saves `SAME_MONTH_CANCEL` clients (dropped the same month they cleared, or dropped before
+  their own payout date) as display-only `ClientRecord` rows, so agents can see who dropped
+  without any commission ever being paid on them. The internal app computes this classification
+  too but never persists it anywhere. This never touches units/debt/rate/commission math — see
+  the divergence note at the top of the file. If re-syncing this file from the internal app after
+  a future business-rule change there, re-apply this addition (the `same_month_cancel_buckets`
+  block) rather than dropping it.
 - Everything else (`models.py`, `auth.py`, `drive_sync.py`, `ingest.py`, `cordoba_ingest.py`,
   `history_ingest.py`, `routes_agent.py`, `routes_admin.py`, templates) is new, built for this
   portal.

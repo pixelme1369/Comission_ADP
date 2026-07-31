@@ -59,13 +59,14 @@
 
 <h2>Cleared Clients This Period ({{ clients|selectattr('is_cleared')|list|length }})</h2>
 <div class="table-wrapper">
-  <table class="data-table" id="clients-table">
+  <table class="data-table sortable" id="clients-table">
     <thead>
       <tr>
-        <th>ID</th><th>Client Name</th><th>Enrolled Date</th><th>Enrolled Debt</th>
-        <th>Credit Score</th><th>Commission on Client</th><th>Cordoba Payout</th>
-        <th>Cordoba Clawback</th><th>1st Payment Cleared</th>
-        <th>Payments Made</th><th>Pay Freq.</th><th># NSF</th><th>Status</th>
+        <th data-col="0">ID</th><th data-col="1">Client Name</th><th data-col="2">Enrolled Date</th>
+        <th data-col="3">Enrolled Debt</th><th data-col="4">Credit Score</th>
+        <th data-col="5">Commission on Client</th><th data-col="6">Cordoba Payout</th>
+        <th data-col="7">1st Payment Cleared</th><th data-col="8">Payments Made</th>
+        <th data-col="9">Pay Freq.</th><th data-col="10"># NSF</th><th data-col="11">Status</th>
       </tr>
     </thead>
     <tbody>
@@ -88,9 +89,6 @@
         <td>
           {% if c.cordoba_paid %}<span class="badge badge-green">Yes</span>{% else %}<span class="badge badge-amber">No</span>{% endif %}
         </td>
-        <td>
-          {% if c.crm_id in cordoba_charged_back_ids %}<span class="badge badge-red">Yes</span>{% else %}<span class="badge badge-amber">No</span>{% endif %}
-        </td>
         <td>{{ c.first_payment_cleared_date }}</td>
         <td>{{ c.payments_made }}</td>
         <td>{{ c.pay_freq or '—' }}</td>
@@ -98,7 +96,7 @@
         <td>{{ c.status }}</td>
       </tr>
       {% else %}
-      <tr><td colspan="13" class="muted" style="padding:1rem;">No cleared clients this period.</td></tr>
+      <tr><td colspan="12" class="muted" style="padding:1rem;">No cleared clients this period.</td></tr>
       {% endfor %}
     </tbody>
   </table>

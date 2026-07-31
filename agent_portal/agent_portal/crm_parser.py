@@ -1,6 +1,13 @@
 """
 Parses a full-history CRM export (one row per client, all months in one file).
 
+agent_portal-only divergence from app/crm_parser.py: SAME_MONTH_CANCEL clients
+are also saved for display (is_cleared=False, is_pending=False, is_cancelled=True,
+commission_on_client=0.0) so agents can see who dropped without ever affecting
+units_cleared, total_cleared_debt, cancellation_rate, or gross_commission — see
+same_month_cancel_buckets below. The internal app never persists these rows at
+all. This is the only intentional difference from the vendored original.
+
 For each client row:
   - If 1st Payment Cleared Date filled + Dropped Date empty + Status != Pending Affiliate Cancellation
     → CLEARED: counts as a unit in the cleared month, commission is owed
@@ -317,11 +324,19 @@ def parse_crm_and_calculate(file_bytes: bytes, filename: str, already_cleared_cr
     cancel_buckets = defaultdict(list)       # (agent, period) → cancelled clients (for cancel rate)
     pending_buckets = defaultdict(list)      # (agent, period) → pending clients
     safe_cancel_buckets = defaultdict(list)  # (agent, period) → safe-cancel clients
+    # agent_portal-only addition (deliberate divergence from app/crm_parser.py —
+    # not a money-math change, purely a display list): same_month_cancel clients
+    # were previously computed but never surfaced anywhere, so agents had no way
+    # to see clients who dropped the same month they cleared. Kept in its own
+    # bucket, never merged into any bucket that feeds units/debt/rate/commission.
+    same_month_cancel_buckets = defaultdict(list)  # (agent, period) → same-month-cancel clients
 
     for c in all_clients:
         key = (c["agent_name"], c["cleared_period"])
         if c["unit_status"] == "cleared":
             cleared_buckets[key].append(c)
+        elif c["unit_status"] == "same_month_cancel":
+            same_month_cancel_buckets[key].append(c)
         elif c["unit_status"] == "safe_cancel":
             # OWNER POLICY (confirmed July 2026): a safe_cancel client protected the
             # agent's commission (enough payments landed before they dropped), but the
@@ -360,6 +375,7 @@ def parse_crm_and_calculate(file_bytes: bytes, filename: str, already_cleared_cr
         safe_cancels = safe_cancel_buckets.get(key, [])
         cancelled = cancel_buckets.get(key, [])
         pending = pending_buckets.get(key, [])
+        same_month_cancels = same_month_cancel_buckets.get(key, [])
 
         # OWNER POLICY (confirmed July 2026): safe-cancel clients still count as a full
         # unit toward the agent's tier (same "unit credited, $0 commission" treatment as
@@ -399,7 +415,9 @@ def parse_crm_and_calculate(file_bytes: bytes, filename: str, already_cleared_cr
         result["pending_debt"] = sum(c["enrolled_debt"] for c in pending)
         result["source"] = "crm"
         result["_cleared_clients"] = tier_units
-        result["_all_period_clients"] = tier_units + cancelled + pending
+        # same_month_cancels is display-only — it never touches units_cleared,
+        # total_cleared_debt, cancellation_rate, or gross_commission above.
+        result["_all_period_clients"] = tier_units + cancelled + pending + same_month_cancels
 
         if len(pending) > 0:
             result["notes"] += f" | {len(pending)} unit(s) pending Affiliate Cancellation review"
