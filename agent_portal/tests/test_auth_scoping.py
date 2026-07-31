@@ -2,6 +2,9 @@
 the entire point of this portal existing separately from the internal
 single-user tool. Also checks admin-only routes reject non-admin logins."""
 
+import csv
+import io
+
 from agent_portal.models import Agent, AgentAlias, CommissionPeriod, AgentCommission
 
 
@@ -263,3 +266,84 @@ class TestAdminScoping:
         _login(client, "alice@example.com")
         resp = client.post(f"/admin/agents/{bob_id}/delete", follow_redirects=True)
         assert b"Admin access required" in resp.data
+
+
+class TestClearedClientsDisplay:
+    """Covers three related display changes on the agent-facing period page:
+    same-month cancels now show up under "Cancelled — Not Paid," the
+    "Cordoba Clawback" column is gone from "Cleared Clients This Period,"
+    and that table is sortable."""
+
+    def _upload_csv_as_admin(self, client, csv_bytes, filename="crm.csv"):
+        return client.post(
+            "/admin/upload-csv",
+            data={"csv_file": (io.BytesIO(csv_bytes), filename)},
+            content_type="multipart/form-data", follow_redirects=True,
+        )
+
+    def _csv(self, rows):
+        headers = [
+            "ID", "Sales Rep", "Full Name", "1st Payment Cleared Date", "Dropped Date",
+            "Status", "Enrolled Debt", "# NSF", "Payments Made", "Pay Freq.", "Credit Score",
+        ]
+        out = io.StringIO()
+        writer = csv.DictWriter(out, fieldnames=headers)
+        writer.writeheader()
+        for r in rows:
+            writer.writerow({h: r.get(h, "") for h in headers})
+        return out.getvalue().encode("utf-8")
+
+    def test_same_month_cancel_shows_under_cancelled_not_paid(self, app, db, client):
+        with app.app_context():
+            _make_agent(db, "saman@example.com", "Saman", "Saman Agent", is_admin=True)
+            _make_agent(db, "maria@example.com", "Maria", "Maria")
+
+        _login(client, "saman@example.com")
+        csv_bytes = self._csv([
+            {"ID": "1", "Sales Rep": "Maria", "Full Name": "Kept Client",
+             "1st Payment Cleared Date": "06/10/2026", "Status": "Active", "Enrolled Debt": "10000"},
+            {"ID": "2", "Sales Rep": "Maria", "Full Name": "Dropped Client",
+             "1st Payment Cleared Date": "06/05/2026", "Dropped Date": "06/20/2026",
+             "Status": "Cancelled", "Enrolled Debt": "8000"},
+        ])
+        self._upload_csv_as_admin(client, csv_bytes)
+
+        with app.app_context():
+            period = CommissionPeriod.query.filter_by(period_label="2026-06").one()
+            agent_row = AgentCommission.query.filter_by(period_id=period.id, agent_name="Maria").one()
+            period_id, agent_row_id = period.id, agent_row.id
+
+        client.get("/logout")
+        _login(client, "maria@example.com")
+        resp = client.get(f"/portal/period/{period_id}/agent/{agent_row_id}")
+        assert resp.status_code == 200
+        assert b"Cancelled" in resp.data
+        assert b"Dropped Client" in resp.data
+        # didn't leak into the cleared-clients table
+        assert b"Kept Client" in resp.data
+
+    def test_cleared_clients_table_has_no_cordoba_clawback_column_and_is_sortable(self, app, db, client):
+        with app.app_context():
+            _make_agent(db, "saman@example.com", "Saman", "Saman Agent", is_admin=True)
+            _make_agent(db, "maria@example.com", "Maria", "Maria")
+
+        _login(client, "saman@example.com")
+        csv_bytes = self._csv([
+            {"ID": "1", "Sales Rep": "Maria", "Full Name": "Kept Client",
+             "1st Payment Cleared Date": "06/10/2026", "Status": "Active", "Enrolled Debt": "10000"},
+        ])
+        self._upload_csv_as_admin(client, csv_bytes)
+
+        with app.app_context():
+            period = CommissionPeriod.query.filter_by(period_label="2026-06").one()
+            agent_row = AgentCommission.query.filter_by(period_id=period.id, agent_name="Maria").one()
+            period_id, agent_row_id = period.id, agent_row.id
+
+        client.get("/logout")
+        _login(client, "maria@example.com")
+        resp = client.get(f"/portal/period/{period_id}/agent/{agent_row_id}")
+        html = resp.data.decode()
+        assert "Cordoba Clawback" not in html
+        assert 'id="clients-table"' in html
+        assert 'class="data-table sortable" id="clients-table"' in html
+        assert 'data-col="0"' in html

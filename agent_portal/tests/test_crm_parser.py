@@ -88,6 +88,28 @@ class TestClassification:
         assert result["clawback_amount"] == 0.0
         assert result["cancellation_rate"] == 0.0
 
+    def test_same_month_cancel_client_is_still_saved_for_display(self):
+        """agent_portal-only divergence: same-month cancels don't affect any
+        money math (asserted above), but they ARE surfaced in client_rows so
+        agents can see who dropped, unlike the internal app which discards
+        them entirely."""
+        data = crm_csv([
+            client("A1", cleared="06/10/2026"),
+            client("A2", cleared="06/05/2026", dropped="06/20/2026", name="Dropped Client"),
+        ])
+        periods = by_period(parse_crm_and_calculate(data, "f.csv"))
+        rows = periods["2026-06"]["client_rows"]
+        dropped_row = next(c for c in rows if c["crm_id"] == "A2")
+        assert dropped_row["client_name"] == "Dropped Client"
+        assert dropped_row["is_cleared"] is False
+        assert dropped_row["is_pending"] is False
+        assert dropped_row["is_cancelled"] is True
+        assert dropped_row["commission_on_client"] == 0.0
+        # still didn't move the needle on the agent's numbers
+        (result,) = periods["2026-06"]["results"]
+        assert result["units_cleared"] == 1
+        assert result["gross_commission"] == pytest.approx(100.0)  # 10,000 x 1%, A1 only
+
     def test_dropped_before_payout_date_is_not_a_clawback(self):
         # Cleared June -> payout July 25. Dropped July 10, below threshold:
         # commission was never sent, so exclude, don't claw back.
