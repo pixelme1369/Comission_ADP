@@ -74,6 +74,36 @@ class TestAgentScoping:
         assert b"Invalid email or password" in resp.data
 
 
+class TestCurrentPeriodOnly:
+    """Owner policy: agents only ever see the single most recent commission
+    period — no browsing prior months from the portal, even for their own
+    historical data."""
+
+    def test_dashboard_only_shows_latest_period_not_history(self, app, db, client):
+        with app.app_context():
+            _make_agent(db, "alice@example.com", "Alice", "Alice Agent")
+            _make_period_row(db, "2026-01", "Alice Agent", gross=1111.0)
+            _make_period_row(db, "2026-02", "Alice Agent", gross=2222.0)
+
+        _login(client, "alice@example.com")
+        resp = client.get("/portal/")
+        assert resp.status_code == 200
+        assert b"2,222.00" in resp.data
+        assert b"1,111.00" not in resp.data
+
+    def test_cannot_view_own_older_period_via_url(self, app, db, client):
+        with app.app_context():
+            _make_agent(db, "alice@example.com", "Alice", "Alice Agent")
+            old_row = _make_period_row(db, "2026-01", "Alice Agent", gross=1111.0)
+            old_row_id = old_row.id
+            old_period_id = old_row.period_id
+            _make_period_row(db, "2026-02", "Alice Agent", gross=2222.0)
+
+        _login(client, "alice@example.com")
+        resp = client.get(f"/portal/period/{old_period_id}/agent/{old_row_id}")
+        assert resp.status_code == 404
+
+
 class TestAdminScoping:
     def test_non_admin_cannot_reach_admin_dashboard(self, app, db, client):
         with app.app_context():

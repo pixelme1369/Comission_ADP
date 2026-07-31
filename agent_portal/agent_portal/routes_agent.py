@@ -19,22 +19,33 @@ CLIENT_EXPORT_COLUMNS = [
 ]
 
 
+def _latest_period():
+    """Agents only ever see the single most recent commission period (owner
+    policy — no browsing prior months' history from the portal). Admins are
+    unaffected; the admin dashboard still lists every period."""
+    return CommissionPeriod.query.order_by(CommissionPeriod.period_label.desc()).first()
+
+
 @bp.route("/")
 @login_required
 def dashboard():
     names = agent_scope_names()
+    latest = _latest_period()
     rows = (
         AgentCommission.query
-        .filter(AgentCommission.agent_name.in_(names))
-        .join(CommissionPeriod)
-        .order_by(CommissionPeriod.period_label.desc())
+        .filter(AgentCommission.agent_name.in_(names), AgentCommission.period_id == latest.id)
         .all()
-    ) if names else []
+    ) if names and latest else []
     return render_template("dashboard.html", rows=rows)
 
 
 def _get_scoped_agent_commission(period_id, agent_commission_id):
     names = agent_scope_names()
+    latest = _latest_period()
+    if not latest or period_id != latest.id:
+        # Not just unscoped — genuinely not the current period. Agents can't
+        # reach older periods even by guessing a URL for their own past data.
+        abort(404)
     agent_row = AgentCommission.query.filter_by(id=agent_commission_id, period_id=period_id).first()
     if not agent_row or agent_row.agent_name not in names:
         abort(404)
