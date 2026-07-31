@@ -116,6 +116,16 @@ to create every agent's login and map it to their exact CRM "Sales Rep" spelling
 has no stable agent ID, only that name string) — `create_admin.py` can also be re-run for any
 agent you'd rather provision from the command line instead of the browser form.
 
+## Schema changes (no migration framework)
+
+Same limitation as the internal app: `db.create_all()` only creates tables that don't exist
+yet — it never alters an *existing* table to add a new column. Adding a new model is fine (a
+fresh table just gets created on the next cold start), but adding a column to an existing model
+needs a one-off script run against `DATABASE_URL`, same pattern as `create_admin.py` — see
+`migrate_add_cordoba_paid.py` for a real example (adds `client_record.cordoba_paid` without
+touching any existing rows). If a future change adds another column, write a similar `ALTER
+TABLE ... ADD COLUMN IF NOT EXISTS ...` script rather than assuming a redeploy will pick it up.
+
 ## Local development
 
 ```bash
