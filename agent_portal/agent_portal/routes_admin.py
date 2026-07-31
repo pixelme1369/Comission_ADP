@@ -1,4 +1,5 @@
 from flask import Blueprint, current_app, jsonify, render_template, request, redirect, url_for, flash
+from flask_login import current_user
 
 from agent_portal import db
 from agent_portal.auth import admin_required
@@ -274,6 +275,26 @@ def reset_password(agent_id):
         agent.set_password(new_password)
         db.session.commit()
         flash(f"Password updated for {agent.display_name}.", "success")
+    return redirect(url_for("admin.manage_agents"))
+
+
+@bp.route("/agents/<int:agent_id>/delete", methods=["POST"])
+@admin_required
+def delete_agent(agent_id):
+    agent = Agent.query.get_or_404(agent_id)
+
+    if agent.id == current_user.id:
+        flash("You cannot delete the account you are currently logged in as.", "error")
+        return redirect(url_for("admin.manage_agents"))
+
+    if agent.is_admin and Agent.query.filter_by(is_admin=True).count() <= 1:
+        flash("Cannot delete the last remaining admin account.", "error")
+        return redirect(url_for("admin.manage_agents"))
+
+    display_name = agent.display_name
+    db.session.delete(agent)  # AgentAlias rows cascade-delete with it
+    db.session.commit()
+    flash(f"Removed account for {display_name}. Their commission history is unaffected — only the login was removed.", "success")
     return redirect(url_for("admin.manage_agents"))
 
 

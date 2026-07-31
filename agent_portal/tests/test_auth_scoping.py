@@ -206,3 +206,60 @@ class TestAdminScoping:
             f"/admin/agents/{bob_id}/password", data={"password": "sneaky123"}, follow_redirects=True,
         )
         assert b"Admin access required" in resp.data
+
+    def test_admin_can_delete_an_agent_without_touching_their_commission_history(self, app, db, client):
+        with app.app_context():
+            _make_agent(db, "saman@example.com", "Saman", "Saman Agent", is_admin=True)
+            alice = _make_agent(db, "alice@example.com", "Alice", "Alice Agent")
+            alice_id = alice.id
+            _make_period_row(db, "2026-01", "Alice Agent", gross=1234.0)
+
+        _login(client, "saman@example.com")
+        resp = client.post(f"/admin/agents/{alice_id}/delete", follow_redirects=True)
+        assert b"Removed account for Alice" in resp.data
+
+        with app.app_context():
+            assert Agent.query.filter_by(email="alice@example.com").first() is None
+            assert AgentAlias.query.filter_by(agent_name="Alice Agent").first() is None
+            # Commission data itself is untouched — only the login is gone
+            assert AgentCommission.query.filter_by(agent_name="Alice Agent").first() is not None
+
+        client.get("/logout")
+        resp = _login(client, "alice@example.com", password="pw12345")
+        assert b"Invalid email or password" in resp.data
+
+    def test_admin_cannot_delete_own_account(self, app, db, client):
+        with app.app_context():
+            saman = _make_agent(db, "saman@example.com", "Saman", "Saman Agent", is_admin=True)
+            saman_id = saman.id
+
+        _login(client, "saman@example.com")
+        resp = client.post(f"/admin/agents/{saman_id}/delete", follow_redirects=True)
+        assert b"cannot delete the account you are currently logged in as" in resp.data
+        with app.app_context():
+            assert Agent.query.get(saman_id) is not None
+
+    def test_deleting_one_of_two_admins_is_allowed(self, app, db, client):
+        """The last-admin guard only blocks deleting the sole remaining admin —
+        with two admins, removing one is fine (the self-delete guard is what
+        actually protects the final admin, covered separately above)."""
+        with app.app_context():
+            _make_agent(db, "saman@example.com", "Saman", "Saman Agent", is_admin=True)
+            other_admin = _make_agent(db, "backup@example.com", "Backup", "Backup Agent", is_admin=True)
+            other_admin_id = other_admin.id
+
+        _login(client, "saman@example.com")
+        resp = client.post(f"/admin/agents/{other_admin_id}/delete", follow_redirects=True)
+        assert b"Removed account for Backup" in resp.data
+        with app.app_context():
+            assert Agent.query.filter_by(is_admin=True).count() == 1
+
+    def test_non_admin_cannot_delete_agents(self, app, db, client):
+        with app.app_context():
+            alice = _make_agent(db, "alice@example.com", "Alice", "Alice Agent")
+            bob = _make_agent(db, "bob@example.com", "Bob", "Bob Agent")
+            bob_id = bob.id
+
+        _login(client, "alice@example.com")
+        resp = client.post(f"/admin/agents/{bob_id}/delete", follow_redirects=True)
+        assert b"Admin access required" in resp.data
