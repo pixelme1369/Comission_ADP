@@ -2,12 +2,12 @@ from flask import Blueprint, current_app, jsonify, render_template, request, red
 
 from agent_portal import db
 from agent_portal.auth import admin_required
-from agent_portal.cordoba_ingest import process_cordoba_file
+from agent_portal.cordoba_ingest import cordoba_display_context, process_cordoba_file
 from agent_portal.crm_parser import parse_crm_and_calculate
 from agent_portal.drive_sync import sync_from_drive
 from agent_portal.history_ingest import allowed_history_file, import_commission_history_files
 from agent_portal.ingest import already_known_crm_id_sets, save_period_results
-from agent_portal.models import Agent, AgentAlias, CommissionPeriod, SyncedFile
+from agent_portal.models import Agent, AgentAlias, AgentCommission, ClientRecord, CommissionPeriod, SyncedFile
 
 bp = Blueprint("admin", __name__, url_prefix="/admin")
 cron_bp = Blueprint("cron", __name__, url_prefix="/cron")
@@ -23,6 +23,36 @@ def dashboard():
     return render_template(
         "admin_dashboard.html", periods=periods, agents=agents, last_sync=last_sync,
         drive_configured=drive_configured,
+    )
+
+
+@bp.route("/period/<int:period_id>")
+@admin_required
+def period_detail(period_id):
+    """Admin view of one commission period — every agent who has a row in it,
+    unlike the agent-facing dashboard which is scoped to one agent and only
+    the current period."""
+    period = CommissionPeriod.query.get_or_404(period_id)
+    agents = AgentCommission.query.filter_by(period_id=period_id).order_by(AgentCommission.agent_name).all()
+    return render_template("admin_period_detail.html", period=period, agents=agents)
+
+
+@bp.route("/period/<int:period_id>/agent/<int:agent_commission_id>")
+@admin_required
+def agent_detail(period_id, agent_commission_id):
+    """Admin view of one agent's full client breakdown in one period — any
+    period, any agent, no current-period-only or own-name-only restriction
+    (those only apply to the agent-facing portal)."""
+    agent_row = AgentCommission.query.filter_by(id=agent_commission_id, period_id=period_id).first_or_404()
+    clients = ClientRecord.query.filter_by(agent_commission_id=agent_row.id).all()
+    clawback_clients = [c for c in clients if c.clawback_applied]
+    active_clients = [c for c in clients if not c.clawback_applied]
+    cordoba_charged_back_ids, cordoba_chargeback_entries = cordoba_display_context(agent_row, active_clients)
+    return render_template(
+        "admin_agent_detail.html", agent=agent_row, period=agent_row.period,
+        clients=active_clients, clawback_clients=clawback_clients,
+        cordoba_charged_back_ids=cordoba_charged_back_ids,
+        cordoba_chargeback_entries=cordoba_chargeback_entries,
     )
 
 

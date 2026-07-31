@@ -73,6 +73,19 @@ class TestAgentScoping:
         resp = _login(client, "alice@example.com", password="wrong-password")
         assert b"Invalid email or password" in resp.data
 
+    def test_no_export_csv_route_exists_for_agents(self, app, db, client):
+        """Owner policy: agents cannot export a CSV copy of their commission data."""
+        with app.app_context():
+            _make_agent(db, "alice@example.com", "Alice", "Alice Agent")
+            row = _make_period_row(db, "2026-01", "Alice Agent")
+            period_id, row_id = row.period_id, row.id
+
+        _login(client, "alice@example.com")
+        resp = client.get(f"/portal/period/{period_id}/agent/{row_id}")
+        assert b"Export CSV" not in resp.data
+        resp = client.get(f"/portal/period/{period_id}/agent/{row_id}/export")
+        assert resp.status_code == 404
+
 
 class TestCurrentPeriodOnly:
     """Owner policy: agents only ever see the single most recent commission
@@ -118,3 +131,34 @@ class TestAdminScoping:
         _login(client, "saman@example.com")
         resp = client.get("/admin/")
         assert resp.status_code == 200
+
+    def test_admin_can_view_any_period_with_all_agents(self, app, db, client):
+        """Unlike the agent-facing portal, admin can browse every period and
+        every agent in it — not just the latest, not just their own."""
+        with app.app_context():
+            _make_agent(db, "saman@example.com", "Saman", "Saman Agent", is_admin=True)
+            old_row = _make_period_row(db, "2026-01", "Alice Agent", gross=1111.0)
+            other_row = _make_period_row(db, "2026-01", "Bob Agent", gross=5678.0)
+            old_period_id = old_row.period_id
+            other_row_id = other_row.id
+            _make_period_row(db, "2026-02", "Alice Agent", gross=2222.0)  # a newer period exists too
+
+        _login(client, "saman@example.com")
+        resp = client.get(f"/admin/period/{old_period_id}")
+        assert resp.status_code == 200
+        assert b"Alice Agent" in resp.data
+        assert b"Bob Agent" in resp.data
+
+        resp = client.get(f"/admin/period/{old_period_id}/agent/{other_row_id}")
+        assert resp.status_code == 200
+        assert b"Bob Agent" in resp.data
+
+    def test_non_admin_cannot_reach_admin_period_detail(self, app, db, client):
+        with app.app_context():
+            _make_agent(db, "alice@example.com", "Alice", "Alice Agent", is_admin=False)
+            row = _make_period_row(db, "2026-01", "Alice Agent")
+            period_id = row.period_id
+
+        _login(client, "alice@example.com")
+        resp = client.get(f"/admin/period/{period_id}", follow_redirects=True)
+        assert b"Admin access required" in resp.data
