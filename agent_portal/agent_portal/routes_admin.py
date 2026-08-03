@@ -4,12 +4,19 @@ from flask_login import current_user
 from agent_portal import db
 from agent_portal.auth import admin_required
 from agent_portal.calculator import units_to_next_tier, commission_gain_at_next_tier
-from agent_portal.cordoba_ingest import cordoba_display_context, process_cordoba_file
+from agent_portal.cordoba_ingest import (
+    cordoba_display_context, delete_cordoba_upload, list_cordoba_uploads, process_cordoba_file,
+)
 from agent_portal.crm_parser import parse_crm_and_calculate
 from agent_portal.drive_sync import sync_from_drive
 from agent_portal.history_ingest import allowed_history_file, import_commission_history_files
-from agent_portal.ingest import already_known_crm_id_sets, save_period_results
+from agent_portal.ingest import (
+    already_known_crm_id_sets, delete_periods_by_filename, group_periods_by_filename, save_period_results,
+)
 from agent_portal.models import Agent, AgentAlias, AgentCommission, ClientRecord, CommissionPeriod, SyncedFile
+
+CRM_SOURCES = ("drive", "manual")
+HISTORY_SOURCES = ("history_import",)
 
 bp = Blueprint("admin", __name__, url_prefix="/admin")
 cron_bp = Blueprint("cron", __name__, url_prefix="/cron")
@@ -19,12 +26,17 @@ cron_bp = Blueprint("cron", __name__, url_prefix="/cron")
 @admin_required
 def dashboard():
     periods = CommissionPeriod.query.order_by(CommissionPeriod.period_label.desc()).all()
+    crm_periods = [p for p in periods if p.agents and p.agents[0].source in CRM_SOURCES]
+    history_periods = [p for p in periods if p.agents and p.agents[0].source in HISTORY_SOURCES]
     agents = Agent.query.order_by(Agent.display_name).all()
     last_sync = SyncedFile.query.order_by(SyncedFile.synced_at.desc()).first()
     drive_configured = bool(current_app.config.get("GOOGLE_SERVICE_ACCOUNT_JSON"))
     return render_template(
-        "admin_dashboard.html", periods=periods, agents=agents, last_sync=last_sync,
+        "admin_dashboard.html", agents=agents, last_sync=last_sync,
         drive_configured=drive_configured,
+        crm_uploads=group_periods_by_filename(crm_periods),
+        history_uploads=group_periods_by_filename(history_periods),
+        cordoba_uploads=list_cordoba_uploads(),
     )
 
 
@@ -36,7 +48,11 @@ def period_detail(period_id):
     the current period."""
     period = CommissionPeriod.query.get_or_404(period_id)
     agents = AgentCommission.query.filter_by(period_id=period_id).order_by(AgentCommission.agent_name).all()
-    return render_template("admin_period_detail.html", period=period, agents=agents)
+    units_to_next_tier_map = {a.id: units_to_next_tier(a.units_cleared, a.agent_name) for a in agents}
+    return render_template(
+        "admin_period_detail.html", period=period, agents=agents,
+        units_to_next_tier_map=units_to_next_tier_map,
+    )
 
 
 @bp.route("/period/<int:period_id>/delete", methods=["POST"])
@@ -51,6 +67,60 @@ def delete_period(period_id):
     db.session.delete(period)
     db.session.commit()
     flash(f"Period {period_label} deleted. Re-upload its CRM export to re-import it.", "success")
+    return redirect(url_for("admin.dashboard"))
+
+
+@bp.route("/uploads/crm/delete", methods=["POST"])
+@admin_required
+def delete_crm_upload():
+    """Deletes every period a single CRM-export upload created (it can span
+    several months in one file) in one action, instead of one period at a
+    time from the period detail page."""
+    filename = request.form.get("filename") or ""
+    deleted = delete_periods_by_filename(filename, CRM_SOURCES)
+    if deleted:
+        flash(f"Deleted {len(deleted)} period(s) from \"{filename}\": {', '.join(deleted)}. "
+              "Re-upload the CRM export to re-import them.", "success")
+    else:
+        flash(f"No CRM-export periods found for \"{filename}\".", "error")
+    return redirect(url_for("admin.dashboard"))
+
+
+@bp.route("/uploads/history/delete", methods=["POST"])
+@admin_required
+def delete_history_upload():
+    """Deletes every period a single commission-history-backfill upload
+    created, in one action."""
+    filename = request.form.get("filename") or ""
+    deleted = delete_periods_by_filename(filename, HISTORY_SOURCES)
+    if deleted:
+        flash(f"Deleted {len(deleted)} backfilled period(s) from \"{filename}\": {', '.join(deleted)}. "
+              "Re-upload the history file to re-import them.", "success")
+    else:
+        flash(f"No commission-history periods found for \"{filename}\".", "error")
+    return redirect(url_for("admin.dashboard"))
+
+
+@bp.route("/uploads/cordoba/delete", methods=["POST"])
+@admin_required
+def delete_cordoba_upload_route():
+    """Fully reverses one Cordoba payout upload: reinstates any clawed-back
+    commission, un-flags Cordoba Payout confirmations no other file also
+    confirmed, and clears the two display-only ledgers. See
+    cordoba_ingest.delete_cordoba_upload for exactly what this undoes."""
+    filename = request.form.get("filename") or ""
+    result = delete_cordoba_upload(filename)
+    if result["clawbacks_reversed"]:
+        flash(
+            f"Reversed {result['clawbacks_reversed']} clawback(s) from \"{filename}\" "
+            f"(${result['amount_reversed']:,.2f} restored to agent commissions).", "success",
+        )
+    flash(
+        f"\"{filename}\" reset: {result['paid_confirmations_removed']} paid confirmation(s) removed "
+        f"({result['cordoba_paid_unflagged']} client record(s) un-flagged), "
+        f"{result['matched_removed']} chargeback match(es) and {result['entries_removed']} "
+        "reconciliation entry(ies) cleared.", "success",
+    )
     return redirect(url_for("admin.dashboard"))
 
 
