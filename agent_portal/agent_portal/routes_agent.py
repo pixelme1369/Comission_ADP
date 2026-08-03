@@ -8,32 +8,44 @@ from agent_portal.models import AgentCommission, ClientRecord, CommissionPeriod
 bp = Blueprint("agent", __name__, url_prefix="/portal")
 
 
-def _latest_period():
-    """Agents only ever see the single most recent commission period (owner
-    policy — no browsing prior months' history from the portal). Admins are
-    unaffected; the admin dashboard still lists every period."""
-    return CommissionPeriod.query.order_by(CommissionPeriod.period_label.desc()).first()
+LATEST_PERIODS_SHOWN = 2
+
+
+def _latest_periods():
+    """Agents only ever see the LATEST_PERIODS_SHOWN most recent commission
+    periods (owner policy — no browsing further back than that from the
+    portal). Admins are unaffected; the admin dashboard still lists every
+    period."""
+    return (
+        CommissionPeriod.query
+        .order_by(CommissionPeriod.period_label.desc())
+        .limit(LATEST_PERIODS_SHOWN)
+        .all()
+    )
 
 
 @bp.route("/")
 @login_required
 def dashboard():
     names = agent_scope_names()
-    latest = _latest_period()
+    latest_ids = [p.id for p in _latest_periods()]
     rows = (
         AgentCommission.query
-        .filter(AgentCommission.agent_name.in_(names), AgentCommission.period_id == latest.id)
+        .filter(AgentCommission.agent_name.in_(names), AgentCommission.period_id.in_(latest_ids))
+        .join(CommissionPeriod)
+        .order_by(CommissionPeriod.period_label.desc())
         .all()
-    ) if names and latest else []
+    ) if names and latest_ids else []
     return render_template("dashboard.html", rows=rows)
 
 
 def _get_scoped_agent_commission(period_id, agent_commission_id):
     names = agent_scope_names()
-    latest = _latest_period()
-    if not latest or period_id != latest.id:
-        # Not just unscoped — genuinely not the current period. Agents can't
-        # reach older periods even by guessing a URL for their own past data.
+    latest_ids = {p.id for p in _latest_periods()}
+    if period_id not in latest_ids:
+        # Not just unscoped — genuinely outside the visible window. Agents
+        # can't reach older periods even by guessing a URL for their own
+        # past data.
         abort(404)
     agent_row = AgentCommission.query.filter_by(id=agent_commission_id, period_id=period_id).first()
     if not agent_row or agent_row.agent_name not in names:
