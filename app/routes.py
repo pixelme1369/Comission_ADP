@@ -14,7 +14,9 @@ from app.models import (
 from app.crm_parser import parse_crm_and_calculate, _parse_date, _period_of
 from app.cordoba_parser import parse_cordoba_payout
 from app.commission_history_parser import parse_commission_history
-from app.calculator import calculate_clawback_amount, get_fixed_rate, units_to_next_tier
+from app.calculator import (
+    calculate_clawback_amount, get_fixed_rate, units_to_next_tier, commission_gain_at_next_tier,
+)
 
 bp = Blueprint("main", __name__)
 
@@ -878,6 +880,9 @@ def agent_detail(period_id, agent_id):
         cordoba_charged_back_ids=cordoba_charged_back_ids,
         cordoba_chargeback_entries=cordoba_chargeback_entries,
         units_to_next_tier=units_to_next_tier(agent.units_cleared, agent.agent_name),
+        commission_gain_at_next_tier=commission_gain_at_next_tier(
+            agent.adjusted_tier, agent.total_cleared_debt, agent.gross_commission, agent.agent_name,
+        ),
     )
 
 

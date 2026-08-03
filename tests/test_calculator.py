@@ -8,6 +8,7 @@ from app.calculator import (
     calculate_clawback_amount,
     get_tier,
     units_to_next_tier,
+    commission_gain_at_next_tier,
 )
 
 
@@ -107,6 +108,28 @@ class TestUnitsToNextTier:
     def test_fixed_rate_agent_has_no_next_tier(self):
         assert units_to_next_tier(5, agent_name="Alex Tambouly") is None
         assert units_to_next_tier(5, agent_name="  peter GODWIN  ") is None
+
+
+class TestCommissionGainAtNextTier:
+    """"Tier up and earn this much more" motivational figure on the agent dashboard."""
+
+    def test_gain_on_same_debt_at_next_tier_rate(self):
+        # Tier 2 (1.25%) on $979,124.61 -> $12,239.06 gross. Tier 3 is 1.50%.
+        gain = commission_gain_at_next_tier(
+            adjusted_tier=2, total_cleared_debt=979_124.61, gross_commission=12_239.06,
+        )
+        assert gain == pytest.approx(2_447.81)
+
+    def test_top_tier_has_no_gain(self):
+        assert commission_gain_at_next_tier(6, 1_000_000.0, 22_500.0) is None
+
+    def test_zero_tier_has_no_gain(self):
+        assert commission_gain_at_next_tier(0, 100_000.0, 0.0) is None
+
+    def test_fixed_rate_agent_has_no_gain(self):
+        assert commission_gain_at_next_tier(
+            1, 100_000.0, 2_000.0, agent_name="Alex Tambouly",
+        ) is None
 
 
 class TestCommission:
