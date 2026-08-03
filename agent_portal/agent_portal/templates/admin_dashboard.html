@@ -64,26 +64,88 @@
   </div>
 </div>
 
-<h2>Commission Periods</h2>
+<h2>Recent CRM Export Uploads</h2>
 <div class="table-wrapper">
   <table class="data-table">
-    <thead><tr><th>Period</th><th>Agents</th><th>Filename</th><th>Uploaded</th></tr></thead>
+    <thead><tr><th>File</th><th>Period(s)</th><th>Uploaded</th><th></th></tr></thead>
     <tbody>
-      {% for p in periods %}
+      {% for u in crm_uploads %}
       <tr>
-        <td><a href="{{ url_for('admin.period_detail', period_id=p.id) }}" class="agent-link">{{ p.period_label }}</a></td>
-        <td>{{ p.total_agents }}</td>
-        <td class="muted">{{ p.filename or '—' }}</td>
-        <td>{{ p.uploaded_at.strftime('%Y-%m-%d %H:%M') }}</td>
+        <td class="muted">{{ u.filename }}</td>
+        <td>
+          {% for p in u.periods %}<a href="{{ url_for('admin.period_detail', period_id=p.id) }}" class="agent-link">{{ p.period_label }}</a>{% if not loop.last %}, {% endif %}{% endfor %}
+        </td>
+        <td>{{ u.periods[0].uploaded_at.strftime('%Y-%m-%d %H:%M') if u.periods[0].uploaded_at else '—' }}</td>
+        <td>
+          <form method="post" action="{{ url_for('admin.delete_crm_upload') }}"
+                onsubmit="return confirm('Delete {{ u.periods|length }} period(s) from &quot;{{ u.filename }}&quot;? This removes every agent and client record they contain. You would need to re-upload to get it back. This cannot be undone.');">
+            <input type="hidden" name="filename" value="{{ u.filename }}">
+            <button type="submit" class="btn btn-danger btn-sm">Delete &amp; Reset</button>
+          </form>
+        </td>
       </tr>
       {% else %}
-      <tr><td colspan="4" class="muted" style="padding:1rem;">No periods yet.</td></tr>
+      <tr><td colspan="4" class="muted" style="padding:1rem;">No CRM export uploads yet.</td></tr>
       {% endfor %}
     </tbody>
   </table>
 </div>
 
-<h2>Agent Accounts ({{ agents|length }})</h2>
+<h2 style="margin-top:1.5rem;">Recent Cordoba Payout Uploads</h2>
+<div class="table-wrapper">
+  <table class="data-table">
+    <thead><tr><th>File</th><th>Paid Confirmed</th><th>Chargebacks Matched</th><th>Clawbacks Applied</th><th>Uploaded</th><th></th></tr></thead>
+    <tbody>
+      {% for u in cordoba_uploads %}
+      <tr>
+        <td class="muted">{{ u.filename }}</td>
+        <td>{{ u.paid_count }}</td>
+        <td>{{ u.matched_count }}</td>
+        <td>{% if u.clawback_count %}<span class="badge badge-red">{{ u.clawback_count }} (-${{ "{:,.2f}".format(u.clawback_total) }})</span>{% else %}—{% endif %}</td>
+        <td>{{ u.uploaded_at.strftime('%Y-%m-%d %H:%M') if u.uploaded_at else '—' }}</td>
+        <td>
+          <form method="post" action="{{ url_for('admin.delete_cordoba_upload_route') }}"
+                onsubmit="return confirm('Reset &quot;{{ u.filename }}&quot;? This reverses any clawbacks it applied (restores the money to agent commissions), un-flags Cordoba Payout confirmations no other file also confirmed, and clears its chargeback-match and reconciliation entries. This cannot be undone.');">
+            <input type="hidden" name="filename" value="{{ u.filename }}">
+            <button type="submit" class="btn btn-danger btn-sm">Delete &amp; Reset</button>
+          </form>
+        </td>
+      </tr>
+      {% else %}
+      <tr><td colspan="6" class="muted" style="padding:1rem;">No Cordoba payout uploads yet.</td></tr>
+      {% endfor %}
+    </tbody>
+  </table>
+</div>
+
+<h2 style="margin-top:1.5rem;">Recent Commission History Uploads</h2>
+<div class="table-wrapper">
+  <table class="data-table">
+    <thead><tr><th>File</th><th>Period(s)</th><th>Uploaded</th><th></th></tr></thead>
+    <tbody>
+      {% for u in history_uploads %}
+      <tr>
+        <td class="muted">{{ u.filename }}</td>
+        <td>
+          {% for p in u.periods %}<a href="{{ url_for('admin.period_detail', period_id=p.id) }}" class="agent-link">{{ p.period_label }}</a>{% if not loop.last %}, {% endif %}{% endfor %}
+        </td>
+        <td>{{ u.periods[0].uploaded_at.strftime('%Y-%m-%d %H:%M') if u.periods[0].uploaded_at else '—' }}</td>
+        <td>
+          <form method="post" action="{{ url_for('admin.delete_history_upload') }}"
+                onsubmit="return confirm('Delete {{ u.periods|length }} backfilled period(s) from &quot;{{ u.filename }}&quot;? This removes every agent and client record they contain. This cannot be undone.');">
+            <input type="hidden" name="filename" value="{{ u.filename }}">
+            <button type="submit" class="btn btn-danger btn-sm">Delete &amp; Reset</button>
+          </form>
+        </td>
+      </tr>
+      {% else %}
+      <tr><td colspan="4" class="muted" style="padding:1rem;">No commission history uploads yet.</td></tr>
+      {% endfor %}
+    </tbody>
+  </table>
+</div>
+
+<h2 style="margin-top:1.5rem;">Agent Accounts ({{ agents|length }})</h2>
 <p class="form-hint"><a href="{{ url_for('admin.manage_agents') }}">Manage agents and name mappings →</a></p>
 <div class="table-wrapper">
   <table class="data-table">

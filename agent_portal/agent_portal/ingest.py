@@ -152,3 +152,36 @@ def save_period_results(period_results, filename, source_label="drive"):
         periods_created.append(period_label)
 
     return {"periods_created": periods_created, "warnings": warnings}
+
+
+def group_periods_by_filename(periods):
+    """Groups CommissionPeriod rows by their source filename (a multi-month CRM
+    export or history-ledger upload can create several periods from one file),
+    for the admin dashboard's per-upload-type "recent uploads" lists — newest
+    upload first."""
+    groups = {}
+    for p in periods:
+        groups.setdefault(p.filename or "(unknown)", []).append(p)
+    return sorted(
+        ({"filename": name, "periods": sorted(rows, key=lambda r: r.period_label)}
+         for name, rows in groups.items()),
+        key=lambda g: max(r.uploaded_at for r in g["periods"]), reverse=True,
+    )
+
+
+def delete_periods_by_filename(filename, source_values):
+    """Deletes every CommissionPeriod with this filename whose agents were
+    created by one of the given upload types (source_values, e.g. ("drive",
+    "manual") for a CRM upload or ("history_import",) for a history backfill)
+    — lets the admin dashboard delete/reset an entire multi-month upload in
+    one action instead of one period at a time. Cascades to AgentCommission/
+    ClientRecord via the model relationships, same as deleting a period
+    individually. Returns the list of period_labels actually deleted."""
+    periods = CommissionPeriod.query.filter_by(filename=filename).all()
+    deleted_labels = []
+    for period in periods:
+        if period.agents and period.agents[0].source in source_values:
+            deleted_labels.append(period.period_label)
+            db.session.delete(period)
+    db.session.commit()
+    return deleted_labels
