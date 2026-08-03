@@ -656,6 +656,24 @@ def _list_cordoba_chargebacks(file, parsed):
     return listed, round(total, 2), skipped_no_match
 
 
+def _purge_invalid_cordoba_chargeback_entries():
+    """One-time cleanup for CordobaChargebackEntry rows saved before
+    _list_cordoba_chargebacks gained its was_paid gate: removes any existing
+    entry whose crm_id was never actually paid (no ClientRecord with
+    is_cleared=True or clawback_applied=True) — same check the gate now
+    applies to new uploads. Purely display-only data; never touches
+    gross/net commission. Returns the number of rows removed."""
+    removed = 0
+    for entry in CordobaChargebackEntry.query.all():
+        candidates = ClientRecord.query.filter_by(crm_id=entry.crm_id).all()
+        was_paid = any(c.is_cleared or c.clawback_applied for c in candidates)
+        if not was_paid:
+            db.session.delete(entry)
+            removed += 1
+    db.session.commit()
+    return removed
+
+
 def _process_cordoba_file(file):
     """Parse one Cordoba payout file and apply both the paid-flag check (First Pays/EPF)
     and the chargeback-triggered agent clawback (Chargebacks tab). Unit-only crediting
@@ -1526,6 +1544,21 @@ def delete_cordoba_upload_route():
         f"{result['matched_removed']} chargeback match(es) and {result['entries_removed']} "
         "reconciliation entry(ies) cleared.", "success",
     )
+    return redirect(url_for("main.index"))
+
+
+@bp.route("/uploads/cordoba/purge-invalid-entries", methods=["POST"])
+def purge_invalid_cordoba_chargeback_entries_route():
+    """One-time cleanup for "Cordoba Charge back" entries saved before the
+    was_paid gate existed in _list_cordoba_chargebacks — removes any entry for
+    a client who was never actually paid (dropped the same month their first
+    payment cleared). Safe: display-only data, never touches commission."""
+    removed = _purge_invalid_cordoba_chargeback_entries()
+    if removed:
+        flash(f"Removed {removed} invalid \"Cordoba Charge back\" entry(ies) for clients who were "
+              "never actually paid commission.", "success")
+    else:
+        flash("No invalid \"Cordoba Charge back\" entries found.", "success")
     return redirect(url_for("main.index"))
 
 

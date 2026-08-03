@@ -17,7 +17,7 @@ from app.models import (
 )
 from app.routes import (
     _apply_cordoba_chargebacks, _delete_cordoba_upload, _delete_periods_by_filename,
-    _group_periods_by_filename, _list_cordoba_uploads,
+    _group_periods_by_filename, _list_cordoba_uploads, _purge_invalid_cordoba_chargeback_entries,
 )
 
 FAKE_FILE = SimpleNamespace(filename="cordoba_payouts.xlsx")
@@ -175,6 +175,53 @@ class TestListCordobaUploads:
         assert uploads[0]["clawback_total"] == pytest.approx(375.0)
 
 
+class TestPurgeInvalidCordobaChargebackEntries:
+    """One-time cleanup for CordobaChargebackEntry rows saved before
+    _list_cordoba_chargebacks gained its was_paid gate (see
+    test_cordoba_chargebacks.py::test_never_paid_client_is_not_listed_as_cordoba_chargeback)."""
+
+    def test_removes_entries_for_never_paid_clients(self, db):
+        period = CommissionPeriod(period_label="2026-07", filename="crm.csv", total_agents=1)
+        db.session.add(period)
+        db.session.flush()
+        agent = AgentCommission(
+            period_id=period.id, agent_name="Maria",
+            units_cleared=0, total_cleared_debt=0.0, cancellation_rate=0.0, hourly_draw=0.0,
+            raw_tier=0, adjusted_tier=0, tier_rate=0.0, gross_commission=0.0,
+            clawback_amount=0.0, net_commission=0.0, payout=0.0, payout_type="none",
+            source="crm", notes="",
+        )
+        db.session.add(agent)
+        db.session.flush()
+        db.session.add(ClientRecord(
+            period_id=period.id, agent_commission_id=agent.id,
+            crm_id=CRM_ID, agent_name="Maria", client_name="Patrick Keiran",
+            enrolled_debt=21_200.0, is_cleared=False, is_cancelled=True,
+            first_payment_cleared_date="07/02/2026", dropped_date="07/06/2026",
+        ))
+        db.session.add(CordobaChargebackEntry(
+            crm_id=CRM_ID, agent_name="Maria", period_label="2026-07",
+        ))
+        db.session.commit()
+
+        removed = _purge_invalid_cordoba_chargeback_entries()
+
+        assert removed == 1
+        assert CordobaChargebackEntry.query.filter_by(crm_id=CRM_ID).count() == 0
+
+    def test_keeps_entries_for_actually_paid_clients(self, db):
+        seed_paid_june_client(db)
+        db.session.add(CordobaChargebackEntry(
+            crm_id=CRM_ID, agent_name="Maria", period_label="2026-08",
+        ))
+        db.session.commit()
+
+        removed = _purge_invalid_cordoba_chargeback_entries()
+
+        assert removed == 0
+        assert CordobaChargebackEntry.query.filter_by(crm_id=CRM_ID).count() == 1
+
+
 class TestGroupAndDeletePeriodsByFilename:
     def _make_period(self, db, label, filename, source="crm"):
         period = CommissionPeriod(period_label=label, filename=filename, total_agents=1)
@@ -236,3 +283,33 @@ class TestUploadRoutes:
         assert b"Reversed 1 clawback" in resp.data
         with app.app_context():
             assert CommissionPeriod.query.filter_by(period_label="2026-08").first() is None
+
+    def test_purge_invalid_entries_route(self, app, db, client):
+        with app.app_context():
+            period = CommissionPeriod(period_label="2026-07", filename="crm.csv", total_agents=1)
+            db.session.add(period)
+            db.session.flush()
+            agent = AgentCommission(
+                period_id=period.id, agent_name="Maria",
+                units_cleared=0, total_cleared_debt=0.0, cancellation_rate=0.0, hourly_draw=0.0,
+                raw_tier=0, adjusted_tier=0, tier_rate=0.0, gross_commission=0.0,
+                clawback_amount=0.0, net_commission=0.0, payout=0.0, payout_type="none",
+                source="crm", notes="",
+            )
+            db.session.add(agent)
+            db.session.flush()
+            db.session.add(ClientRecord(
+                period_id=period.id, agent_commission_id=agent.id,
+                crm_id=CRM_ID, agent_name="Maria", client_name="Patrick Keiran",
+                enrolled_debt=21_200.0, is_cleared=False, is_cancelled=True,
+                first_payment_cleared_date="07/02/2026", dropped_date="07/06/2026",
+            ))
+            db.session.add(CordobaChargebackEntry(
+                crm_id=CRM_ID, agent_name="Maria", period_label="2026-07",
+            ))
+            db.session.commit()
+
+        resp = client.post("/uploads/cordoba/purge-invalid-entries", follow_redirects=True)
+        assert b"Removed 1 invalid" in resp.data
+        with app.app_context():
+            assert CordobaChargebackEntry.query.filter_by(crm_id=CRM_ID).count() == 0

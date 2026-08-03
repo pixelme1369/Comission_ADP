@@ -332,6 +332,24 @@ def _list_cordoba_chargebacks(file, parsed):
     return listed, round(total, 2), skipped_no_match
 
 
+def purge_invalid_cordoba_chargeback_entries():
+    """One-time cleanup for CordobaChargebackEntry rows saved before
+    _list_cordoba_chargebacks gained its was_paid gate: removes any existing
+    entry whose crm_id was never actually paid (no ClientRecord with
+    is_cleared=True or clawback_applied=True) — same check the gate now
+    applies to new uploads. Purely display-only data; never touches
+    gross/net commission. Returns the number of rows removed."""
+    removed = 0
+    for entry in CordobaChargebackEntry.query.all():
+        candidates = ClientRecord.query.filter_by(crm_id=entry.crm_id).all()
+        was_paid = any(c.is_cleared or c.clawback_applied for c in candidates)
+        if not was_paid:
+            db.session.delete(entry)
+            removed += 1
+    db.session.commit()
+    return removed
+
+
 def process_cordoba_file(file):
     """Parse one Cordoba payout file and apply the paid-flag check, chargeback
     match-marking, chargeback clawback, and reconciliation listing. Commits."""

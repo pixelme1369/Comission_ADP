@@ -5,7 +5,8 @@ from agent_portal import db
 from agent_portal.auth import admin_required
 from agent_portal.calculator import units_to_next_tier, commission_gain_at_next_tier
 from agent_portal.cordoba_ingest import (
-    cordoba_display_context, delete_cordoba_upload, list_cordoba_uploads, process_cordoba_file,
+    cordoba_display_context, delete_cordoba_upload, list_cordoba_uploads,
+    process_cordoba_file, purge_invalid_cordoba_chargeback_entries,
 )
 from agent_portal.crm_parser import parse_crm_and_calculate
 from agent_portal.drive_sync import sync_from_drive
@@ -121,6 +122,22 @@ def delete_cordoba_upload_route():
         f"{result['matched_removed']} chargeback match(es) and {result['entries_removed']} "
         "reconciliation entry(ies) cleared.", "success",
     )
+    return redirect(url_for("admin.dashboard"))
+
+
+@bp.route("/uploads/cordoba/purge-invalid-entries", methods=["POST"])
+@admin_required
+def purge_invalid_cordoba_chargeback_entries_route():
+    """One-time cleanup for "Cordoba Charge back" entries saved before the
+    was_paid gate existed in _list_cordoba_chargebacks — removes any entry for
+    a client who was never actually paid (dropped the same month their first
+    payment cleared). Safe: display-only data, never touches commission."""
+    removed = purge_invalid_cordoba_chargeback_entries()
+    if removed:
+        flash(f"Removed {removed} invalid \"Cordoba Charge back\" entry(ies) for clients who were "
+              "never actually paid commission.", "success")
+    else:
+        flash("No invalid \"Cordoba Charge back\" entries found.", "success")
     return redirect(url_for("admin.dashboard"))
 
 
