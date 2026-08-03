@@ -9,9 +9,9 @@ import pytest
 
 from app.models import (
     CommissionPeriod, AgentCommission, ClientRecord,
-    CordobaPaidClient, CordobaChargedBackClient,
+    CordobaPaidClient, CordobaChargedBackClient, CordobaChargebackEntry,
 )
-from app.routes import _apply_cordoba_chargebacks
+from app.routes import _apply_cordoba_chargebacks, _list_cordoba_chargebacks
 
 FAKE_FILE = SimpleNamespace(filename="cordoba_payouts.xlsx")
 
@@ -78,6 +78,52 @@ def test_reuploading_same_chargebacks_file_is_a_noop(db):
 
     applied, total, _, _, _, _ = _apply_cordoba_chargebacks(FAKE_FILE, parsed([chargeback_row()]))
     assert (applied, total) == (0, 0.0)
+
+
+def test_never_paid_client_is_not_listed_as_cordoba_chargeback(db):
+    """OWNER POLICY: a client who dropped before their commission was ever paid
+    (same_month_cancel — shown under "Cancelled — Not Paid") must NOT appear in the
+    display-only "Cordoba Charge back" listing. That table is for reconciling real
+    chargebacks against clients we actually paid; listing a never-paid client there
+    misleadingly implies money is at stake for them."""
+    period = CommissionPeriod(period_label="2026-07", filename="crm.csv", total_agents=1)
+    db.session.add(period)
+    db.session.flush()
+    agent = AgentCommission(
+        period_id=period.id, agent_name="Maria",
+        units_cleared=0, total_cleared_debt=0.0, cancellation_rate=0.0,
+        hourly_draw=0.0, raw_tier=0, adjusted_tier=0, tier_rate=0.0,
+        gross_commission=0.0, clawback_amount=0.0, net_commission=0.0,
+        payout=0.0, payout_type="none", source="crm", notes="",
+    )
+    db.session.add(agent)
+    db.session.flush()
+    db.session.add(ClientRecord(
+        period_id=period.id, agent_commission_id=agent.id,
+        crm_id=CRM_ID, agent_name="Maria", client_name="Mary Brewer",
+        enrolled_debt=47_781.0, is_cleared=False, is_cancelled=True,
+        first_payment_cleared_date="07/08/2026", dropped_date="07/22/2026",
+        pay_freq="Monthly", payments_made=1,
+    ))
+    db.session.commit()
+
+    listed, total, skipped = _list_cordoba_chargebacks(
+        FAKE_FILE, parsed([chargeback_row(name="Mary Brewer")]))
+
+    assert (listed, total) == (0, 0.0)
+    assert skipped == [f"Mary Brewer (ID {CRM_ID})"]
+    assert CordobaChargebackEntry.query.filter_by(crm_id=CRM_ID).count() == 0
+
+
+def test_actually_paid_client_is_listed_as_cordoba_chargeback(db):
+    """A client who was actually paid (is_cleared=True) and then dropped is still
+    eligible for the display-only listing."""
+    seed_paid_june_client(db)
+
+    listed, total, skipped = _list_cordoba_chargebacks(FAKE_FILE, parsed([chargeback_row()]))
+
+    assert (listed, skipped) == (1, [])
+    assert CordobaChargebackEntry.query.filter_by(crm_id=CRM_ID).count() == 1
 
 
 def test_client_already_clawed_back_by_crm_upload_is_not_clawed_again(db):
