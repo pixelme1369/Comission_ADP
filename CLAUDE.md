@@ -132,12 +132,21 @@ This is a Flask + SQLAlchemy web app for calculating agent commissions at Americ
    Payment Chargeback`, `Dropped Date` — otherwise ignored everywhere else on this page, is also
    read verbatim by `cordoba_parser.py::_parse_chargebacks` purely to feed this separate feature.
    `routes.py::_list_cordoba_chargebacks` runs independently of `_apply_cordoba_chargebacks` and is
-   **deliberately ungated** (no is_cleared / confirmed-paid / already-clawed-back checks — unlike
-   the real deduction above): for every chargeback row, it looks up ANY `ClientRecord` we have for
-   that `crm_id` that carries our own `dropped_date` (used only to decide which agent + period the
-   row displays under), and records a verbatim snapshot of the file row in `CordobaChargebackEntry`
-   (`crm_id` unique, so re-uploading the same file is a no-op). If no `ClientRecord` matches, or
-   none of the matches has a dropped date on file yet, the ID is skipped with its own flash message.
+   gated on only one thing (OWNER POLICY, revised August 2026): the client must have actually been
+   paid commission at some point — some `ClientRecord` row for that `crm_id` has `is_cleared=True`
+   (paid, then dropped) or `clawback_applied=True` (paid, already clawed back via the CRM/history
+   path). A client who dropped before their commission was ever paid (`same_month_cancel`, shown
+   under "Cancelled — Not Paid" on the agent page) is skipped — there's nothing to charge back, so
+   listing them here would misrepresent a Cordoba chargeback as reconciliation-worthy when no money
+   ever went out. (No other gate applies — not confirmed-paid-via-First-Pays/EPF, not
+   already-clawed-back — this is intentionally looser than the real deduction above on every axis
+   except "was this client ever actually paid.") For every chargeback row that passes, it looks up
+   ANY `ClientRecord` we have for that `crm_id` that carries our own `dropped_date` (used only to
+   decide which agent + period the row displays under), and records a verbatim snapshot of the file
+   row in `CordobaChargebackEntry` (`crm_id` unique, so re-uploading the same file is a no-op). If
+   no `ClientRecord` matches, none of the matches has a dropped date on file yet, or the client was
+   never paid, the ID is skipped with its own flash message. Regression-tested in
+   `tests/test_cordoba_chargebacks.py::test_never_paid_client_is_not_listed_as_cordoba_chargeback`.
    **This never touches `gross_commission`, `net_commission`, or `clawback_amount`** — it is purely
    informational, shown as a "Cordoba Charge back" table at the bottom of the agent detail page
    (`agent_detail.html`) for whichever period's `period_label` matches the entry's stored month

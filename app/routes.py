@@ -528,18 +528,24 @@ def _apply_cordoba_chargebacks(file, parsed):
 
 def _list_cordoba_chargebacks(file, parsed):
     """
-    Display-only companion to _apply_cordoba_chargebacks (owner request, July 2026,
-    NOT the same policy as the gated clawback above — deliberately ungated): for every
-    ID in the Chargebacks tab, look up the agent and dropped month from OUR OWN
-    ClientRecord history (any status — no is_cleared/confirmed-paid/already-clawed-back
-    checks) and record a verbatim snapshot of that file row (Assigned Company, dates,
-    Pay Freq., Payments Made, Marketing Payout Debt, Marketing Payment Cleared/
-    Chargeback, the file's own Dropped Date) as a CordobaChargebackEntry, shown/
+    Display-only companion to _apply_cordoba_chargebacks (owner request, July 2026):
+    for every ID in the Chargebacks tab, look up the agent and dropped month from OUR
+    OWN ClientRecord history and record a verbatim snapshot of that file row (Assigned
+    Company, dates, Pay Freq., Payments Made, Marketing Payout Debt, Marketing Payment
+    Cleared/Chargeback, the file's own Dropped Date) as a CordobaChargebackEntry, shown/
     exported as "Cordoba Charge back". This never touches gross_commission,
     net_commission, or clawback_amount — it's purely informational, for the row to be
-    reconciled by hand. If the ID doesn't match any ClientRecord we have, or we don't
-    have a dropped date on file for it yet (needed to know which period to show it
-    under), it's skipped and reported back to the uploader so it isn't silently dropped.
+    reconciled by hand.
+
+    Gated on the client having actually been paid at some point (some ClientRecord row
+    for this crm_id has is_cleared=True or clawback_applied=True) — a client who
+    dropped before their commission was ever paid (same_month_cancel: "Cancelled — Not
+    Paid") has nothing to charge back, so listing them here would misrepresent a
+    Cordoba chargeback as reconciliation-worthy when no commission ever went out.
+    If the ID doesn't match any ClientRecord we have, we don't have a dropped date on
+    file for it yet (needed to know which period to show it under), or the client was
+    never actually paid, it's skipped and reported back to the uploader so it isn't
+    silently dropped.
     Returns (newly_listed_count, total_marketing_payout_debt, skipped_no_match_labels).
     """
     chargebacks = parsed.get("chargebacks", [])
@@ -566,9 +572,10 @@ def _list_cordoba_chargebacks(file, parsed):
             continue
 
         candidates = ClientRecord.query.filter_by(crm_id=crm_id).order_by(ClientRecord.id.desc()).all()
+        was_paid = any(c.is_cleared or c.clawback_applied for c in candidates)
         client_rec = next((c for c in candidates if c.dropped_date), None)
         dropped_period = _period_of(_parse_date(client_rec.dropped_date)) if client_rec else None
-        if not dropped_period:
+        if not dropped_period or not was_paid:
             skipped_no_match.append(_client_label(row.get("client_name"), crm_id))
             continue
 
@@ -695,8 +702,9 @@ def upload_cordoba_payout():
                    "reflecting the drop, then re-upload this Chargebacks file")
     _flash_skipped(unmatched_chargeback_ids, "were not found in any of our commission reports — no match")
     _flash_skipped(skipped_no_debt_match,
-                   "were not found in our commission reports (or have no Dropped Date on file yet) — "
-                   "not listed under \"Cordoba Charge back\" on any agent's report")
+                   "were not found in our commission reports, have no Dropped Date on file yet, or were "
+                   "never actually paid commission (dropped before payout) — not listed under "
+                   "\"Cordoba Charge back\" on any agent's report")
     return redirect(url_for("main.index"))
 
 
