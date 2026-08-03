@@ -29,6 +29,10 @@ def _allowed_file(filename):
     return "." in filename and filename.rsplit(".", 1)[1].lower() in ALLOWED_EXTENSIONS
 
 
+def _units_to_next_tier_map(agents):
+    return {a.id: units_to_next_tier(a.units_cleared, a.agent_name) for a in agents}
+
+
 def _allowed_xlsx_file(filename):
     return "." in filename and filename.rsplit(".", 1)[1].lower() in ALLOWED_XLSX_EXTENSIONS
 
@@ -840,6 +844,7 @@ def period_detail(period_id):
         penalty_count=penalty_count,
         nsf_count=nsf_count,
         pending_count=pending_count,
+        units_to_next_tier_map=_units_to_next_tier_map(agents),
     )
 
 

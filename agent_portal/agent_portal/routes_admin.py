@@ -48,7 +48,11 @@ def period_detail(period_id):
     the current period."""
     period = CommissionPeriod.query.get_or_404(period_id)
     agents = AgentCommission.query.filter_by(period_id=period_id).order_by(AgentCommission.agent_name).all()
-    return render_template("admin_period_detail.html", period=period, agents=agents)
+    units_to_next_tier_map = {a.id: units_to_next_tier(a.units_cleared, a.agent_name) for a in agents}
+    return render_template(
+        "admin_period_detail.html", period=period, agents=agents,
+        units_to_next_tier_map=units_to_next_tier_map,
+    )
 
 
 @bp.route("/period/<int:period_id>/delete", methods=["POST"])

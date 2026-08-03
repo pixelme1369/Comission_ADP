@@ -72,13 +72,14 @@
         <th data-col="1">Units</th>
         <th data-col="2">Tier</th>
         <th data-col="3">Rate</th>
-        <th data-col="4">Cleared Debt</th>
-        <th data-col="5">Gross Commission</th>
-        <th data-col="6">Net Commission</th>
-        <th data-col="7">Cancel Rate</th>
-        <th data-col="8">Quality Bonus</th>
-        <th data-col="9">NSF</th>
-        <th data-col="10">Pending</th>
+        <th data-col="4">Next Tier</th>
+        <th data-col="5">Cleared Debt</th>
+        <th data-col="6">Gross Commission</th>
+        <th data-col="7">Net Commission</th>
+        <th data-col="8">Cancel Rate</th>
+        <th data-col="9">Quality Bonus</th>
+        <th data-col="10">NSF</th>
+        <th data-col="11">Pending</th>
         <th>Notes</th>
       </tr>
     </thead>
@@ -107,6 +108,14 @@
           {% endif %}
         </td>
         <td>{% if a.units_cleared > 0 %}{{ "%.2f"|format(a.tier_rate * 100) }}%{% else %}—{% endif %}</td>
+        <td>
+          {% set n = units_to_next_tier_map.get(a.id) %}
+          {% if n is none %}
+            {% if a.adjusted_tier >= 6 %}🏆 Top{% else %}Fixed{% endif %}
+          {% else %}
+            {% if n <= 3 %}🔥 {% elif n <= 10 %}⚡ {% endif %}{{ n }}
+          {% endif %}
+        </td>
         <td>${{ "{:,.2f}".format(a.total_cleared_debt) }}</td>
         <td>${{ "{:,.2f}".format(a.gross_commission) }}</td>
         <td><strong>${{ "{:,.2f}".format(a.net_commission) }}</strong></td>
