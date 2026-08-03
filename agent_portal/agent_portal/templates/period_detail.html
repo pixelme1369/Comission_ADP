@@ -28,6 +28,16 @@
     <div class="card-label">Rate</div>
   </div>
   <div class="card summary-card">
+    <div class="card-value">
+      {% if units_to_next_tier is none %}
+        {% if agent.adjusted_tier >= 6 %}Top Tier{% else %}Fixed Rate{% endif %}
+      {% else %}
+        {{ units_to_next_tier }}
+      {% endif %}
+    </div>
+    <div class="card-label">Units to Next Tier</div>
+  </div>
+  <div class="card summary-card">
     <div class="card-value">${{ "{:,.2f}".format(agent.total_cleared_debt) }}</div>
     <div class="card-label">Total Cleared Debt</div>
   </div>
