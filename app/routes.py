@@ -33,6 +33,42 @@ def _units_to_next_tier_map(agents):
     return {a.id: units_to_next_tier(a.units_cleared, a.agent_name) for a in agents}
 
 
+CRM_SOURCES = ("crm", "manual")
+HISTORY_SOURCES = ("history_import",)
+
+
+def _group_periods_by_filename(periods):
+    """Groups CommissionPeriod rows by their source filename (a multi-month CRM
+    export or history-ledger upload can create several periods from one file),
+    for the index page's per-upload-type "recent uploads" lists — newest
+    upload first."""
+    groups = {}
+    for p in periods:
+        groups.setdefault(p.filename or "(unknown)", []).append(p)
+    return sorted(
+        ({"filename": name, "periods": sorted(rows, key=lambda r: r.period_label)}
+         for name, rows in groups.items()),
+        key=lambda g: max(r.uploaded_at for r in g["periods"]), reverse=True,
+    )
+
+
+def _delete_periods_by_filename(filename, source_values):
+    """Deletes every CommissionPeriod with this filename whose agents were
+    created by one of the given upload types (source_values) — lets the index
+    page delete/reset an entire multi-month upload in one action instead of
+    one period at a time. Cascades to AgentCommission/ClientRecord via the
+    model relationships, same as deleting a period individually. Returns the
+    list of period_labels actually deleted."""
+    periods = CommissionPeriod.query.filter_by(filename=filename).all()
+    deleted_labels = []
+    for period in periods:
+        if period.agents and period.agents[0].source in source_values:
+            deleted_labels.append(period.period_label)
+            db.session.delete(period)
+    db.session.commit()
+    return deleted_labels
+
+
 def _allowed_xlsx_file(filename):
     return "." in filename and filename.rsplit(".", 1)[1].lower() in ALLOWED_XLSX_EXTENSIONS
 
@@ -79,7 +115,15 @@ def _new_client_record(period_id, agent_commission_id, cr, **overrides):
 @bp.route("/")
 def index():
     recent_periods = CommissionPeriod.query.order_by(CommissionPeriod.uploaded_at.desc()).limit(12).all()
-    return render_template("index.html", periods=recent_periods)
+    all_periods = CommissionPeriod.query.all()
+    crm_periods = [p for p in all_periods if p.agents and p.agents[0].source in CRM_SOURCES]
+    history_periods = [p for p in all_periods if p.agents and p.agents[0].source in HISTORY_SOURCES]
+    return render_template(
+        "index.html", periods=recent_periods,
+        crm_uploads=_group_periods_by_filename(crm_periods),
+        history_uploads=_group_periods_by_filename(history_periods),
+        cordoba_uploads=_list_cordoba_uploads(),
+    )
 
 
 @bp.route("/reset-all", methods=["POST"])
@@ -301,7 +345,10 @@ def _client_label(client_name, crm_id):
 
 def _get_or_create_agent_period_row(period_label, agent_name, filename):
     """Find (or create a zero-unit) AgentCommission row to carry a clawback that has
-    no cleared units of its own in this period — mirrors the CRM-clawback holding entry."""
+    no cleared units of its own in this period — mirrors the CRM-clawback holding entry.
+    Only called by the Cordoba chargeback flow (source="cordoba", not "crm"), so the
+    index page's per-upload-type "recent uploads" lists don't mistake a bare Cordoba
+    holding period for a CRM export upload."""
     period = CommissionPeriod.query.filter_by(period_label=period_label).first()
     if not period:
         period = CommissionPeriod(period_label=period_label, filename=filename, total_agents=0)
@@ -316,7 +363,7 @@ def _get_or_create_agent_period_row(period_label, agent_name, filename):
             raw_tier=0, adjusted_tier=0, tier_rate=0.0, gross_commission=0.0,
             clawback_amount=0.0, net_commission=0.0, payout=0.0, payout_type="none",
             quality_bonus_eligible=False, cancellation_penalty_applied=False, nsf_flagged=False,
-            pending_units=0, pending_debt=0.0, source="crm", notes="",
+            pending_units=0, pending_debt=0.0, source="cordoba", notes="",
         )
         db.session.add(agent_row)
         db.session.flush()
@@ -634,6 +681,121 @@ def _process_cordoba_file(file):
             skipped_not_commissioned, skipped_not_confirmed_paid, skipped_already_clawed,
             skipped_no_dropped_date, matched_count, unmatched_chargeback_ids,
             listed_count, listed_total, skipped_no_debt_match)
+
+
+def _list_cordoba_uploads():
+    """Groups every row across the four Cordoba ledger tables by
+    uploaded_filename — the only "batch" identifier they share — into one
+    summary per file, for the index page's "recent uploads" list."""
+    filenames = set()
+    for model in (CordobaPaidClient, CordobaChargedBackClient, CordobaChargebackMatchedClient, CordobaChargebackEntry):
+        for row in db.session.query(model.uploaded_filename).distinct():
+            if row[0]:
+                filenames.add(row[0])
+
+    summaries = []
+    for filename in filenames:
+        paid_rows = CordobaPaidClient.query.filter_by(uploaded_filename=filename).all()
+        charged_back_rows = CordobaChargedBackClient.query.filter_by(uploaded_filename=filename).all()
+        matched_rows = CordobaChargebackMatchedClient.query.filter_by(uploaded_filename=filename).all()
+        entry_rows = CordobaChargebackEntry.query.filter_by(uploaded_filename=filename).all()
+        timestamps = [r.uploaded_at for r in paid_rows + charged_back_rows + matched_rows + entry_rows if r.uploaded_at]
+        summaries.append({
+            "filename": filename,
+            "uploaded_at": max(timestamps) if timestamps else None,
+            "paid_count": len(paid_rows),
+            "matched_count": len(matched_rows),
+            "clawback_count": len(charged_back_rows),
+            "clawback_total": round(sum(r.clawback_amount or 0.0 for r in charged_back_rows), 2),
+            "listed_count": len(entry_rows),
+        })
+
+    summaries.sort(key=lambda s: s["uploaded_at"] or s["filename"], reverse=True)
+    return summaries
+
+
+def _delete_cordoba_upload(filename):
+    """Reverses everything a Cordoba payout upload did, keyed by filename (the
+    ledger tables' only shared "batch" identifier). Used by the index page's
+    delete/reset action so a wrong file can be fully undone:
+
+    - Actual clawback deductions (CordobaChargedBackClient rows) are reversed:
+      the money is added back to the agent's commission for that period, the
+      holding ClientRecord row _apply_cordoba_chargebacks created is removed,
+      and if that leaves the agent with no units/clawback/clients left in the
+      period (i.e. it was a pure zero-unit holding row created just to carry
+      this clawback), the AgentCommission row — and the period itself, if it
+      was left with no agents — is removed too.
+    - cordoba_paid is unflagged on every ClientRecord for a crm_id, but ONLY if
+      no OTHER Cordoba upload also confirmed that same crm_id (checked after
+      this file's CordobaPaidClient rows are removed).
+    - The two display-only ledgers (CordobaChargebackMatchedClient's "Cordoba
+      Clawback: Yes" badge, CordobaChargebackEntry's reconciliation listing)
+      are simply cleared for this filename.
+
+    Returns a summary dict of what was reversed, for a flash message.
+    """
+    charged_back_rows = CordobaChargedBackClient.query.filter_by(uploaded_filename=filename).all()
+    reversed_amount = 0.0
+
+    for row in charged_back_rows:
+        period = CommissionPeriod.query.filter_by(period_label=row.dropped_period).first()
+        agent_row = (
+            AgentCommission.query.filter_by(period_id=period.id, agent_name=row.agent_name).first()
+            if period else None
+        )
+
+        if agent_row:
+            client_rec = ClientRecord.query.filter_by(
+                agent_commission_id=agent_row.id, crm_id=row.crm_id, clawback_applied=True,
+            ).first()
+            if client_rec:
+                db.session.delete(client_rec)
+
+            agent_row.clawback_amount = max(
+                0.0, round((agent_row.clawback_amount or 0.0) - (row.clawback_amount or 0.0), 2)
+            )
+            agent_row.net_commission = max(0.0, round(agent_row.gross_commission - agent_row.clawback_amount, 2))
+            note = f"Cordoba chargeback: -${row.clawback_amount:,.2f} for {row.client_name or row.crm_id} (ID {row.crm_id})"
+            if agent_row.notes:
+                agent_row.notes = " | ".join(p for p in agent_row.notes.split(" | ") if p != note)
+            db.session.flush()
+
+            remaining_clients = ClientRecord.query.filter_by(agent_commission_id=agent_row.id).count()
+            if agent_row.units_cleared == 0 and agent_row.clawback_amount == 0 and remaining_clients == 0:
+                db.session.delete(agent_row)
+                db.session.flush()
+                if period and AgentCommission.query.filter_by(period_id=period.id).count() == 0:
+                    db.session.delete(period)
+
+        reversed_amount += row.clawback_amount or 0.0
+        db.session.delete(row)
+
+    matched_removed = CordobaChargebackMatchedClient.query.filter_by(uploaded_filename=filename).delete()
+    entries_removed = CordobaChargebackEntry.query.filter_by(uploaded_filename=filename).delete()
+
+    paid_rows = CordobaPaidClient.query.filter_by(uploaded_filename=filename).all()
+    paid_crm_ids = [r.crm_id for r in paid_rows]
+    for row in paid_rows:
+        db.session.delete(row)
+    db.session.flush()
+
+    unflagged = 0
+    for crm_id in paid_crm_ids:
+        if not CordobaPaidClient.query.filter_by(crm_id=crm_id).first():
+            unflagged += ClientRecord.query.filter_by(crm_id=crm_id).update(
+                {"cordoba_paid": False}, synchronize_session=False,
+            )
+
+    db.session.commit()
+    return {
+        "clawbacks_reversed": len(charged_back_rows),
+        "amount_reversed": round(reversed_amount, 2),
+        "matched_removed": matched_removed,
+        "entries_removed": entries_removed,
+        "paid_confirmations_removed": len(paid_rows),
+        "cordoba_paid_unflagged": unflagged,
+    }
 
 
 @bp.route("/upload-cordoba-payout", methods=["POST"])
@@ -1314,6 +1476,57 @@ def delete_period(period_id):
     db.session.commit()
     flash(f"Period {period.period_label} deleted.", "success")
     return redirect(url_for("main.history"))
+
+
+@bp.route("/uploads/crm/delete", methods=["POST"])
+def delete_crm_upload():
+    """Deletes every period a single CRM-export upload created (it can span
+    several months in one file) in one action, instead of one period at a
+    time from the period detail page."""
+    filename = request.form.get("filename") or ""
+    deleted = _delete_periods_by_filename(filename, CRM_SOURCES)
+    if deleted:
+        flash(f"Deleted {len(deleted)} period(s) from \"{filename}\": {', '.join(deleted)}. "
+              "Re-upload the CRM export to re-import them.", "success")
+    else:
+        flash(f"No CRM-export periods found for \"{filename}\".", "error")
+    return redirect(url_for("main.index"))
+
+
+@bp.route("/uploads/history/delete", methods=["POST"])
+def delete_history_upload():
+    """Deletes every period a single commission-history-backfill upload
+    created, in one action."""
+    filename = request.form.get("filename") or ""
+    deleted = _delete_periods_by_filename(filename, HISTORY_SOURCES)
+    if deleted:
+        flash(f"Deleted {len(deleted)} backfilled period(s) from \"{filename}\": {', '.join(deleted)}. "
+              "Re-upload the history file to re-import them.", "success")
+    else:
+        flash(f"No commission-history periods found for \"{filename}\".", "error")
+    return redirect(url_for("main.index"))
+
+
+@bp.route("/uploads/cordoba/delete", methods=["POST"])
+def delete_cordoba_upload_route():
+    """Fully reverses one Cordoba payout upload: reinstates any clawed-back
+    commission, un-flags Cordoba Payout confirmations no other file also
+    confirmed, and clears the two display-only ledgers. See
+    _delete_cordoba_upload for exactly what this undoes."""
+    filename = request.form.get("filename") or ""
+    result = _delete_cordoba_upload(filename)
+    if result["clawbacks_reversed"]:
+        flash(
+            f"Reversed {result['clawbacks_reversed']} clawback(s) from \"{filename}\" "
+            f"(${result['amount_reversed']:,.2f} restored to agent commissions).", "success",
+        )
+    flash(
+        f"\"{filename}\" reset: {result['paid_confirmations_removed']} paid confirmation(s) removed "
+        f"({result['cordoba_paid_unflagged']} client record(s) un-flagged), "
+        f"{result['matched_removed']} chargeback match(es) and {result['entries_removed']} "
+        "reconciliation entry(ies) cleared.", "success",
+    )
+    return redirect(url_for("main.index"))
 
 
 @bp.route("/history")
