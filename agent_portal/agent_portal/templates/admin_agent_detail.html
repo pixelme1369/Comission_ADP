@@ -36,6 +36,9 @@
       {% endif %}
     </div>
     <div class="card-label">Units to Next Tier</div>
+    {% if units_to_next_tier is not none and commission_gain_at_next_tier %}
+    <div class="tier-gain">🚀 +${{ "{:,.2f}".format(commission_gain_at_next_tier) }} more</div>
+    {% endif %}
   </div>
   <div class="card summary-card">
     <div class="card-value">${{ "{:,.2f}".format(agent.total_cleared_debt) }}</div>

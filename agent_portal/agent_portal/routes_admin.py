@@ -3,7 +3,7 @@ from flask_login import current_user
 
 from agent_portal import db
 from agent_portal.auth import admin_required
-from agent_portal.calculator import units_to_next_tier
+from agent_portal.calculator import units_to_next_tier, commission_gain_at_next_tier
 from agent_portal.cordoba_ingest import cordoba_display_context, process_cordoba_file
 from agent_portal.crm_parser import parse_crm_and_calculate
 from agent_portal.drive_sync import sync_from_drive
@@ -71,6 +71,10 @@ def agent_detail(period_id, agent_commission_id):
         cordoba_charged_back_ids=cordoba_charged_back_ids,
         cordoba_chargeback_entries=cordoba_chargeback_entries,
         units_to_next_tier=units_to_next_tier(agent_row.units_cleared, agent_row.agent_name),
+        commission_gain_at_next_tier=commission_gain_at_next_tier(
+            agent_row.adjusted_tier, agent_row.total_cleared_debt, agent_row.gross_commission,
+            agent_row.agent_name,
+        ),
     )
 
 

@@ -57,6 +57,30 @@ def units_to_next_tier(units_cleared: int, agent_name: str = None) -> int | None
     return next_low - units_cleared
 
 
+def commission_gain_at_next_tier(
+    adjusted_tier: int,
+    total_cleared_debt: float,
+    gross_commission: float,
+    agent_name: str = None,
+) -> float | None:
+    """Illustrative "tier up and earn this much more" figure for the agent dashboard:
+    what gross commission would be on this period's SAME total_cleared_debt at the
+    next tier's rate, minus what was actually earned. Purely a motivational display
+    number, not a payout calculation — hitting the next tier in reality means more
+    cleared debt too, which this simplification doesn't model.
+
+    Returns None under the same conditions as units_to_next_tier: a contractual
+    fixed-rate agent (no tier to chase), or already at the top tier.
+    """
+    if get_fixed_rate(agent_name) is not None:
+        return None
+    if adjusted_tier < 1 or adjusted_tier >= len(TIERS):
+        return None
+    next_rate = TIERS[adjusted_tier][2]  # TIERS[adjusted_tier] is the next tier (0-indexed)
+    potential_gross = total_cleared_debt * next_rate
+    return round(potential_gross - gross_commission, 2)
+
+
 def calculate_agent_commission(
     agent_name: str,
     units_cleared: int,
