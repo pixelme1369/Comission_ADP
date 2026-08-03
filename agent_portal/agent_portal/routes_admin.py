@@ -261,8 +261,9 @@ def upload_cordoba_payout():
                        "reflecting the drop, then re-upload this Chargebacks file")
         _flash_skipped(r["unmatched_chargeback_ids"], "were not found in any of our commission reports — no match")
         _flash_skipped(r["skipped_no_debt_match"],
-                       "were not found in our commission reports (or have no Dropped Date on file yet) — "
-                       "not listed under \"Cordoba Charge back\"")
+                       "were not found in our commission reports, have no Dropped Date on file yet, or were "
+                       "never actually paid commission (dropped before payout) — not listed under "
+                       "\"Cordoba Charge back\"")
 
 
 @bp.route("/upload-commission-history", methods=["POST"])

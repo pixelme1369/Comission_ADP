@@ -265,9 +265,18 @@ def _apply_cordoba_chargebacks(file, parsed):
 
 
 def _list_cordoba_chargebacks(file, parsed):
-    """Display-only, deliberately ungated: for every ID in the Chargebacks tab,
-    look up the agent/dropped month from OUR OWN ClientRecord history and record
-    a verbatim snapshot of the file row. Never touches gross/net commission."""
+    """Display-only companion to _apply_cordoba_chargebacks: for every ID in the
+    Chargebacks tab, look up the agent/dropped month from OUR OWN ClientRecord
+    history and record a verbatim snapshot of the file row. Never touches
+    gross/net commission.
+
+    Gated on the client having actually been paid at some point (some
+    ClientRecord row for this crm_id has is_cleared=True or
+    clawback_applied=True) — a client who dropped before their commission was
+    ever paid (same_month_cancel: cleared and dropped the same calendar
+    month, shown under "Cancelled — Not Paid") has nothing to charge back, so
+    listing them here would misrepresent a Cordoba chargeback as
+    reconciliation-worthy when no money ever went out."""
     chargebacks = parsed.get("chargebacks", [])
     incoming_ids = {row["crm_id"] for row in chargebacks if row["crm_id"]}
     if not incoming_ids:
@@ -292,9 +301,10 @@ def _list_cordoba_chargebacks(file, parsed):
             continue
 
         candidates = ClientRecord.query.filter_by(crm_id=crm_id).order_by(ClientRecord.id.desc()).all()
+        was_paid = any(c.is_cleared or c.clawback_applied for c in candidates)
         client_rec = next((c for c in candidates if c.dropped_date), None)
         dropped_period = _period_of(_parse_date(client_rec.dropped_date)) if client_rec else None
-        if not dropped_period:
+        if not dropped_period or not was_paid:
             skipped_no_match.append(_client_label(row.get("client_name"), crm_id))
             continue
 
