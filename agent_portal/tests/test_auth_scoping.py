@@ -91,33 +91,41 @@ class TestAgentScoping:
 
 
 class TestCurrentPeriodOnly:
-    """Owner policy: agents only ever see the single most recent commission
-    period — no browsing prior months from the portal, even for their own
-    historical data."""
+    """Owner policy: agents only ever see the two most recent commission
+    periods — no browsing further back than that from the portal, even for
+    their own historical data."""
 
-    def test_dashboard_only_shows_latest_period_not_history(self, app, db, client):
+    def test_dashboard_shows_latest_two_periods_not_further_history(self, app, db, client):
         with app.app_context():
             _make_agent(db, "alice@example.com", "Alice", "Alice Agent")
             _make_period_row(db, "2026-01", "Alice Agent", gross=1111.0)
             _make_period_row(db, "2026-02", "Alice Agent", gross=2222.0)
+            _make_period_row(db, "2026-03", "Alice Agent", gross=3333.0)
 
         _login(client, "alice@example.com")
         resp = client.get("/portal/")
         assert resp.status_code == 200
+        assert b"3,333.00" in resp.data
         assert b"2,222.00" in resp.data
         assert b"1,111.00" not in resp.data
 
-    def test_cannot_view_own_older_period_via_url(self, app, db, client):
+    def test_cannot_view_a_period_older_than_the_latest_two(self, app, db, client):
         with app.app_context():
             _make_agent(db, "alice@example.com", "Alice", "Alice Agent")
-            old_row = _make_period_row(db, "2026-01", "Alice Agent", gross=1111.0)
-            old_row_id = old_row.id
-            old_period_id = old_row.period_id
-            _make_period_row(db, "2026-02", "Alice Agent", gross=2222.0)
+            oldest_row = _make_period_row(db, "2026-01", "Alice Agent", gross=1111.0)
+            oldest_row_id = oldest_row.id
+            oldest_period_id = oldest_row.period_id
+            middle_row = _make_period_row(db, "2026-02", "Alice Agent", gross=2222.0)
+            middle_row_id, middle_period_id = middle_row.id, middle_row.period_id
+            _make_period_row(db, "2026-03", "Alice Agent", gross=3333.0)
 
         _login(client, "alice@example.com")
-        resp = client.get(f"/portal/period/{old_period_id}/agent/{old_row_id}")
+        # Outside the latest-2 window (Jan, when Feb+Mar are the latest two)
+        resp = client.get(f"/portal/period/{oldest_period_id}/agent/{oldest_row_id}")
         assert resp.status_code == 404
+        # Within the window (Feb is the second-latest)
+        resp = client.get(f"/portal/period/{middle_period_id}/agent/{middle_row_id}")
+        assert resp.status_code == 200
 
 
 class TestAdminScoping:
