@@ -39,6 +39,24 @@ def get_tier(units: int) -> tuple:
     raise ValueError(f"Units {units} out of valid range (must be >= 1)")
 
 
+def units_to_next_tier(units_cleared: int, agent_name: str = None) -> int | None:
+    """Units still needed this period to reach the next tier's threshold.
+
+    Returns None if the agent has a contractual fixed rate (AGENT_FIXED_RATES) —
+    the tier table doesn't apply to them, so there's no "next tier" to chase — or if
+    they're already in the top tier (61+, no ceiling to climb toward).
+    """
+    if get_fixed_rate(agent_name) is not None:
+        return None
+    if units_cleared < 1:
+        return TIERS[0][0] - units_cleared
+    tier_num, _, _ = get_tier(units_cleared)
+    if tier_num >= len(TIERS):
+        return None
+    next_low = TIERS[tier_num][0]
+    return next_low - units_cleared
+
+
 def calculate_agent_commission(
     agent_name: str,
     units_cleared: int,

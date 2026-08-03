@@ -7,6 +7,7 @@ from agent_portal.calculator import (
     calculate_agent_commission,
     calculate_clawback_amount,
     get_tier,
+    units_to_next_tier,
 )
 
 
@@ -81,6 +82,31 @@ class TestTierTable:
     def test_zero_units_invalid(self):
         with pytest.raises(ValueError):
             get_tier(0)
+
+
+class TestUnitsToNextTier:
+    """KPI shown on the agent-portal dashboard ("Units to Next Tier")."""
+
+    @pytest.mark.parametrize("units,needed", [
+        (1, 20), (20, 1),     # Tier 1 -> Tier 2 starts at 21
+        (21, 11), (31, 1),    # Tier 2 -> Tier 3 starts at 32
+        (32, 8), (39, 1),     # Tier 3 -> Tier 4 starts at 40
+        (40, 6), (45, 1),     # Tier 4 -> Tier 5 starts at 46
+        (46, 15), (60, 1),    # Tier 5 -> Tier 6 starts at 61
+    ])
+    def test_units_needed_for_next_tier(self, units, needed):
+        assert units_to_next_tier(units) == needed
+
+    def test_top_tier_has_no_next_tier(self):
+        assert units_to_next_tier(61) is None
+        assert units_to_next_tier(500) is None
+
+    def test_zero_units_needs_one_for_tier_one(self):
+        assert units_to_next_tier(0) == 1
+
+    def test_fixed_rate_agent_has_no_next_tier(self):
+        assert units_to_next_tier(5, agent_name="Alex Tambouly") is None
+        assert units_to_next_tier(5, agent_name="  peter GODWIN  ") is None
 
 
 class TestCommission:

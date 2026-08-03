@@ -2,6 +2,7 @@ from flask import Blueprint, render_template, abort
 from flask_login import login_required
 
 from agent_portal.auth import agent_scope_names
+from agent_portal.calculator import units_to_next_tier
 from agent_portal.cordoba_ingest import cordoba_display_context
 from agent_portal.models import AgentCommission, ClientRecord, CommissionPeriod
 
@@ -66,4 +67,5 @@ def period_detail(period_id, agent_commission_id):
         clients=active_clients, clawback_clients=clawback_clients,
         cordoba_charged_back_ids=cordoba_charged_back_ids,
         cordoba_chargeback_entries=cordoba_chargeback_entries,
+        units_to_next_tier=units_to_next_tier(agent_row.units_cleared, agent_row.agent_name),
     )
