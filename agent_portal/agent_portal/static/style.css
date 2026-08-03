@@ -323,3 +323,41 @@ h2 { font-size: 1.15rem; margin-bottom: 0.75rem; margin-top: 1.5rem; }
 .muted { color: #6b7280; }
 a { color: #2563eb; text-decoration: none; }
 a:hover { text-decoration: underline; }
+
+/* Upload progress overlay */
+.upload-overlay {
+  position: fixed; inset: 0; z-index: 1000;
+  background: rgba(15, 18, 32, 0.55);
+  display: flex; align-items: center; justify-content: center;
+}
+.upload-overlay-card {
+  background: #fff; border-radius: 10px; padding: 1.75rem 2rem;
+  min-width: 320px; max-width: 90vw;
+  box-shadow: 0 10px 30px rgba(0,0,0,0.25);
+  text-align: center;
+}
+.upload-overlay-label { font-weight: 600; font-size: 1rem; margin-bottom: 0.4rem; }
+.upload-overlay-files {
+  color: #6b7280; font-size: 0.8rem; margin-bottom: 1rem;
+  overflow: hidden; text-overflow: ellipsis; white-space: nowrap;
+}
+.upload-progress-track {
+  background: #e5e7eb; border-radius: 999px; height: 10px; overflow: hidden;
+}
+.upload-progress-bar {
+  height: 100%; width: 0%; background: #2563eb; border-radius: 999px;
+  transition: width 0.15s ease-out;
+}
+.upload-progress-bar.upload-progress-indeterminate {
+  width: 100%;
+  background: repeating-linear-gradient(
+    45deg, #2563eb, #2563eb 12px, #60a5fa 12px, #60a5fa 24px
+  );
+  background-size: 34px 34px;
+  animation: upload-stripes 0.9s linear infinite;
+}
+@keyframes upload-stripes {
+  from { background-position: 0 0; }
+  to { background-position: 34px 0; }
+}
+.upload-overlay-pct { color: #6b7280; font-size: 0.75rem; margin-top: 0.5rem; }

@@ -9,7 +9,7 @@
   <div class="card upload-card">
     <h2>Upload CRM Export <span class="badge badge-green">Recommended</span></h2>
     <p class="muted" style="margin-bottom:1rem;">Upload the backend CRM CSV directly. The system groups clients by agent and calculates commissions automatically.</p>
-    <form method="POST" action="{{ url_for('main.upload_crm') }}" enctype="multipart/form-data">
+    <form method="POST" action="{{ url_for('main.upload_crm') }}" enctype="multipart/form-data" class="js-upload-form">
       <div class="form-group">
         <label for="crm_file">CRM Export CSV</label>
         <input type="file" id="crm_file" name="csv_file" accept=".csv" required>
@@ -31,7 +31,7 @@
       confirmed paying, by ID, against the First Pays and EPF tabs. You can select
       multiple files at once.
     </p>
-    <form method="POST" action="{{ url_for('main.upload_cordoba_payout') }}" enctype="multipart/form-data">
+    <form method="POST" action="{{ url_for('main.upload_cordoba_payout') }}" enctype="multipart/form-data" class="js-upload-form">
       <div class="form-group">
         <label for="cordoba_file">Cordoba Payout XLSX (one or more)</label>
         <input type="file" id="cordoba_file" name="cordoba_file" accept=".xlsx" multiple required>
@@ -52,7 +52,7 @@
       paid on before this app existed, so a Cordoba Chargebacks upload can find and
       claw those back later. You can select multiple files at once.
     </p>
-    <form method="POST" action="{{ url_for('main.upload_commission_history') }}" enctype="multipart/form-data">
+    <form method="POST" action="{{ url_for('main.upload_commission_history') }}" enctype="multipart/form-data" class="js-upload-form">
       <div class="form-group">
         <label for="history_file">Commission History XLSX or CSV (one or more)</label>
         <input type="file" id="history_file" name="history_file" accept=".xlsx,.csv" multiple required>
