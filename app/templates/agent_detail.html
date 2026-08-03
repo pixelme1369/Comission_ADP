@@ -28,12 +28,12 @@
     <div class="card-value">{{ "%.2f"|format(agent.tier_rate * 100) }}%</div>
     <div class="card-label">Rate</div>
   </div>
-  <div class="card summary-card">
+  <div class="card summary-card{% if units_to_next_tier is none %}{% if agent.adjusted_tier >= 6 %} tier-maxed{% endif %}{% elif units_to_next_tier <= 3 %} tier-hot{% elif units_to_next_tier <= 10 %} tier-warm{% endif %}">
     <div class="card-value">
       {% if units_to_next_tier is none %}
-        {% if agent.adjusted_tier >= 6 %}Top Tier{% else %}Fixed Rate{% endif %}
+        {% if agent.adjusted_tier >= 6 %}🏆 Top Tier{% else %}Fixed Rate{% endif %}
       {% else %}
-        {{ units_to_next_tier }}
+        {% if units_to_next_tier <= 3 %}🔥 {% elif units_to_next_tier <= 10 %}⚡ {% endif %}{{ units_to_next_tier }}
       {% endif %}
     </div>
     <div class="card-label">Units to Next Tier</div>
@@ -55,10 +55,6 @@
   <div class="card summary-card highlight-green">
     <div class="card-value">${{ "{:,.2f}".format(agent.net_commission) }}</div>
     <div class="card-label">Net Commission Owed</div>
-  </div>
-  <div class="card summary-card">
-    <div class="card-value">{{ "%.1f"|format(agent.cancellation_rate) }}%</div>
-    <div class="card-label">Cancellation Rate</div>
   </div>
 </div>
 
