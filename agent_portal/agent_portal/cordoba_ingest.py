@@ -6,9 +6,9 @@ _apply_cordoba_chargebacks / _list_cordoba_chargebacks / _process_cordoba_file
 — same logic, same gates, adapted to this app's models/imports."""
 
 from agent_portal import db
-from agent_portal.calculator import calculate_clawback_amount, get_fixed_rate
-from agent_portal.cordoba_parser import parse_cordoba_payout
-from agent_portal.crm_parser import _parse_date, _period_of
+from commission_core.calculator import calculate_clawback_amount, get_fixed_rate
+from commission_core.cordoba_parser import parse_cordoba_payout
+from commission_core.crm_parser import _parse_date, _period_of
 from agent_portal.models import (
     AgentCommission, ClientRecord, CommissionPeriod,
     CordobaChargebackEntry, CordobaChargebackMatchedClient,

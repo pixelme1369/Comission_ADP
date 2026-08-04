@@ -12,7 +12,7 @@ import json
 from flask import current_app
 
 from agent_portal import db
-from agent_portal.crm_parser import parse_crm_and_calculate
+from commission_core.crm_parser import parse_crm_and_calculate
 from agent_portal.ingest import already_known_crm_id_sets, save_period_results
 from agent_portal.models import SyncedFile
 
@@ -93,6 +93,10 @@ def sync_from_drive():
     already_cleared, already_charged_back, already_low_credit = already_known_crm_id_sets()
     period_results = parse_crm_and_calculate(
         file_bytes, file_meta["name"], already_cleared, already_charged_back, already_low_credit,
+        # agent_portal-specific policy flags — see commission_core/crm_parser.py's
+        # module docstring for the owner-confirmed reasoning behind both.
+        persist_same_month_cancel=True,
+        require_prior_payment_evidence=False,
     )
 
     outcome = save_period_results(period_results, file_meta["name"], source_label="drive")

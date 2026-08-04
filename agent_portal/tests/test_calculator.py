@@ -3,7 +3,7 @@ If any of these fail, the money math changed — do not ship without owner sign-
 
 import pytest
 
-from agent_portal.calculator import (
+from commission_core.calculator import (
     calculate_agent_commission,
     calculate_clawback_amount,
     get_tier,

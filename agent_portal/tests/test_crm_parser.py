@@ -6,11 +6,22 @@ confirmed by the owner in July 2026:
 """
 
 import csv
+import functools
 import io
 
 import pytest
 
-from agent_portal.crm_parser import parse_crm_and_calculate, _safe_payment_threshold
+from commission_core.crm_parser import parse_crm_and_calculate as _parse_crm_and_calculate, _safe_payment_threshold
+
+# agent_portal's two policy flags (see commission_core/crm_parser.py's module
+# docstring) are opt-in on parse_crm_and_calculate — this whole test file is
+# exercising agent_portal's behavior, so bind them once here rather than at
+# each of this file's many call sites.
+parse_crm_and_calculate = functools.partial(
+    _parse_crm_and_calculate,
+    persist_same_month_cancel=True,
+    require_prior_payment_evidence=False,
+)
 
 HEADERS = [
     "ID", "Sales Rep", "Full Name", "1st Payment Cleared Date", "Dropped Date",

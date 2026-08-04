@@ -187,12 +187,54 @@ This is a Flask + SQLAlchemy web app for calculating agent commissions at Americ
    re-import.
 
 **Key files:**
-- `app/calculator.py` — pure commission logic, no Flask deps. All tier/penalty/bonus rules live here, including `calculate_clawback_amount` (shared by both the CRM-driven and Cordoba-chargeback-driven clawback paths).
-- `app/crm_parser.py` — parses the full-history CRM export, classifies clients, calculates commissions and clawbacks in one pass, returns one dict per period
-- `app/cordoba_parser.py` — reads the Cordoba payout .xlsx (First Pays / EPF / Chargebacks tabs), returns raw normalized rows; no DB access. The EPF tab only feeds the paid-confirmation flag now (see above) — it no longer drives unit-crediting.
-- `app/commission_history_parser.py` — reads a prior account manager's ledger .xlsx (not a CRM export) to backfill pre-app commission history; no DB access
+- `agent_portal/commission_core/calculator.py` — pure commission logic, no Flask deps. All tier/penalty/bonus rules live here, including `calculate_clawback_amount` (shared by both the CRM-driven and Cordoba-chargeback-driven clawback paths). **Shared with `agent_portal/`** — see "Shared commission_core package" below before editing.
+- `agent_portal/commission_core/crm_parser.py` — parses the full-history CRM export, classifies clients, calculates commissions and clawbacks in one pass, returns one dict per period. **Shared with `agent_portal/`**, including this app's specific policy (see below).
+- `agent_portal/commission_core/cordoba_parser.py` — reads the Cordoba payout .xlsx (First Pays / EPF / Chargebacks tabs), returns raw normalized rows; no DB access. The EPF tab only feeds the paid-confirmation flag now (see above) — it no longer drives unit-crediting. **Shared with `agent_portal/`.**
+- `agent_portal/commission_core/commission_history_parser.py` — reads a prior account manager's ledger .xlsx (not a CRM export) to backfill pre-app commission history; no DB access. **Shared with `agent_portal/`.**
 - `app/models.py` — `CommissionPeriod`, `AgentCommission`, `ClientRecord`, `CordobaPaidClient`, `CordobaChargedBackClient`, `CordobaChargebackMatchedClient`, `CordobaChargebackEntry`
 - `app/routes.py` — routes: `/`, `/upload-crm`, `/upload-cordoba-payout`, `/upload-commission-history`, `/period/<id>`, `/period/<id>/agent/<id>`, `/period/<id>/export`, `/period/<id>/agent/<id>/export`, `/period/<id>/delete`, `/history`
+
+### Shared `commission_core` package (August 2026)
+
+`app/` and `agent_portal/` used to each vendor their own byte-for-byte copy of `calculator.py`,
+`crm_parser.py`, `cordoba_parser.py`, and `commission_history_parser.py`. They now share exactly
+one copy, in `agent_portal/commission_core/` (nested inside `agent_portal/`, not at the repo root
+— see `agent_portal/commission_core/README.md` for why: a real, unverified risk that the
+agent_portal Vercel project's Root Directory setting would exclude a repo-root sibling package
+from the deployed bundle). `app/__init__.py` puts that directory on `sys.path` so `import
+commission_core` works from this app's code exactly like a true sibling package would.
+
+`commission_core/crm_parser.py`'s `parse_crm_and_calculate()` takes two keyword-only flags that
+preserve the one real, owner-confirmed behavior difference between the two apps (full explanation
+in that file's module docstring) — **do not silently unify these without a fresh owner sign-off,
+and do not fork the file to add a third app-specific behavior; add another explicit flag instead:**
+
+- `persist_same_month_cancel` — **`app/` uses the default, `False`.** `agent_portal/` passes
+  `True`: clients who dropped the same month they cleared (or before their own payout date) are
+  also surfaced as display-only rows in each period's client list. Never touches units/debt/rate/
+  commission math either way.
+- `require_prior_payment_evidence` — **`app/` uses the default, `True`** (its original, more
+  conservative policy: a "clawback"-classified client is only actually clawed back, and a
+  currently-active client is only treated as a late activation, if the file or database has
+  independent proof the agent was paid before). `agent_portal/` passes `False`, per an explicit,
+  repeated owner directive ("always assume i paid them for previous cleared files even if its not
+  in the Commission History Backfill") confirmed August 2026: a client's own 1st Payment Cleared
+  Date is treated as proof enough on its own, so every clawback-classified row is always clawed
+  back and no client is ever reassigned to a later "late activation" period. When the
+  `commission_core` merge was proposed, the owner was explicitly asked whether to unify this policy
+  or keep `app/` on the old one as a second flag — **the owner chose to keep them separate.** Do
+  not change `app/`'s calculated numbers by flipping this flag without new, explicit sign-off.
+
+Both apps get one unconditional bugfix regardless of either flag: a client reclassified out of
+"clawback" (proof-of-payment guard or low-credit) who was the ONLY activity for their agent in
+their own cleared period used to vanish from every page with zero trace — now a $0/0-unit holding
+entry keeps them visible. Zero effect on any dollar amount for any agent; this is the one behavior
+change this merge made to `app/`'s pre-merge output.
+
+`tests/test_commission_core_parity.py` proves both apps' real call sites compute identical
+commission numbers from identical input (outside the two flag-driven divergences above), and that
+both apps import the literal same function objects from `commission_core` — not a second copy — so
+a future rule change lands in one file and reaches both apps automatically.
 
 ## Commission Business Rules (April 2026 Plan)
 

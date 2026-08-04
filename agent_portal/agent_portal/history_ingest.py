@@ -8,7 +8,7 @@ created it). Ported from app/routes.py's _save_commission_history_period and
 upload_commission_history handler."""
 
 from agent_portal import db
-from agent_portal.commission_history_parser import parse_commission_history
+from commission_core.commission_history_parser import parse_commission_history
 from agent_portal.ingest import _new_client_record
 from agent_portal.models import AgentCommission, ClientRecord, CommissionPeriod, CordobaPaidClient
 

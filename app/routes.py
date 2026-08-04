@@ -11,10 +11,10 @@ from app.models import (
     CommissionPeriod, AgentCommission, ClientRecord, CordobaPaidClient,
     CordobaChargedBackClient, CordobaChargebackMatchedClient, CordobaChargebackEntry,
 )
-from app.crm_parser import parse_crm_and_calculate, _parse_date, _period_of
-from app.cordoba_parser import parse_cordoba_payout
-from app.commission_history_parser import parse_commission_history
-from app.calculator import (
+from commission_core.crm_parser import parse_crm_and_calculate, _parse_date, _period_of
+from commission_core.cordoba_parser import parse_cordoba_payout
+from commission_core.commission_history_parser import parse_commission_history
+from commission_core.calculator import (
     calculate_clawback_amount, get_fixed_rate, units_to_next_tier, commission_gain_at_next_tier,
 )
 
