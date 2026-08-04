@@ -183,24 +183,6 @@ dashboard** (shown only when the live database's schema is actually out of date,
 `sa_inspect` check) — running the script by hand against `DATABASE_URL` is only needed if you'd
 rather not use the browser.
 
-**`migrate_split_commission_period_source.py` — MUST be run before this code is deployed, not
-self-serve.** It adds `commission_period.source` (needed so Commission History imports and
-Calculated Commission Periods can share a month without blocking each other — see
-`CommissionPeriod`'s docstring in `models.py`) and replaces `period_label`'s single-column unique
-constraint with a composite one on `(period_label, source)`. Unlike the three migrations above,
-this one does **not** get a "Fix Now" dashboard card, because it can't: the moment this code is
-deployed, `CommissionPeriod`'s ORM mapping expects the `source` column to exist on every single
-query that touches a period — including the dashboard route the card would need to render on. On
-an un-migrated database that query fails outright (a raw 500), before any introspection check
-ever gets a chance to show a button. Run it against `DATABASE_URL` first (same as
-`migrate_add_cordoba_paid.py`'s precedent in this same section):
-```bash
-export DATABASE_URL="postgresql://...your Neon connection string..."
-python migrate_split_commission_period_source.py
-```
-Safe to run more than once. A fresh database created after this change already has the new schema
-for free via `db.create_all()` and doesn't need this script at all.
-
 ## Local development
 
 ```bash

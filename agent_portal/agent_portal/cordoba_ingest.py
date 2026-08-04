@@ -38,14 +38,10 @@ def cordoba_display_context(agent_row, clients):
 
 def _get_or_create_agent_period_row(period_label, agent_name, filename):
     """Find (or create a zero-unit) AgentCommission row to carry a clawback that
-    has no cleared units of its own in this period. A real, ongoing deduction
-    against actual payout math — always the source="crm" period for this
-    label (never the separate source="history_import" reference period, even
-    if one happens to share the same period_label — see CommissionPeriod's
-    docstring in models.py)."""
-    period = CommissionPeriod.query.filter_by(period_label=period_label, source="crm").first()
+    has no cleared units of its own in this period."""
+    period = CommissionPeriod.query.filter_by(period_label=period_label).first()
     if not period:
-        period = CommissionPeriod(period_label=period_label, filename=filename, total_agents=0, source="crm")
+        period = CommissionPeriod(period_label=period_label, filename=filename, total_agents=0)
         db.session.add(period)
         db.session.flush()
 
@@ -421,9 +417,7 @@ def delete_cordoba_upload(filename):
     reversed_amount = 0.0
 
     for row in charged_back_rows:
-        # source="crm" — this reverses a deduction _get_or_create_agent_period_row
-        # placed against the calculated period; see its docstring above.
-        period = CommissionPeriod.query.filter_by(period_label=row.dropped_period, source="crm").first()
+        period = CommissionPeriod.query.filter_by(period_label=row.dropped_period).first()
         agent_row = (
             AgentCommission.query.filter_by(period_id=period.id, agent_name=row.agent_name).first()
             if period else None

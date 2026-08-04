@@ -75,15 +75,10 @@ def _new_client_record(period_id, agent_commission_id, cr, **overrides):
 
 def already_known_crm_id_sets():
     """crm_ids this DB already knows about, for the parser's late-activation /
-    clawback-guard / low-credit-guard / already-paid-via-history logic.
-    already_charged_back comes from the Cordoba chargeback ledger (see
-    cordoba_ingest.py) so a CRM upload reflecting a drop already clawed back
-    via a Cordoba Chargebacks file never double-charges the agent.
-    already_history_paid comes from Commission History imports specifically
-    (source="history_import" periods only) — owner policy, confirmed August
-    2026: "This file has already been paid. Don't calculate it again. Only
-    watch it going forward to see if it drops and needs a clawback." See
-    commission_core/crm_parser.py's module docstring for the full mechanism."""
+    clawback-guard / low-credit-guard logic. already_charged_back comes from
+    the Cordoba chargeback ledger (see cordoba_ingest.py) so a CRM upload
+    reflecting a drop already clawed back via a Cordoba Chargebacks file never
+    double-charges the agent."""
     already_cleared = {
         r[0] for r in db.session.query(ClientRecord.crm_id)
         .filter(ClientRecord.is_cleared.is_(True)) if r[0]
@@ -95,13 +90,7 @@ def already_known_crm_id_sets():
         r[0] for r in db.session.query(ClientRecord.crm_id)
         .filter(ClientRecord.is_low_credit.is_(True)) if r[0]
     }
-    already_history_paid = {
-        r[0] for r in db.session.query(ClientRecord.crm_id)
-        .join(CommissionPeriod, ClientRecord.period_id == CommissionPeriod.id)
-        .filter(ClientRecord.is_cleared.is_(True), CommissionPeriod.source == "history_import")
-        if r[0]
-    }
-    return already_cleared, already_charged_back, already_low_credit, already_history_paid
+    return already_cleared, already_charged_back, already_low_credit
 
 
 def save_period_results(period_results, filename, source_label="drive"):
@@ -122,11 +111,7 @@ def save_period_results(period_results, filename, source_label="drive"):
             continue
 
         period_label = parsed["period_label"]
-        # Scoped to source="crm" — a "history_import" period for this same label
-        # (backfilled reference data, a separate dataset by design — see
-        # CommissionPeriod's docstring) must never block a real calculated
-        # period from being created for the same month.
-        existing = CommissionPeriod.query.filter_by(period_label=period_label, source="crm").first()
+        existing = CommissionPeriod.query.filter_by(period_label=period_label).first()
         if existing:
             # A skipped period silently discards anything the parser computed for
             # it, including any NEW clawback routed there — warn rather than lose
@@ -153,7 +138,6 @@ def save_period_results(period_results, filename, source_label="drive"):
 
         period = CommissionPeriod(
             period_label=period_label, filename=filename, total_agents=len(parsed["results"]),
-            source="crm",
         )
         db.session.add(period)
         db.session.flush()

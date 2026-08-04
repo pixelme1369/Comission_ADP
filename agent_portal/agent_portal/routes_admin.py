@@ -72,12 +72,8 @@ def _client_record_columns_are_wide_enough():
 @admin_required
 def dashboard():
     periods = CommissionPeriod.query.order_by(CommissionPeriod.period_label.desc()).all()
-    # CommissionPeriod.source is the definitive split (see its docstring in
-    # models.py) — calculated ("crm") and historical ("history_import") data
-    # for the SAME period_label can legitimately coexist as two separate rows
-    # here, e.g. two "2026-05" entries, one in each list below.
-    crm_periods = [p for p in periods if p.source == "crm"]
-    history_periods = [p for p in periods if p.source == "history_import"]
+    crm_periods = [p for p in periods if p.agents and p.agents[0].source in CRM_SOURCES]
+    history_periods = [p for p in periods if p.agents and p.agents[0].source in HISTORY_SOURCES]
     agents = Agent.query.order_by(Agent.display_name).all()
     last_sync = SyncedFile.query.order_by(SyncedFile.synced_at.desc()).first()
     drive_configured = bool(current_app.config.get("GOOGLE_SERVICE_ACCOUNT_JSON"))
@@ -288,13 +284,12 @@ def upload_csv():
         return redirect(url_for("admin.dashboard"))
 
     file_bytes = file.read()
-    already_cleared, already_charged_back, already_low_credit, already_history_paid = already_known_crm_id_sets()
+    already_cleared, already_charged_back, already_low_credit = already_known_crm_id_sets()
     try:
         period_results = parse_crm_and_calculate(
             file_bytes, file.filename, already_cleared, already_charged_back, already_low_credit,
-            already_history_paid,
             # agent_portal-specific policy flags — see commission_core/crm_parser.py's
-            # module docstring for the owner-confirmed reasoning behind all three.
+            # module docstring for the owner-confirmed reasoning behind both.
             persist_same_month_cancel=True,
             require_prior_payment_evidence=False,
         )
@@ -430,11 +425,7 @@ def upload_commission_history():
     if outcome["saved_period_ids"]:
         flash(f"Commission history import: {len(outcome['saved_period_ids'])} month(s) backfilled.", "success")
     if outcome["periods_skipped"]:
-        flash(
-            f"{outcome['periods_skipped']} month(s) skipped — that month's commission history was "
-            "already imported (an existing calculated period for the same month does NOT skip it).",
-            "error",
-        )
+        flash(f"{outcome['periods_skipped']} month(s) skipped because a period already existed.", "error")
     for w in outcome["warnings"]:
         flash(w, "error")
 
