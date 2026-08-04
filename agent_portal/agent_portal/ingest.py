@@ -111,7 +111,11 @@ def save_period_results(period_results, filename, source_label="drive"):
             continue
 
         period_label = parsed["period_label"]
-        existing = CommissionPeriod.query.filter_by(period_label=period_label).first()
+        # Scoped to source="crm" — a "history_import" period for this same label
+        # (backfilled reference data, a separate dataset by design — see
+        # CommissionPeriod's docstring) must never block a real calculated
+        # period from being created for the same month.
+        existing = CommissionPeriod.query.filter_by(period_label=period_label, source="crm").first()
         if existing:
             # A skipped period silently discards anything the parser computed for
             # it, including any NEW clawback routed there — warn rather than lose
@@ -138,6 +142,7 @@ def save_period_results(period_results, filename, source_label="drive"):
 
         period = CommissionPeriod(
             period_label=period_label, filename=filename, total_agents=len(parsed["results"]),
+            source="crm",
         )
         db.session.add(period)
         db.session.flush()

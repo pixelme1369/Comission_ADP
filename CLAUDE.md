@@ -184,7 +184,15 @@ This is a Flask + SQLAlchemy web app for calculating agent commissions at Americ
    as long as that client's month has been backfilled this way.
 5. Same "period already exists" guard as every other upload flow — a month already present in
    the DB is skipped (with a flash message) rather than double-counted; delete it first to
-   re-import.
+   re-import. **`agent_portal/` diverges here (owner policy, confirmed August 2026, scoped to
+   `agent_portal/` only — `app/` keeps this behavior unchanged):** a Calculated Commission Period
+   and a Commission History import are treated as two separate datasets there and are explicitly
+   allowed to share the same month — importing history for a month that already has a calculated
+   period (or vice versa) is never blocked, and neither ever overwrites or deletes the other. See
+   `agent_portal/agent_portal/models.py`'s `CommissionPeriod` docstring for the mechanism
+   (`source="crm"` vs `source="history_import"`, unique per `(period_label, source)` instead of
+   `period_label` alone). Re-importing the exact same historical dataset for a month already
+   backfilled is still rejected — only the cross-dataset block was removed.
 
 **Key files:**
 - `agent_portal/commission_core/calculator.py` — pure commission logic, no Flask deps. All tier/penalty/bonus rules live here, including `calculate_clawback_amount` (shared by both the CRM-driven and Cordoba-chargeback-driven clawback paths). **Shared with `agent_portal/`** — see "Shared commission_core package" below before editing.
