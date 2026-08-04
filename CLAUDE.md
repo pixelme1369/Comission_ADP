@@ -192,12 +192,7 @@ This is a Flask + SQLAlchemy web app for calculating agent commissions at Americ
    `agent_portal/agent_portal/models.py`'s `CommissionPeriod` docstring for the mechanism
    (`source="crm"` vs `source="history_import"`, unique per `(period_label, source)` instead of
    `period_label` alone). Re-importing the exact same historical dataset for a month already
-   backfilled is still rejected — only the cross-dataset block was removed. Letting the two
-   datasets overlap raised a second question, also answered by the owner (August 2026): a client
-   already paid via Commission History still reappears in every future full CRM export (it's a
-   full-history export, not a delta), so `agent_portal/` also skips recalculating/re-crediting any
-   crm_id already known-paid via history when it shows up still active — see the
-   `already_history_paid_crm_ids` entry in the "Shared `commission_core` package" section below.
+   backfilled is still rejected — only the cross-dataset block was removed.
 
 **Key files:**
 - `agent_portal/commission_core/calculator.py` — pure commission logic, no Flask deps. All tier/penalty/bonus rules live here, including `calculate_clawback_amount` (shared by both the CRM-driven and Cordoba-chargeback-driven clawback paths). **Shared with `agent_portal/`** — see "Shared commission_core package" below before editing.
@@ -217,11 +212,10 @@ agent_portal Vercel project's Root Directory setting would exclude a repo-root s
 from the deployed bundle). `app/__init__.py` puts that directory on `sys.path` so `import
 commission_core` works from this app's code exactly like a true sibling package would.
 
-`commission_core/crm_parser.py`'s `parse_crm_and_calculate()` takes three parameters (two
-keyword-only flags plus one optional set) that preserve the real, owner-confirmed behavior
-differences between the two apps (full explanation in that file's module docstring) — **do not
-silently unify these without a fresh owner sign-off, and do not fork the file to add a fourth
-app-specific behavior; add another explicit flag/parameter instead:**
+`commission_core/crm_parser.py`'s `parse_crm_and_calculate()` takes two keyword-only flags that
+preserve the one real, owner-confirmed behavior difference between the two apps (full explanation
+in that file's module docstring) — **do not silently unify these without a fresh owner sign-off,
+and do not fork the file to add a third app-specific behavior; add another explicit flag instead:**
 
 - `persist_same_month_cancel` — **`app/` uses the default, `False`.** `agent_portal/` passes
   `True`: clients who dropped the same month they cleared (or before their own payout date) are
@@ -238,19 +232,6 @@ app-specific behavior; add another explicit flag/parameter instead:**
   `commission_core` merge was proposed, the owner was explicitly asked whether to unify this policy
   or keep `app/` on the old one as a second flag — **the owner chose to keep them separate.** Do
   not change `app/`'s calculated numbers by flipping this flag without new, explicit sign-off.
-- `already_history_paid_crm_ids` — **`app/` always passes nothing (`None`)**, and structurally
-  never needs to: `app/` kept its original "period already exists" guard, which still fully blocks
-  a Commission History import and a calculated period from ever coexisting for the same month
-  there, so `app/` can never have a crm_id that's paid via history AND re-appears in a live CRM
-  export for a calculated period. `agent_portal/` passes every crm_id already recorded as paid via
-  a `source="history_import"` `CommissionPeriod` (see the "Commission history backfill" divergence
-  note above) — owner policy, confirmed August 2026: *"This file has already been paid. Don't
-  calculate it again. Only watch it going forward to see if it drops and needs a clawback."* A row
-  whose crm_id is in this set is skipped entirely when it would otherwise count as `cleared` or
-  `safe_cancel` — no unit, no debt, no commission dollars enter any calculated period for it.
-  Clawback detection needed no new logic at all: it was already independent of this set, since a
-  clawback is classified purely from a row's own cleared+dropped dates — the moment that same
-  crm_id shows a Dropped Date in a future upload, it's caught exactly like any other clawback.
 
 Both apps get one unconditional bugfix regardless of either flag: a client reclassified out of
 "clawback" (proof-of-payment guard or low-credit) who was the ONLY activity for their agent in
@@ -259,12 +240,9 @@ entry keeps them visible. Zero effect on any dollar amount for any agent; this i
 change this merge made to `app/`'s pre-merge output.
 
 `tests/test_commission_core_parity.py` proves both apps' real call sites compute identical
-commission numbers from identical input (outside the documented divergences above), and that both
-apps import the literal same function objects from `commission_core` — not a second copy — so a
-future rule change lands in one file and reaches both apps automatically. `already_history_paid_crm_ids`
-specifically is exercised in `agent_portal/tests/test_commission_history_no_double_pay.py` instead,
-since it's inherently a database-driven scenario (a crm_id already recorded as paid via a
-`source="history_import"` period) that doesn't fit that file's pure-parser-input parity tests.
+commission numbers from identical input (outside the two flag-driven divergences above), and that
+both apps import the literal same function objects from `commission_core` — not a second copy — so
+a future rule change lands in one file and reaches both apps automatically.
 
 ## Commission Business Rules (April 2026 Plan)
 
