@@ -120,34 +120,55 @@ h2 { font-size: 1.15rem; margin-bottom: 0.75rem; margin-top: 1.5rem; }
   border-color: #6366f1;
   box-shadow: 0 0 0 3px rgba(99, 102, 241, 0.15);
 }
-.alias-list { list-style: none; padding: 0; margin: 0.5rem 0 0; display: flex; flex-wrap: wrap; gap: 0.4rem; }
-.alias-list li { background: #f1f5f9; border-radius: 9999px; padding: 0.2rem 0.6rem; font-size: 0.8rem; display: flex; align-items: center; gap: 0.4rem; }
-.alias-list form { display: inline; }
-.alias-list button { background: none; border: none; color: #991b1b; cursor: pointer; font-weight: 700; padding: 0; }
 .form-hint { font-size: 0.82rem; color: #6b7280; margin-bottom: 1rem; line-height: 1.6; }
 .form-hint code { background: #f1f5f9; padding: 1px 4px; border-radius: 3px; font-size: 0.8rem; }
 
-/* User list (admin agent management) */
-.user-list { display: flex; flex-direction: column; gap: 0; background: #fff; border-radius: 10px;
-  box-shadow: 0 1px 3px rgba(0,0,0,0.08); overflow: hidden; }
-.user-row { display: flex; align-items: flex-start; gap: 1rem; padding: 1.1rem 1.25rem;
-  border-bottom: 1px solid #f1f5f9; }
-.user-row:last-child { border-bottom: none; }
+/* Agent list (admin Manage Agents) — one elevated card per agent, a clear
+   header (identity + destructive action) separated from a two-column body
+   (CRM mapping / password), instead of one continuous bordered list. */
+.user-list { display: flex; flex-direction: column; gap: 1rem; }
+.agent-card {
+  background: #fff;
+  border-radius: 12px;
+  box-shadow: 0 1px 3px rgba(0,0,0,0.08);
+  padding: 1.25rem 1.5rem;
+}
+.agent-card-header {
+  display: flex;
+  align-items: flex-start;
+  justify-content: space-between;
+  gap: 1rem;
+  padding-bottom: 1.1rem;
+  margin-bottom: 1.1rem;
+  border-bottom: 1px solid #f1f5f9;
+}
+.agent-identity { display: flex; align-items: flex-start; gap: 0.85rem; min-width: 0; }
+.agent-name-row { display: flex; align-items: center; gap: 0.5rem; flex-wrap: wrap; margin-bottom: 0.2rem; }
+.agent-card-body {
+  display: grid;
+  grid-template-columns: 1fr 1fr;
+  gap: 1.5rem;
+}
+@media (max-width: 720px) { .agent-card-body { grid-template-columns: 1fr; } }
+.agent-section {
+  background: #f8fafc;
+  border: 1px solid #eef2f7;
+  border-radius: 10px;
+  padding: 0.9rem 1rem;
+}
 .user-avatar { flex-shrink: 0; width: 40px; height: 40px; border-radius: 50%; background: #1a1a2e;
   color: #fff; display: flex; align-items: center; justify-content: center; font-weight: 700;
   font-size: 0.85rem; letter-spacing: 0.5px; }
 .user-avatar.is-admin { background: #6d28d9; }
-.user-main { flex: 1; min-width: 0; }
-.user-identity { display: flex; align-items: center; gap: 0.5rem; flex-wrap: wrap; margin-bottom: 0.15rem; }
 .user-name { font-weight: 700; font-size: 0.95rem; color: #1a1a2e; }
-.user-email { font-size: 0.82rem; color: #6b7280; margin-bottom: 0.7rem; }
+.user-email { font-size: 0.82rem; color: #6b7280; }
 .user-section-label { font-size: 0.7rem; font-weight: 700; text-transform: uppercase; letter-spacing: 0.5px;
-  color: #9ca3af; margin-bottom: 0.35rem; margin-top: 0.75rem; }
-.user-section-label:first-of-type { margin-top: 0; }
+  color: #9ca3af; margin-bottom: 0.6rem; }
 .user-actions { display: flex; gap: 0.5rem; flex-wrap: wrap; align-items: center; }
 .user-actions input[type="text"], .user-actions input[type="password"] {
-  padding: 0.4rem 0.6rem; border: 1px solid #d1d5db; border-radius: 6px; font-size: 0.82rem;
-  width: 220px; max-width: 100%; }
+  flex: 1; padding: 0.4rem 0.6rem; border: 1px solid #d1d5db; border-radius: 6px; font-size: 0.82rem;
+  min-width: 140px; background: #fff; }
+.alias-chip-row { display: flex; flex-wrap: wrap; gap: 0.4rem; margin-bottom: 0.7rem; }
 .chip { display: inline-flex; align-items: center; gap: 0.4rem; background: #eef2ff; color: #3730a3;
   border-radius: 9999px; padding: 0.25rem 0.4rem 0.25rem 0.75rem; font-size: 0.78rem; font-weight: 600; }
 .chip button { background: rgba(55,48,163,0.12); border: none; color: #3730a3; cursor: pointer;
