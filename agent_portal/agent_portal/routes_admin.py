@@ -12,7 +12,8 @@ from agent_portal.crm_parser import parse_crm_and_calculate
 from agent_portal.drive_sync import sync_from_drive
 from agent_portal.history_ingest import allowed_history_file, import_commission_history_files
 from agent_portal.ingest import (
-    already_known_crm_id_sets, delete_periods_by_filename, group_periods_by_filename, save_period_results,
+    already_known_crm_id_sets, bulk_delete_period, delete_periods_by_filename,
+    group_periods_by_filename, save_period_results,
 )
 from agent_portal.models import Agent, AgentAlias, AgentCommission, ClientRecord, CommissionPeriod, SyncedFile
 
@@ -112,12 +113,13 @@ def period_detail(period_id):
 @admin_required
 def delete_period(period_id):
     """Deletes a period so it can be re-imported — e.g. after a parser fix
-    that only takes effect on rows processed after the fix shipped. Cascades
-    to that period's AgentCommission and ClientRecord rows via the model
-    relationships (mirrors the internal app's own delete_period route)."""
+    that only takes effect on rows processed after the fix shipped. Uses
+    bulk_delete_period (see ingest.py) instead of the ORM cascade, which
+    measurably turns into hundreds-to-thousands of individual DELETE
+    round-trips for a period with real data."""
     period = CommissionPeriod.query.get_or_404(period_id)
     period_label = period.period_label
-    db.session.delete(period)
+    bulk_delete_period(period)
     db.session.commit()
     flash(f"Period {period_label} deleted. Re-upload its CRM export to re-import it.", "success")
     return redirect(url_for("admin.dashboard"))
