@@ -123,58 +123,190 @@ h2 { font-size: 1.15rem; margin-bottom: 0.75rem; margin-top: 1.5rem; }
 .form-hint { font-size: 0.82rem; color: #6b7280; margin-bottom: 1rem; line-height: 1.6; }
 .form-hint code { background: #f1f5f9; padding: 1px 4px; border-radius: 3px; font-size: 0.8rem; }
 
-/* Agent list (admin Manage Agents) — one elevated card per agent, a clear
-   header (identity + destructive action) separated from a two-column body
-   (CRM mapping / password), instead of one continuous bordered list. */
-.user-list { display: flex; flex-direction: column; gap: 1rem; }
+/* ===========================================================================
+   Agent list (admin Manage Agents) — premium/compact card system.
+   One low-height card per agent: a single-line identity header (avatar,
+   name, auth-method pill, overflow menu) over a hairline divider, then a
+   dense responsive row of inline-editable fields. Shadows are soft/layered,
+   borders are hairline-only, radii are small (10-12px) — spacing and type
+   do the work of separating sections instead of heavy borders.
+   =========================================================================== */
+
+.create-agent-card { max-width: 480px; border-radius: 12px; box-shadow: 0 1px 2px rgba(16,24,40,.04), 0 1px 3px rgba(16,24,40,.06); }
+
+.agents-section-header {
+  position: sticky;
+  top: 56px; /* navbar height */
+  z-index: 5;
+  background: #f4f6f9;
+  padding: 0.85rem 0 0.7rem;
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  gap: 1rem;
+  flex-wrap: wrap;
+}
+.agents-section-header h2 { margin: 0; }
+.agents-search {
+  display: flex;
+  align-items: center;
+  gap: 0.5rem;
+  background: #fff;
+  border: 1px solid #e5e7eb;
+  border-radius: 8px;
+  padding: 0.45rem 0.75rem;
+  color: #9ca3af;
+  min-width: 260px;
+  transition: border-color .15s ease, box-shadow .15s ease;
+}
+.agents-search:focus-within { border-color: #6366f1; box-shadow: 0 0 0 3px rgba(99,102,241,0.12); }
+.agents-search input {
+  border: none; outline: none; font-size: 0.83rem; color: #1a1a2e; background: transparent; width: 100%;
+}
+.agents-search input::placeholder { color: #9ca3af; }
+.agent-search-empty { color: #9ca3af; font-size: 0.85rem; padding: 1.5rem 0; text-align: center; }
+
+.user-list { display: flex; flex-direction: column; gap: 0.6rem; }
+
 .agent-card {
   background: #fff;
   border-radius: 12px;
-  box-shadow: 0 1px 3px rgba(0,0,0,0.08);
-  padding: 1.25rem 1.5rem;
+  box-shadow: 0 1px 2px rgba(16,24,40,.04), 0 1px 3px rgba(16,24,40,.06);
+  padding: 0.85rem 1.1rem;
+  transition: box-shadow .15s ease;
 }
+.agent-card:hover { box-shadow: 0 2px 4px rgba(16,24,40,.06), 0 4px 10px rgba(16,24,40,.06); }
+
 .agent-card-header {
   display: flex;
-  align-items: flex-start;
+  align-items: center;
   justify-content: space-between;
-  gap: 1rem;
-  padding-bottom: 1.1rem;
-  margin-bottom: 1.1rem;
+  gap: 0.75rem;
+  padding-bottom: 0.7rem;
+  margin-bottom: 0.7rem;
   border-bottom: 1px solid #f1f5f9;
 }
-.agent-identity { display: flex; align-items: flex-start; gap: 0.85rem; min-width: 0; }
-.agent-name-row { display: flex; align-items: center; gap: 0.5rem; flex-wrap: wrap; margin-bottom: 0.2rem; }
+.agent-identity { display: flex; align-items: center; gap: 0.65rem; min-width: 0; }
+.agent-identity-text { min-width: 0; }
+.agent-name-row { display: flex; align-items: center; gap: 0.45rem; flex-wrap: wrap; line-height: 1.3; }
+.agent-identity-badges { display: inline-flex; }
+
 .agent-card-body {
   display: grid;
-  grid-template-columns: repeat(auto-fit, minmax(240px, 1fr));
-  gap: 1.25rem;
+  grid-template-columns: repeat(auto-fit, minmax(220px, 1fr));
+  gap: 0.9rem 1.25rem;
 }
-.agent-section {
-  background: #f8fafc;
-  border: 1px solid #eef2f7;
-  border-radius: 10px;
-  padding: 0.9rem 1rem;
+.agent-field { min-width: 0; }
+.agent-field-label {
+  font-size: 0.66rem; font-weight: 700; text-transform: uppercase; letter-spacing: 0.5px;
+  color: #9ca3af; margin-bottom: 0.35rem;
 }
-.user-avatar { flex-shrink: 0; width: 40px; height: 40px; border-radius: 50%; background: #1a1a2e;
+
+.user-avatar {
+  flex-shrink: 0; width: 34px; height: 34px; border-radius: 50%; background: #1a1a2e;
   color: #fff; display: flex; align-items: center; justify-content: center; font-weight: 700;
-  font-size: 0.85rem; letter-spacing: 0.5px; }
+  font-size: 0.72rem; letter-spacing: 0.5px;
+}
 .user-avatar.is-admin { background: #6d28d9; }
-.user-name { font-weight: 700; font-size: 0.95rem; color: #1a1a2e; }
-.user-email { font-size: 0.82rem; color: #6b7280; }
-.user-section-label { font-size: 0.7rem; font-weight: 700; text-transform: uppercase; letter-spacing: 0.5px;
-  color: #9ca3af; margin-bottom: 0.6rem; }
-.user-actions { display: flex; gap: 0.5rem; flex-wrap: wrap; align-items: center; }
-.user-actions input[type="text"], .user-actions input[type="password"] {
-  flex: 1; padding: 0.4rem 0.6rem; border: 1px solid #d1d5db; border-radius: 6px; font-size: 0.82rem;
-  min-width: 140px; background: #fff; }
-.alias-chip-row { display: flex; flex-wrap: wrap; gap: 0.4rem; margin-bottom: 0.7rem; }
-.chip { display: inline-flex; align-items: center; gap: 0.4rem; background: #eef2ff; color: #3730a3;
-  border-radius: 9999px; padding: 0.25rem 0.4rem 0.25rem 0.75rem; font-size: 0.78rem; font-weight: 600; }
-.chip button { background: rgba(55,48,163,0.12); border: none; color: #3730a3; cursor: pointer;
-  font-weight: 700; width: 16px; height: 16px; border-radius: 50%; line-height: 1; padding: 0;
-  display: flex; align-items: center; justify-content: center; font-size: 0.7rem; }
-.chip button:hover { background: rgba(55,48,163,0.25); }
-.chip-empty { font-size: 0.8rem; color: #9ca3af; font-style: italic; }
+.user-name { font-weight: 600; font-size: 0.88rem; color: #1a1a2e; }
+.user-email { font-size: 0.78rem; color: #6b7280; margin-top: 1px; }
+
+/* Auth-method status pills — replace the old flat badges with a quieter,
+   icon-led indicator (only "Google sign-in only" gets the green success
+   treatment; a password on file is just a neutral fact, not a "success"). */
+.status-pill {
+  display: inline-flex; align-items: center; gap: 0.3rem;
+  font-size: 0.68rem; font-weight: 600; line-height: 1;
+  padding: 0.24rem 0.5rem 0.24rem 0.45rem; border-radius: 9999px; white-space: nowrap;
+}
+.status-pill svg { flex-shrink: 0; }
+.status-pill-google { background: #ecfdf5; color: #15803d; }
+.status-pill-neutral { background: #f1f5f9; color: #64748b; }
+
+/* Inline fields (email + revealed password) — one input, no persistent
+   button; a small status slot to the right carries saving/saved/error state. */
+.agent-inline-form { width: 100%; }
+.agent-input-wrap { display: flex; align-items: center; gap: 0.5rem; }
+.agent-input {
+  flex: 1; min-width: 0; padding: 0.4rem 0.6rem; border: 1px solid #e5e7eb; border-radius: 8px;
+  font-size: 0.82rem; color: #1a1a2e; background: #fff; transition: border-color .15s ease, box-shadow .15s ease;
+}
+.agent-input:hover { border-color: #d1d5db; }
+.agent-input:focus { outline: none; border-color: #6366f1; box-shadow: 0 0 0 3px rgba(99,102,241,0.12); }
+.agent-input.has-error, .tag-add-input.has-error { border-color: #ef4444; }
+.agent-input-status {
+  flex-shrink: 0; font-size: 0.72rem; font-weight: 600; min-width: 0; white-space: nowrap;
+  opacity: 0; transition: opacity .15s ease;
+}
+.agent-input-status:not(:empty) { opacity: 1; }
+.agent-input-status.is-saving { color: #9ca3af; }
+.agent-input-status.is-saved { color: #15803d; }
+.agent-input-status.is-error { color: #b91c1c; white-space: normal; }
+
+/* CRM mapping — Gmail-label-style chips with an inline "add" input that
+   sits in the same flow as the chips themselves, no separate button row. */
+.chip-row { display: flex; flex-wrap: wrap; align-items: center; gap: 0.35rem; }
+.tag-chip {
+  display: inline-flex; align-items: center; gap: 0.3rem; background: #eef2ff; color: #3730a3;
+  border-radius: 6px; padding: 0.22rem 0.3rem 0.22rem 0.6rem; font-size: 0.76rem; font-weight: 600;
+  animation: chip-in .15s ease;
+}
+@keyframes chip-in { from { opacity: 0; transform: scale(.9); } to { opacity: 1; transform: scale(1); } }
+.tag-chip-remove {
+  background: rgba(55,48,163,0.1); border: none; color: #3730a3; cursor: pointer;
+  font-weight: 700; width: 15px; height: 15px; border-radius: 4px; line-height: 1; padding: 0;
+  display: flex; align-items: center; justify-content: center; font-size: 0.68rem;
+  transition: background-color .15s ease;
+}
+.tag-chip-remove:hover { background: rgba(185,28,28,0.15); color: #b91c1c; }
+.tag-add-form { display: inline-flex; flex: 1; min-width: 110px; }
+.tag-add-input {
+  width: 100%; border: 1px dashed #d1d5db; background: transparent; border-radius: 6px;
+  padding: 0.22rem 0.55rem; font-size: 0.76rem; color: #1a1a2e; transition: border-color .15s ease, background-color .15s ease;
+}
+.tag-add-input::placeholder { color: #9ca3af; }
+.tag-add-input:hover { border-color: #9ca3af; }
+.tag-add-input:focus { outline: none; border-style: solid; border-color: #6366f1; background: #fff; box-shadow: 0 0 0 3px rgba(99,102,241,0.12); }
+
+/* Password — collapsed to one status line by default; the input only
+   appears once "Set password" / "Change" is clicked. */
+.password-row { display: flex; align-items: center; justify-content: space-between; gap: 0.5rem; min-height: 30px; }
+.password-status { font-size: 0.82rem; color: #374151; }
+.link-btn {
+  background: none; border: none; color: #4f46e5; font-size: 0.78rem; font-weight: 600;
+  cursor: pointer; padding: 0.15rem 0.3rem; border-radius: 5px; transition: background-color .15s ease;
+}
+.link-btn:hover { background: #eef2ff; }
+.link-btn-danger { color: #b91c1c; }
+.link-btn-danger:hover { background: #fef2f2; }
+.btn-xs { padding: 0.3rem 0.6rem; font-size: 0.74rem; }
+
+/* Overflow menu (Remove User) */
+.agent-menu { position: relative; flex-shrink: 0; }
+.agent-menu-trigger {
+  display: flex; align-items: center; justify-content: center; width: 28px; height: 28px;
+  border-radius: 7px; border: none; background: transparent; color: #9ca3af; cursor: pointer;
+  transition: background-color .15s ease, color .15s ease;
+}
+.agent-menu-trigger:hover, .agent-menu-trigger[aria-expanded="true"] { background: #f1f5f9; color: #374151; }
+.agent-menu-dropdown {
+  position: absolute; top: calc(100% + 4px); right: 0; z-index: 20;
+  background: #fff; border-radius: 10px; box-shadow: 0 4px 12px rgba(16,24,40,.1), 0 12px 32px rgba(16,24,40,.1);
+  min-width: 190px; padding: 0.35rem; animation: menu-in .12s ease;
+}
+@keyframes menu-in { from { opacity: 0; transform: translateY(-4px); } to { opacity: 1; transform: translateY(0); } }
+.agent-menu-item {
+  display: block; width: 100%; text-align: left; background: none; border: none; cursor: pointer;
+  padding: 0.5rem 0.6rem; border-radius: 7px; font-size: 0.82rem; font-weight: 500; color: #374151;
+  transition: background-color .15s ease;
+}
+.agent-menu-item:hover { background: #f1f5f9; }
+.agent-menu-item[hidden] { display: none; } /* .agent-menu-item's own display:block otherwise beats the UA [hidden] rule */
+.agent-menu-item-danger { color: #b91c1c; }
+.agent-menu-item-danger:hover { background: #fef2f2; }
+.agent-menu-confirm { padding: 0.55rem 0.6rem 0.4rem; }
+.agent-menu-confirm > span { display: block; font-size: 0.8rem; color: #374151; margin-bottom: 0.5rem; }
+.agent-menu-confirm-actions { display: flex; justify-content: flex-end; gap: 0.4rem; }
 
 /* Buttons */
 .btn {
