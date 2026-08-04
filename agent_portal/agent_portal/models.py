@@ -62,40 +62,10 @@ class SyncedFile(db.Model):
 
 
 class CommissionPeriod(db.Model):
-    """One calendar month's worth of commission data. `source` distinguishes
-    two datasets that are allowed to overlap on the SAME period_label (owner
-    policy, confirmed August 2026 — see CLAUDE.md's "Commission History vs.
-    Calculated Commission Periods" note):
-
-    - "crm": real, ongoing calculated payout math — a normal CRM upload
-      (drive/manual), or a period created purely to carry a Cordoba
-      chargeback holding entry (see cordoba_ingest.py). This is what
-      actually gets paid out.
-    - "history_import": backfilled reference/audit data from a prior account
-      manager's ledger — what was ACTUALLY paid before this portal existed.
-      Read-only in spirit: it exists to prevent double-paying a client the
-      calculated side later finds "eligible" again, and to give Cordoba
-      chargeback matching something to find, not to be a second live payout
-      for the month.
-
-    period_label used to be globally unique; it's now unique only combined
-    with source, so a "2026-05" crm period and a "2026-05" history_import
-    period can coexist without either blocking or overwriting the other.
-    Every lookup that finds "the" period for a label MUST also filter by the
-    source it actually means — see the callers in ingest.py, cordoba_ingest.py,
-    and history_ingest.py for why each one picks the source it does."""
     __tablename__ = "commission_period"
-    __table_args__ = (
-        db.UniqueConstraint("period_label", "source", name="uq_commission_period_label_source"),
-    )
 
     id = db.Column(db.Integer, primary_key=True)
-    period_label = db.Column(db.String(50), nullable=False, index=True)  # YYYY-MM
-    # server_default so a row inserted through any path that doesn't set this
-    # explicitly still gets a real value, not NULL (see ClientRecord.cordoba_paid's
-    # comment above for why that matters — the same NULL-vs-False footgun applies
-    # to any string column two code paths might insert without a default).
-    source = db.Column(db.String(20), nullable=False, default="crm", server_default=db.text("'crm'"))
+    period_label = db.Column(db.String(50), unique=True, nullable=False)  # YYYY-MM
     uploaded_at = db.Column(db.DateTime, default=lambda: datetime.now(timezone.utc))
     filename = db.Column(db.String(255))
     total_agents = db.Column(db.Integer, default=0)

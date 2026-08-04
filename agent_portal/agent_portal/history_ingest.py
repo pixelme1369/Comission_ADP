@@ -1,26 +1,10 @@
 """Backfills past commission history from a prior account manager's ledger
 (.xlsx or .csv, NOT a CRM export). Recreates real CommissionPeriod /
 AgentCommission / ClientRecord rows for those months — same shape the CRM
-flow produces, so this history is indistinguishable from a real upload for
-crm_id-based lookups (already_known_crm_id_sets(), Cordoba chargeback
-matching) — but tagged CommissionPeriod.source="history_import" so it's a
-SEPARATE dataset from calculated periods, not a competing one (owner policy,
-confirmed August 2026 — see CommissionPeriod's docstring in models.py).
-
-Calculated Commission Periods (source="crm") represent what this software
-calculated from a CRM export; Commission History (source="history_import")
-represents what was ACTUALLY paid before this portal existed, imported
-purely as reference/audit data — to stop the calculated side from ever
-double-paying a client history already shows was paid, and to give a later
-Cordoba chargeback or CRM-reflected drop something to claw back against. The
-two are allowed to share the same period_label with zero conflict: this
-import must never be blocked by, overwrite, or delete an existing calculated
-period for the same month, and a calculated upload for that month must never
-be blocked by an existing history period either (see ingest.py's own
-period-exists check). Re-importing the exact same month's HISTORY data twice
-is still guarded against below, same as every other upload flow in this app.
-
-Ported from app/routes.py's _save_commission_history_period and
+flow produces — so this history is indistinguishable from a real upload for
+Cordoba chargeback matching (cordoba_ingest.py looks up
+ClientRecord.is_cleared=True by crm_id, regardless of which upload flow
+created it). Ported from app/routes.py's _save_commission_history_period and
 upload_commission_history handler."""
 
 from agent_portal import db
@@ -36,10 +20,7 @@ def allowed_history_file(filename):
 
 
 def _save_commission_history_period(period_label, results, filename, already_cordoba_paid_ids):
-    period = CommissionPeriod(
-        period_label=period_label, filename=filename, total_agents=len(results),
-        source="history_import",
-    )
+    period = CommissionPeriod(period_label=period_label, filename=filename, total_agents=len(results))
     db.session.add(period)
     db.session.flush()
 
@@ -94,19 +75,12 @@ def import_commission_history_files(files, year):
 
         for period_data in parsed["periods"]:
             period_label = period_data["period_label"]
-            # Scoped to source="history_import" — an existing CALCULATED period
-            # for this same label must never block this import (owner policy,
-            # confirmed August 2026): the two datasets are allowed to overlap by
-            # month. Only re-importing the exact same month's HISTORY data twice
-            # is still guarded against here.
-            existing = CommissionPeriod.query.filter_by(
-                period_label=period_label, source="history_import",
-            ).first()
+            existing = CommissionPeriod.query.filter_by(period_label=period_label).first()
             if existing:
                 warnings.append(
-                    f"Commission history for {period_label} was already imported (uploaded "
-                    f"{existing.uploaded_at.strftime('%Y-%m-%d')}, from \"{existing.filename}\"). "
-                    "Delete that historical import first before re-importing history for that month."
+                    f"Period {period_label} already exists (uploaded "
+                    f"{existing.uploaded_at.strftime('%Y-%m-%d')}). Delete it first before "
+                    "re-importing history for that month."
                 )
                 periods_skipped += 1
                 continue
