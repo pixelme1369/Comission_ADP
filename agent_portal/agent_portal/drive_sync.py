@@ -90,11 +90,12 @@ def sync_from_drive():
 
     file_bytes = _download_csv_bytes(service, file_meta)
 
-    already_cleared, already_charged_back, already_low_credit = already_known_crm_id_sets()
+    already_cleared, already_charged_back, already_low_credit, already_history_paid = already_known_crm_id_sets()
     period_results = parse_crm_and_calculate(
         file_bytes, file_meta["name"], already_cleared, already_charged_back, already_low_credit,
+        already_history_paid,
         # agent_portal-specific policy flags — see commission_core/crm_parser.py's
-        # module docstring for the owner-confirmed reasoning behind both.
+        # module docstring for the owner-confirmed reasoning behind all three.
         persist_same_month_cancel=True,
         require_prior_payment_evidence=False,
     )

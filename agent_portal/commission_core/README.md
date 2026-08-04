@@ -37,14 +37,17 @@ index.py` already putting `agent_portal/` on `sys.path`.
 - `commission_history_parser.py` — reads a prior account manager's ledger to backfill pre-app
   history.
 - `crm_parser.py` — parses the full-history CRM export. This is the ONE file with real behavior
-  differences between the two apps, both owner-confirmed and both controlled by keyword-only flags
-  on `parse_crm_and_calculate()` — see the module docstring at the top of that file for the full
-  explanation of `persist_same_month_cancel` and `require_prior_payment_evidence`. Do not fork this
-  file to add a third app-specific behavior; add another explicit flag instead, and document why in
-  that same docstring with an owner sign-off reference.
+  differences between the two apps, all owner-confirmed and all controlled by parameters on
+  `parse_crm_and_calculate()` — see the module docstring at the top of that file for the full
+  explanation of `persist_same_month_cancel`, `require_prior_payment_evidence`, and
+  `already_history_paid_crm_ids`. Do not fork this file to add a fourth app-specific behavior; add
+  another explicit flag/parameter instead, and document why in that same docstring with an owner
+  sign-off reference.
 
 ## Tests
 
 `tests/test_commission_core_parity.py` (repo root) asserts both apps' actual call sites produce
-identical commission numbers from identical input, other than the two documented flag-driven
-divergences — see that file for what it does and doesn't cover.
+identical commission numbers from identical input, other than the documented divergences above —
+see that file for what it does and doesn't cover.
+`agent_portal/tests/test_commission_history_no_double_pay.py` covers `already_history_paid_crm_ids`
+specifically, since it's inherently database-driven rather than a pure parser-input scenario.
