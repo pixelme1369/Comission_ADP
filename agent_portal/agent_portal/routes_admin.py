@@ -88,9 +88,23 @@ def period_detail(period_id):
     period = CommissionPeriod.query.get_or_404(period_id)
     agents = AgentCommission.query.filter_by(period_id=period_id).order_by(AgentCommission.agent_name).all()
     units_to_next_tier_map = {a.id: units_to_next_tier(a.units_cleared, a.agent_name) for a in agents}
+    # "Clawback Files" — every client dropped without hitting the safe payment
+    # threshold, deducted from THIS period's payout, across every agent at
+    # once. clawback_period_id/period_id both point at the period the
+    # deduction actually landed in (crm_parser.py's "latest period in file"
+    # rule, NOT necessarily the client's own dropped month) — see CLAUDE.md's
+    # Clawback Rules. Previously this was only visible one agent at a time on
+    # their own detail page; this is the same underlying ClientRecord rows,
+    # just queried across the whole period for one audit view.
+    clawback_files = (
+        ClientRecord.query.filter_by(period_id=period_id, clawback_applied=True)
+        .order_by(ClientRecord.agent_name, ClientRecord.dropped_date).all()
+    )
+    clawback_files_total = round(sum(c.clawback_amount or 0.0 for c in clawback_files), 2)
     return render_template(
         "admin_period_detail.html", period=period, agents=agents,
         units_to_next_tier_map=units_to_next_tier_map,
+        clawback_files=clawback_files, clawback_files_total=clawback_files_total,
     )
 
 

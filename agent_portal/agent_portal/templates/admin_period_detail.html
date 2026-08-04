@@ -72,4 +72,45 @@
     </tbody>
   </table>
 </div>
+
+{% if clawback_files %}
+<h2 style="margin-top:1.5rem;">Clawback Files ({{ clawback_files|length }}) — -${{ "{:,.2f}".format(clawback_files_total) }} total</h2>
+<p class="muted" style="margin-bottom:0.75rem;">Every client across all agents this period who dropped without hitting the safe payment threshold — commission was already paid on them, so it's deducted here. See each agent's own page for the recalculated tier/commission math behind each amount.</p>
+<div class="table-wrapper">
+  <table class="data-table sortable">
+    <thead>
+      <tr>
+        <th data-col="0">Agent</th>
+        <th data-col="1">ID</th>
+        <th data-col="2">Client Name</th>
+        <th data-col="3">Enrolled Debt</th>
+        <th data-col="4">1st Payment Cleared</th>
+        <th data-col="5">Dropped Date</th>
+        <th data-col="6">Payments Made</th>
+        <th data-col="7">Pay Freq.</th>
+        <th data-col="8">Clawback Amount</th>
+      </tr>
+    </thead>
+    <tbody>
+      {% for c in clawback_files %}
+      <tr class="row-red">
+        <td>
+          <a href="{{ url_for('admin.agent_detail', period_id=period.id, agent_commission_id=c.agent_commission_id) }}" class="agent-link">
+            {{ c.agent_name }}
+          </a>
+        </td>
+        <td class="muted">{{ c.crm_id or '—' }}</td>
+        <td>{{ c.client_name }}</td>
+        <td>${{ "{:,.2f}".format(c.enrolled_debt) }}</td>
+        <td>{{ c.first_payment_cleared_date or '—' }}</td>
+        <td>{{ c.dropped_date or '—' }}</td>
+        <td>{{ c.payments_made }}</td>
+        <td>{{ c.pay_freq or '—' }}</td>
+        <td><strong style="color:#991b1b;">-${{ "{:,.2f}".format(c.clawback_amount) }}</strong></td>
+      </tr>
+      {% endfor %}
+    </tbody>
+  </table>
+</div>
+{% endif %}
 {% endblock %}
