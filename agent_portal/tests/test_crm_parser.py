@@ -260,45 +260,77 @@ class TestClawback:
         assert may["clawback_amount"] == pytest.approx(100.0)   # fallback: 10,000 x 1%
         assert may["net_commission"] == pytest.approx(100.0)
 
-    def test_first_upload_without_db_history_never_claws_back(self):
-        # Fresh DB: the app never recorded paying this client, so no clawback.
+    def test_clawback_applies_even_on_the_very_first_upload(self):
+        """OWNER POLICY (confirmed August 2026, supersedes the prior "no proof
+        of payment = no clawback" rule tested here before): a real 1st
+        Payment Cleared Date on the row IS proof of payment — the agent was
+        paid for that client in the real world regardless of whether this
+        portal's own upload history has a prior record of it. A clawback now
+        applies on the very first time a client is ever seen, same as any
+        other upload. (The safe-payment-threshold, same-month-cancel, and
+        low-credit rules are unaffected — only the "we've never recorded
+        paying them before" guard was removed.)"""
         data = crm_csv([
             client("A1", cleared="06/10/2026"),
             client("A2", cleared="06/12/2026", dropped="08/03/2026", payments="1"),
         ])
         periods = by_period(parse_crm_and_calculate(data, "f.csv"))
+        # Latest cleared month in this file is June, so — per the separate,
+        # unrelated "latest period in file" policy — that's still where the
+        # deduction lands, not August.
         assert "2026-08" not in periods
+        june = periods["2026-06"]["results"][0]
+        assert june["clawback_amount"] == pytest.approx(100.0)  # 10,000 x 1%
+        assert june["net_commission"] == pytest.approx(0.0)     # 100 gross - 100 clawback
 
-    def test_reclassified_client_with_no_other_activity_still_appears_somewhere(self):
-        """BUGFIX regression: a client with cleared+dropped dates in different
-        months, below the safe threshold, and NO prior upload/backfill to
-        prove they were ever paid gets reclassified from "clawback" to
-        "same_month_cancel" (see test_first_upload_without_db_history_never_
-        claws_back above) — correct, no clawback. But if that's the ONLY
-        client their agent has in that cleared month, the whole (agent,
-        period) used to vanish from the output entirely — not shown on any
-        page, for any period — because the reclassified client was only ever
-        bucketed under the internal "clawback candidate" list, which never
-        earned a result entry of its own. This is the exact real-world shape
-        reported: cleared 04/10, dropped a later month, 1 payment, no Pay
-        Freq. on the row (falls back to the 3-payment threshold), first-ever
-        upload for this client. It must show up on the April period, marked
-        same_month_cancel, contributing zero units and zero dollars."""
+    def test_solo_first_time_clawback_client_still_shows_up(self):
+        """The exact real-world row reported: cleared 04/10, dropped a later
+        month (07/23), 1 payment, no Pay Freq. on the row (falls back to the
+        3-payment threshold), and this is the very first time the portal has
+        ever seen this client — previously reclassified away with no
+        deduction (see test_clawback_applies_even_on_the_very_first_upload
+        above for that rule's removal); now a real clawback. Also exercises
+        the Step 4 "no cleared units in the target period" holding-entry path
+        end to end, since this client is Josh's ONLY activity in the file."""
         data = crm_csv([
             client("SOLO1", cleared="04/10/2026", dropped="07/23/2026",
-                   payments="1", freq="", debt="16866", name="Shelleen Roseborough"),
+                   payments="1", freq="", debt="16866", name="Shelleen Roseborough",
+                   rep="Josh Hallwork"),
+        ])
+        periods = by_period(parse_crm_and_calculate(data, "f.csv"))
+
+        assert "2026-04" in periods
+        (april,) = periods["2026-04"]["results"]
+        assert april["units_cleared"] == 0  # a clawback never counts as a unit
+        assert april["clawback_amount"] == pytest.approx(168.66)  # 16,866 x 1% fallback rate
+        assert april["net_commission"] == pytest.approx(0.0)
+
+        (row,) = [c for c in periods["2026-04"]["client_rows"] if c["crm_id"] == "SOLO1"]
+        assert row["unit_status"] == "clawback"
+        assert row["client_name"] == "Shelleen Roseborough"
+        assert row["clawback_amount"] == pytest.approx(168.66)
+
+    def test_solo_low_credit_reclassified_client_still_shows_up(self):
+        """The one reclassification path that's still real (unaffected by the
+        payment-proof policy change above): a Credit Score <= 500 client
+        earns zero commission, so there's nothing to claw back even though
+        the row otherwise looks like a clawback. Regression coverage for the
+        Step 3.5 visibility fix's ONE remaining trigger — if this client is
+        their agent's only activity that month, the record must still show
+        up (as same_month_cancel, $0), not vanish."""
+        data = crm_csv([
+            client("SOLO2", cleared="04/10/2026", dropped="07/23/2026",
+                   payments="1", debt="16866", credit_score="450"),
         ])
         periods = by_period(parse_crm_and_calculate(data, "f.csv"))
 
         assert "2026-04" in periods
         (april,) = periods["2026-04"]["results"]
         assert april["units_cleared"] == 0
-        assert april["gross_commission"] == pytest.approx(0.0)
-        assert april["net_commission"] == pytest.approx(0.0)
+        assert april["clawback_amount"] == pytest.approx(0.0)
 
-        (row,) = [c for c in periods["2026-04"]["client_rows"] if c["crm_id"] == "SOLO1"]
+        (row,) = [c for c in periods["2026-04"]["client_rows"] if c["crm_id"] == "SOLO2"]
         assert row["unit_status"] == "same_month_cancel"
-        assert row["client_name"] == "Shelleen Roseborough"
 
     def test_reclassification_visibility_fix_does_not_resurrect_a_genuine_clawback(self):
         """The visibility fix above must not undo the "latest period in file"
@@ -318,20 +350,42 @@ class TestClawback:
         may = periods["2026-05"]["results"][0]
         assert may["clawback_amount"] == pytest.approx(100.0)
 
-    def test_multiple_reclassified_clients_sharing_a_period_get_one_entry(self):
-        """Two clients, same agent, same cleared month, both reclassified
-        (no proof of payment) — must produce exactly one result entry for
-        that (agent, period), containing both, not a crash or duplicates."""
+    def test_multiple_solo_clawback_clients_sharing_a_period_get_one_entry(self):
+        """Two clients, same agent, same cleared month, no other activity that
+        month, both genuine clawbacks (Step 4's target-period holding entry) —
+        must produce exactly one result entry for that (agent, period),
+        containing both, not a crash or duplicate entries."""
         data = crm_csv([
-            client("X1", cleared="04/05/2026", dropped="07/10/2026", payments="1"),
-            client("X2", cleared="04/06/2026", dropped="07/11/2026", payments="1"),
+            client("X1", cleared="04/05/2026", dropped="07/10/2026", payments="1", debt="10000"),
+            client("X2", cleared="04/06/2026", dropped="07/11/2026", payments="1", debt="10000"),
         ])
         periods = by_period(parse_crm_and_calculate(data, "f.csv"))
         assert "2026-04" in periods
         assert len(periods["2026-04"]["results"]) == 1
         assert periods["2026-04"]["results"][0]["units_cleared"] == 0
+        assert periods["2026-04"]["results"][0]["clawback_amount"] == pytest.approx(200.0)  # 2 x 10,000 x 1%
         crm_ids = {c["crm_id"] for c in periods["2026-04"]["client_rows"]}
         assert crm_ids == {"X1", "X2"}
+
+    def test_multiple_solo_low_credit_clients_sharing_a_period_get_one_entry(self):
+        """Same shape as above, but for the one reclassification path that's
+        still real: two low-credit clients, same agent, same month, no other
+        activity — the Step 3.5 visibility-fix holding entry must handle
+        more than one reclassified client sharing a key without duplicating
+        or dropping either."""
+        data = crm_csv([
+            client("Y1", cleared="04/05/2026", dropped="07/10/2026", payments="1", credit_score="400"),
+            client("Y2", cleared="04/06/2026", dropped="07/11/2026", payments="1", credit_score="450"),
+        ])
+        periods = by_period(parse_crm_and_calculate(data, "f.csv"))
+        assert "2026-04" in periods
+        assert len(periods["2026-04"]["results"]) == 1
+        assert periods["2026-04"]["results"][0]["units_cleared"] == 0
+        assert periods["2026-04"]["results"][0]["clawback_amount"] == pytest.approx(0.0)
+        crm_ids = {c["crm_id"] for c in periods["2026-04"]["client_rows"]}
+        assert crm_ids == {"Y1", "Y2"}
+        statuses = {c["unit_status"] for c in periods["2026-04"]["client_rows"]}
+        assert statuses == {"same_month_cancel"}
 
     def test_already_charged_back_via_cordoba_is_skipped(self):
         # The other half of the never-claw-back-twice rule: Cordoba got there first.
@@ -369,20 +423,40 @@ class TestCancellationRatePolicy:
 
 
 class TestLateActivation:
-    def test_late_activation_credits_latest_period(self):
+    """Late activation (reassigning a client's commission credit forward to
+    the latest period in the file when their crm_id had never been seen
+    before) was REMOVED — OWNER POLICY, confirmed August 2026. A client with
+    a real 1st Payment Cleared Date is now always assumed to have been
+    genuinely paid for their own real cleared month, whether or not this
+    portal's own upload history happens to already have a record of them.
+    This exact bug surfaced in production: a client cleared ~9 months
+    earlier, with a normal ongoing payment history, got swept into the
+    current month's commission purely because no prior upload/backfill for
+    that agent existed yet in this portal — not because they were ever
+    actually held pending."""
+
+    def test_client_always_credited_in_their_own_cleared_month_with_partial_history(self):
+        """The specific loophole that used to trigger late activation even
+        with the "fresh DB" guard in place: SOME history exists in the DB
+        (B1 is known), but not for A1 specifically. A1 must still be
+        credited in May, their own real cleared month — never reassigned
+        into June just because this crm_id is new to the system."""
         data = crm_csv([
-            client("A1", cleared="05/10/2026"),   # never in DB -> late activation
-            client("B1", cleared="06/10/2026"),   # known from prior upload
+            client("A1", cleared="05/10/2026"),
+            client("B1", cleared="06/10/2026"),
         ])
         periods = by_period(parse_crm_and_calculate(
             data, "f.csv", already_cleared_crm_ids={"B1"}))
-        assert "2026-05" not in periods
-        (june,) = periods["2026-06"]["results"]
-        assert june["units_cleared"] == 2
+        assert set(periods) == {"2026-05", "2026-06"}
+        assert periods["2026-05"]["results"][0]["units_cleared"] == 1
+        assert periods["2026-06"]["results"][0]["units_cleared"] == 1
+        (row,) = [c for c in periods["2026-05"]["client_rows"] if c["crm_id"] == "A1"]
+        assert not row.get("is_late_activation")
 
-    def test_late_activation_skipped_on_fresh_db(self):
-        """The empty-DB guard: a first-ever multi-month upload must keep each
-        client in their own cleared month (this regressed once — see CLAUDE.md)."""
+    def test_client_always_credited_in_their_own_cleared_month_on_fresh_db(self):
+        """Same invariant with NO history at all (first-ever upload) — kept
+        as its own test since this exact case broke once before by a
+        different mechanism (see CLAUDE.md's note on the old fresh-DB guard)."""
         data = crm_csv([
             client("A1", cleared="05/10/2026"),
             client("B1", cleared="06/10/2026"),
