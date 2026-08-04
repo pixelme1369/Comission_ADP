@@ -309,47 +309,40 @@ def parse_crm_and_calculate(file_bytes: bytes, filename: str, already_cleared_cr
         })
 
     # ---------------------------------------------------------------
-    # Late activation: if a client is currently cleared (active) but
-    # their crm_id was never saved as is_cleared in the DB, and their
-    # cleared_period is earlier than the latest period in this file,
-    # they were pending before and just became active. Credit their
-    # commission in the latest period instead of their cleared month.
+    # Late activation — REMOVED (OWNER POLICY, confirmed August 2026).
     #
-    # Only meaningful when already_cleared_crm_ids reflects real prior
-    # history. On a brand-new database (first-ever upload, or right after
-    # a schema-change wipe) that set is empty, and this heuristic can't
-    # distinguish "genuinely cleared last month" from "was pending, just
-    # went active" — it would misclassify EVERY older client in a
-    # multi-month full-history file as a late activation and collapse
-    # their commission into the most recent month. Skip it entirely in
-    # that case; every client is simply credited in their own cleared month.
+    # This used to reassign a client's commission credit forward to the
+    # latest period in the file whenever their crm_id had never been seen
+    # in this database before — on the theory that "no prior record" meant
+    # "was held Pending Affiliate Cancellation the whole time, only just
+    # went active, so credit them now instead of their real cleared month."
+    #
+    # Owner-confirmed policy is the opposite: a client with a real 1st
+    # Payment Cleared Date was ALREADY paid for that month in the real
+    # world — regardless of whether THIS portal's database happens to have
+    # a prior record of it (a client's crm_id being new to this system is
+    # just this system's own upload history being incomplete, not evidence
+    # the client was never actually active). Every client is now always
+    # credited in their own real cleared_period, full stop — no reassignment,
+    # no "Late" badge. This exact bug surfaced in production: a client
+    # cleared ~9 months earlier (with a normal ongoing payment history) got
+    # swept into the current month's commission just because no prior
+    # upload/backfill for that agent existed yet in this portal.
+    #
+    # (The is_late_activation / original_cleared_period columns on
+    # ClientRecord are left in place for old rows already saved with them —
+    # this only stops the parser from setting them going forward.)
     # ---------------------------------------------------------------
     if already_cleared_crm_ids is None:
         already_cleared_crm_ids = set()
     if already_charged_back_crm_ids is None:
         already_charged_back_crm_ids = set()
 
-    # The latest cleared-month found anywhere in this file — used both for late
-    # activation (below) and, per owner policy (July 2026, see Step 3), as the
-    # period a "commission already paid, needs clawback" deduction lands in.
+    # The latest cleared-month found anywhere in this file — per owner policy
+    # (July 2026, see Step 3), the period a "commission already paid, needs
+    # clawback" deduction lands in.
     all_cleared_periods = [c["cleared_period"] for c in all_clients if c["cleared_period"]]
     latest_period_in_file = max(all_cleared_periods) if all_cleared_periods else None
-
-    if already_cleared_crm_ids:
-        latest_period = latest_period_in_file
-
-        for c in all_clients:
-            if (
-                c["unit_status"] == "cleared"
-                and c["crm_id"]
-                and c["crm_id"] not in already_cleared_crm_ids
-                and c["cleared_period"]
-                and latest_period
-                and c["cleared_period"] < latest_period
-            ):
-                c["original_cleared_period"] = c["cleared_period"]
-                c["cleared_period"] = latest_period
-                c["is_late_activation"] = True
 
     # ---------------------------------------------------------------
     # Step 1: Build per-agent per-period cleared unit counts
@@ -528,22 +521,25 @@ def parse_crm_and_calculate(file_bytes: bytes, filename: str, already_cleared_cr
             # double-charge the agent when the CRM export later reflects the drop.
             continue
 
-        # Guard: only clawback if commission was actually paid on this client.
-        # It was paid if the client was in the cleared bucket this file (commission
-        # calculated now) OR was saved as is_cleared=True in a prior DB upload.
-        was_cleared_in_file = any(
-            x.get("crm_id") == crm_id
-            for x in cleared_buckets.get(orig_key, [])
-        )
-        was_paid_in_db = bool(crm_id and crm_id in already_cleared_crm_ids)
-
-        if not was_cleared_in_file and not was_paid_in_db:
-            # Commission was never paid (e.g. client was pending then cancelled).
-            # Reclassify as a non-paying cancel — no clawback applies.
-            c["unit_status"] = "same_month_cancel"
-            c["is_cancelled"] = True
-            reclassified_clients.append(c)
-            continue
+        # Proof-of-payment guard — REMOVED (OWNER POLICY, confirmed August 2026).
+        #
+        # This used to reclassify a "clawback" row to a non-paying
+        # same_month_cancel (no deduction) unless the client also appeared in
+        # THIS file's cleared bucket or had a prior DB record of
+        # is_cleared=True — on the theory that without one of those, we
+        # couldn't prove the agent was ever actually paid.
+        #
+        # Owner-confirmed policy is the opposite: a real 1st Payment Cleared
+        # Date on the row IS the proof — the agent was paid for that month
+        # in the real world regardless of whether this portal's own upload
+        # history happens to have a record of it yet. Every row that reaches
+        # this point (cleared + dropped in different months, below the safe
+        # payment threshold, dropped on/after the payout date) is now always
+        # treated as a real clawback — including the very first time this
+        # portal has ever seen the client. Only two things still block a
+        # deduction here: already clawed back via Cordoba (above), and
+        # low-credit clients, who were never paid anything to claw back
+        # regardless of payment proof (below).
 
         # Guard: a Credit Score <= 500 client earns zero commission when they clear
         # (see Step 2) — there's nothing to claw back if they later drop, even though
