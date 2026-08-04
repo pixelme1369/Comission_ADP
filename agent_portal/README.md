@@ -172,7 +172,14 @@ touching any existing rows). If a future change adds another column, write a sim
 TABLE ... ADD COLUMN IF NOT EXISTS ...` script rather than assuming a redeploy will pick it up.
 Column *constraint* changes need the same treatment — `migrate_nullable_password.py` drops the
 `NOT NULL` constraint `agent.password_hash` was originally created with, needed for Google-only
-agent accounts (see "Sign in with Google" above).
+agent accounts (see "Sign in with Google" above). Column *type/length* changes are no different —
+`migrate_widen_client_record_columns.py` widens several `client_record` VARCHAR columns that were
+originally sized off one sample CRM row; a real export with a longer value in one of them (an ID,
+a verbose Status/Stage string, etc.) failed the whole import with a raw Postgres "value too long"
+error. All three of these one-off migrations also have a matching **"Fix Now" button on the admin
+dashboard** (shown only when the live database's schema is actually out of date, via a runtime
+`sa_inspect` check) — running the script by hand against `DATABASE_URL` is only needed if you'd
+rather not use the browser.
 
 ## Local development
 

@@ -32,6 +32,23 @@
 </div>
 {% endif %}
 
+{% if column_widen_migration_needed %}
+<div class="card" style="border-left: 4px solid #f59e0b; margin-bottom:1.25rem;">
+  <h2 style="margin-top:0;">⚠ CRM Import Fix Needed</h2>
+  <p class="form-hint" style="margin-bottom:1rem;">
+    Some client fields (ID, Status, Stage, dates, Pay Freq.) were sized off a single sample row.
+    A real CRM export with a longer value in one of them fails the whole import with an
+    "Internal Server Error." This one-time fix widens those columns so longer values are accepted.
+    It's safe to click even if you're not sure — running it twice does nothing the second time.
+  </p>
+  <form method="post" action="{{ url_for('admin.run_widen_client_record_columns_migration') }}" class="js-heavy-action"
+        data-loading-text="Applying migration…"
+        data-loading-hint="Widening client record columns to accept longer CRM values.">
+    <button type="submit" class="btn btn-primary">Fix Now</button>
+  </form>
+</div>
+{% endif %}
+
 <div class="upload-grid">
   {% if drive_configured %}
   <div class="card upload-card">
