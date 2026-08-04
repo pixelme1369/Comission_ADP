@@ -15,6 +15,23 @@
   {% endif %}
 </div>
 
+{% if password_migration_needed %}
+<div class="card" style="border-left: 4px solid #f59e0b; margin-bottom:1.25rem;">
+  <h2 style="margin-top:0;">⚠ Google Sign-In Setup Needed</h2>
+  <p class="form-hint" style="margin-bottom:1rem;">
+    This database was created before "Sign in with Google" shipped, so <code>agent.password_hash</code>
+    still requires a value. Creating an agent account with the password field left blank (Google
+    sign-in only) will fail until this one-time fix runs. It's safe to click even if you're not sure —
+    running it twice does nothing the second time.
+  </p>
+  <form method="post" action="{{ url_for('admin.run_nullable_password_migration') }}" class="js-heavy-action"
+        data-loading-text="Applying migration…"
+        data-loading-hint="Allowing password-less (Google sign-in only) agent accounts.">
+    <button type="submit" class="btn btn-primary">Fix Now</button>
+  </form>
+</div>
+{% endif %}
+
 <div class="upload-grid">
   {% if drive_configured %}
   <div class="card upload-card">
