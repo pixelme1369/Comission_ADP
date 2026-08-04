@@ -41,6 +41,36 @@ parse_crm_and_calculate() rather than forked copies of this file:
    policy per owner sign-off during the commission_core merge (August 2026)
    rather than silently unifying the money math.
 
+3. already_history_paid_crm_ids (default None/empty set; app/ never passes
+   this — see below for why it's structurally impossible for app/ to need
+   it — agent_portal passes every crm_id already recorded as paid via a
+   separate Commission History import for that exact client): owner policy,
+   confirmed August 2026 — "This file has already been paid. Don't
+   calculate it again. Only watch it going forward to see if it drops and
+   needs a clawback." A full CRM export re-includes every client ever
+   cleared, including ones from before agent_portal existed that Commission
+   History already backfilled. Without this, the FIRST live CRM upload
+   after a History backfill would re-credit those same clients a second
+   time as a brand-new "cleared" (or "safe_cancel") unit in a fresh
+   calculated period for the same month they were already paid for —  a
+   real double payment, not a hypothetical. A row whose crm_id is in this
+   set is skipped entirely at classification time (Step 1) when it would
+   otherwise count as "cleared" or "safe_cancel" — it contributes no unit,
+   no debt, no commission dollars to any period, exactly as if it weren't
+   in the file at all. This does NOT touch clawback detection: a row is
+   only ever skipped here while it's still active (no Dropped Date); the
+   moment a future upload shows that same crm_id with cleared+dropped dates
+   together, it classifies as "clawback" (or same_month_cancel/safe_cancel)
+   from the row's own dates same as any other client, completely
+   independent of this set — "watch it going forward" already works with
+   zero additional logic, since clawback classification never consulted
+   this set to begin with. Structurally impossible for app/ to need this:
+   app/ never relaxed its own "period already exists" guard (see
+   agent_portal/README.md and CLAUDE.md), so app/ can never have a
+   Commission History period and a calculated period coexist for the same
+   month in the first place — there is nothing for this set to protect
+   against there. Passing None (app/'s call sites) is a complete no-op.
+
 Both apps get the Step 3.5 visibility-fix pass (see below) UNCONDITIONALLY,
 regardless of either flag — it has zero effect on any dollar amount, and
 fixes a latent "client silently vanishes from every page" display bug that
@@ -193,15 +223,17 @@ def _zero_unit_holding_result(agent_name: str) -> dict:
 def parse_crm_and_calculate(file_bytes: bytes, filename: str, already_cleared_crm_ids: set = None,
                              already_charged_back_crm_ids: set = None,
                              already_low_credit_crm_ids: set = None,
+                             already_history_paid_crm_ids: set = None,
                              *,
                              persist_same_month_cancel: bool = False,
                              require_prior_payment_evidence: bool = True) -> list:
     """
     Parse a full-history CRM export and return one dict per commission period found.
 
-    persist_same_month_cancel and require_prior_payment_evidence are the two
-    owner-confirmed, app-specific policy flags described in the module
-    docstring above — see there before changing either default.
+    persist_same_month_cancel, require_prior_payment_evidence, and
+    already_history_paid_crm_ids are the three owner-confirmed, app-specific
+    policy divergences described in the module docstring above — see there
+    before changing any of them.
 
     Returns list of:
     {
@@ -215,6 +247,8 @@ def parse_crm_and_calculate(file_bytes: bytes, filename: str, already_cleared_cr
     errors = []
     if already_low_credit_crm_ids is None:
         already_low_credit_crm_ids = set()
+    if already_history_paid_crm_ids is None:
+        already_history_paid_crm_ids = set()
 
     try:
         text = file_bytes.decode("utf-8-sig")
@@ -423,10 +457,20 @@ def parse_crm_and_calculate(file_bytes: bytes, filename: str, already_cleared_cr
     # and Step 3.5. Never merged into any bucket that feeds units/debt/rate/
     # commission, regardless of the flag.
     same_month_cancel_buckets = defaultdict(list)  # (agent, period) → same-month-cancel clients
+    # Rows skipped below because already_history_paid_crm_ids says this exact
+    # client was already paid via a separate Commission History import — kept
+    # only to power a single summary warning, not a per-client one; see the
+    # module docstring's already_history_paid_crm_ids section for why this
+    # exclusion exists and why it's safe.
+    already_paid_skipped = []
 
     for c in all_clients:
         key = (c["agent_name"], c["cleared_period"])
+        already_history_paid = bool(c["crm_id"]) and c["crm_id"] in already_history_paid_crm_ids
         if c["unit_status"] == "cleared":
+            if already_history_paid:
+                already_paid_skipped.append(c)
+                continue
             cleared_buckets[key].append(c)
         elif c["unit_status"] == "same_month_cancel":
             same_month_cancel_buckets[key].append(c)
@@ -437,6 +481,9 @@ def parse_crm_and_calculate(file_bytes: bytes, filename: str, already_cleared_cr
             # $0 commission" treatment Credit Score gets (see Step 2). Kept in its own
             # bucket rather than merged into cleared_buckets so the cancellation-rate
             # denominator below still excludes them, per the locked cancel-rate policy.
+            if already_history_paid:
+                already_paid_skipped.append(c)
+                continue
             safe_cancel_buckets[key].append(c)
         elif c["unit_status"] == "clawback":
             # Only clawback clients count toward cancel rate
@@ -450,6 +497,17 @@ def parse_crm_and_calculate(file_bytes: bytes, filename: str, already_cleared_cr
             cancel_buckets[key].append(c)
         elif c["unit_status"] == "pending":
             pending_buckets[key].append(c)
+
+    if already_paid_skipped:
+        names = ", ".join(
+            f"{c.get('client_name') or c.get('crm_id')} ({c['agent_name']}, {c['cleared_period']})"
+            for c in already_paid_skipped[:10]
+        )
+        more = f" and {len(already_paid_skipped) - 10} more" if len(already_paid_skipped) > 10 else ""
+        row_errors.append(
+            f"{len(already_paid_skipped)} client(s) already paid via a Commission History import — "
+            f"not recalculated (still watched for a future clawback if they drop): {names}{more}"
+        )
 
     # ---------------------------------------------------------------
     # Step 2: Calculate base commission per agent per cleared period
