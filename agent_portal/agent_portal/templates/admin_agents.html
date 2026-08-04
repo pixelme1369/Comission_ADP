@@ -20,8 +20,9 @@
       <input type="email" id="email" name="email" required>
     </div>
     <div class="form-group">
-      <label for="password">Temporary Password</label>
-      <input type="password" id="password" name="password" required>
+      <label for="password">Temporary Password (optional)</label>
+      <input type="password" id="password" name="password" minlength="6" placeholder="Leave blank for Google sign-in only">
+      <p class="form-hint" style="margin:0.4rem 0 0;">Leave this blank if the agent will sign in with their company Google account — their email being listed here is what grants them access. Set a password now (or later, below) to also allow email/password login.</p>
     </div>
     <div class="form-group">
       <label for="agent_name">CRM "Sales Rep" Name (optional, can add more later)</label>
@@ -47,6 +48,7 @@
       <div class="user-identity">
         <span class="user-name">{{ a.display_name }}</span>
         {% if a.is_admin %}<span class="badge badge-purple">Admin</span>{% endif %}
+        {% if a.password_hash %}<span class="badge badge-gray">Password + Google</span>{% else %}<span class="badge badge-green">Google sign-in only</span>{% endif %}
         {% if a.id != current_user.id %}
         <form method="post" action="{{ url_for('admin.delete_agent', agent_id=a.id) }}" style="margin-left:auto;" class="js-heavy-action"
               data-loading-text="Removing user…"

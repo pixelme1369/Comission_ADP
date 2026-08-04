@@ -534,6 +534,22 @@ body.login-page .flash-container { padding: 1.25rem 1.5rem 0; }
 .login-form-card > p.muted { margin-bottom: 1.5rem; font-size: 0.88rem; }
 .login-footnote { margin-top: 1.25rem; font-size: 0.8rem; color: #6b7280; text-align: center; }
 
+.google-signin-wrap { display: flex; justify-content: center; margin-bottom: 1.25rem; }
+.login-divider {
+  display: flex;
+  align-items: center;
+  text-align: center;
+  color: #9ca3af;
+  font-size: 0.78rem;
+  margin-bottom: 1.25rem;
+}
+.login-divider::before, .login-divider::after {
+  content: "";
+  flex: 1;
+  border-bottom: 1px solid #e5e7eb;
+}
+.login-divider span { padding: 0 0.75rem; }
+
 @media (max-width: 860px) {
   .login-shell { grid-template-columns: 1fr; }
   .login-visual { display: none; }

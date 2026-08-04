@@ -1,7 +1,9 @@
 from functools import wraps
 
-from flask import Blueprint, render_template, redirect, url_for, request, flash
+from flask import Blueprint, current_app, render_template, redirect, url_for, request, flash
 from flask_login import login_user, logout_user, login_required, current_user
+from google.auth.transport import requests as google_auth_requests
+from google.oauth2 import id_token as google_id_token
 
 from agent_portal.models import Agent
 
@@ -32,7 +34,42 @@ def login():
             return redirect(url_for("admin.dashboard" if agent.is_admin else "agent.dashboard"))
         flash("Invalid email or password.", "error")
 
-    return render_template("login.html")
+    return render_template("login.html", google_client_id=current_app.config.get("GOOGLE_CLIENT_ID"))
+
+
+@bp.route("/login/google", methods=["POST"])
+def google_login():
+    """Target of the Google Identity Services button's `data-login_uri` on the
+    login page — Google POSTs a signed ID-token JWT here as `credential` after
+    the user picks their Google account, no redirect round-trip or client
+    secret involved. We verify the token came from Google and was issued for
+    OUR client ID, then look the email up in our own Agent table — the admin
+    adding an agent's email in Manage Agents IS the access grant. An
+    unrecognized (but genuinely Google-verified) email is simply refused."""
+    client_id = current_app.config.get("GOOGLE_CLIENT_ID")
+    token = request.form.get("credential")
+    if not client_id or not token:
+        flash("Google sign-in is not configured.", "error")
+        return redirect(url_for("auth.login"))
+
+    try:
+        claims = google_id_token.verify_oauth2_token(token, google_auth_requests.Request(), client_id)
+    except ValueError:
+        flash("Google sign-in failed — your session could not be verified. Please try again.", "error")
+        return redirect(url_for("auth.login"))
+
+    if not claims.get("email_verified", False):
+        flash("Your Google account's email address is not verified.", "error")
+        return redirect(url_for("auth.login"))
+
+    email = (claims.get("email") or "").strip().lower()
+    agent = Agent.query.filter_by(email=email).first()
+    if not agent:
+        flash(f"No portal account found for {email}. Ask your admin to add you in Manage Agents.", "error")
+        return redirect(url_for("auth.login"))
+
+    login_user(agent)
+    return redirect(url_for("admin.dashboard" if agent.is_admin else "agent.dashboard"))
 
 
 @bp.route("/logout")

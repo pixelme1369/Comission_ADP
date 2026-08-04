@@ -23,6 +23,27 @@
     <div class="login-form-card">
       <h1>Welcome back</h1>
       <p class="muted">Log in to see your commission history.</p>
+
+      {% if google_client_id %}
+      <script src="https://accounts.google.com/gsi/client" async defer></script>
+      <div id="g_id_onload"
+           data-client_id="{{ google_client_id }}"
+           data-login_uri="{{ url_for('auth.google_login', _external=True) }}"
+           data-auto_prompt="false">
+      </div>
+      <div class="google-signin-wrap">
+        <div class="g_id_signin"
+             data-type="standard"
+             data-shape="pill"
+             data-theme="outline"
+             data-text="continue_with"
+             data-size="large"
+             data-logo_alignment="left">
+        </div>
+      </div>
+      <div class="login-divider"><span>or continue with email</span></div>
+      {% endif %}
+
       <form method="post" class="login-form">
         <div class="form-group">
           <label for="email">Email</label>

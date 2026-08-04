@@ -96,12 +96,44 @@ step already used with the internal app today) and upload it there. No Google Cl
 service account, no automation — just a daily click. Everything else in the portal (login,
 per-agent scoping, dashboards) works exactly the same either way.
 
-### 3. Deploy to Vercel
+### 3. "Sign in with Google" (optional, lets agents use their company Google account)
+
+The login page shows a **Sign in with Google** button whenever `GOOGLE_OAUTH_CLIENT_ID` is set —
+it's simply hidden otherwise, so this is fully optional and every step below can be skipped if
+email/password login is enough. This uses Google Identity Services' ID-token button, so unlike
+"Option A" Drive access above, **no service account, no client secret, and no Google Cloud billing
+project state is needed** — only a public OAuth Client ID.
+
+1. Go to [console.cloud.google.com](https://console.cloud.google.com) (same or a different project
+   from the Drive one — doesn't matter) → **APIs & Services → Credentials → Create Credentials →
+   OAuth client ID**.
+2. If prompted, configure the **OAuth consent screen** first (External or Internal, whichever your
+   Google Workspace setup requires) — app name and support email are enough, no scopes needed
+   beyond the default "email" and "profile."
+3. Application type: **Web application**. Under **Authorized JavaScript origins**, add every
+   origin the portal is served from, e.g. `https://your-app.vercel.app` and, for local dev,
+   `http://127.0.0.1:5000`. No **Authorized redirect URIs** are needed — this flow doesn't redirect.
+4. Copy the **Client ID** (looks like `123456789-abc123.apps.googleusercontent.com`) — this becomes
+   the `GOOGLE_OAUTH_CLIENT_ID` env var. The **Client secret** Google also generates is not used
+   anywhere and does not need to be copied.
+5. In `/admin/agents`, create (or edit) an agent and leave the password field blank — that agent
+   can now only sign in via the Google button, using the exact email address entered there.
+   Agents that already have a password keep working with either method. There's no domain
+   allow-list — an agent's email being listed in `/admin/agents` at all is what grants access, so
+   anyone the admin hasn't added is refused even with a legitimate, verified Google account.
+6. **Existing deployments only:** the `agent.password_hash` column was originally `NOT NULL`.
+   `db.create_all()` never alters an existing table's constraints, so run
+   `python migrate_nullable_password.py` once against `DATABASE_URL` (see the script for details)
+   — otherwise saving a new password-less agent will fail with a database error. A brand new
+   database created after this change doesn't need this step.
+
+### 4. Deploy to Vercel
 
 1. Import this repo into a new Vercel project, set the **Root Directory** to `agent_portal/`.
 2. Set environment variables in the Vercel project settings:
    - `DATABASE_URL` — from step 1
    - `SECRET_KEY` — any long random string (Flask session signing)
+   - `GOOGLE_OAUTH_CLIENT_ID` — only if you set up "Sign in with Google" above
    - Nothing Drive-related is needed for the current (Option B) setup — see "Google Drive
      access" above if that ever changes.
 3. Deploy. `api/index.py` creates any missing tables on cold start (no migrations, same
@@ -110,7 +142,7 @@ per-agent scoping, dashboards) works exactly the same either way.
 4. Log in with an admin account (see below) and use **Import CRM Export** on `/admin` to bring in
    the first CRM export.
 
-### 4. Create the first admin account
+### 5. Create the first admin account
 
 There's no signup page by design (owner-provisioned accounts only). Run `create_admin.py` once,
 locally, pointed at the same `DATABASE_URL` Vercel uses:
@@ -138,6 +170,9 @@ needs a one-off script run against `DATABASE_URL`, same pattern as `create_admin
 `migrate_add_cordoba_paid.py` for a real example (adds `client_record.cordoba_paid` without
 touching any existing rows). If a future change adds another column, write a similar `ALTER
 TABLE ... ADD COLUMN IF NOT EXISTS ...` script rather than assuming a redeploy will pick it up.
+Column *constraint* changes need the same treatment — `migrate_nullable_password.py` drops the
+`NOT NULL` constraint `agent.password_hash` was originally created with, needed for Google-only
+agent accounts (see "Sign in with Google" above).
 
 ## Local development
 

@@ -311,19 +311,27 @@ def manage_agents():
         is_admin = request.form.get("is_admin") == "on"
         alias_raw = request.form.get("agent_name") or ""
 
-        if not email or not display_name or not password:
-            flash("Email, display name, and password are all required.", "error")
+        # Password is optional — an account created without one can only sign in
+        # with "Sign in with Google" (google_login in auth.py matches on email;
+        # adding the email here IS the access grant). Set one later any time via
+        # "Reset Password" below to also allow email/password login.
+        if not email or not display_name:
+            flash("Email and display name are required.", "error")
         elif Agent.query.filter_by(email=email).first():
             flash(f"An account with email {email} already exists.", "error")
+        elif password and len(password) < 6:
+            flash("Password must be at least 6 characters — or leave it blank for Google sign-in only.", "error")
         else:
             agent = Agent(email=email, display_name=display_name, is_admin=is_admin)
-            agent.set_password(password)
+            if password:
+                agent.set_password(password)
             db.session.add(agent)
             db.session.flush()
             if alias_raw.strip():
                 db.session.add(AgentAlias(agent_id=agent.id, agent_name=alias_raw.strip()))
             db.session.commit()
-            flash(f"Created account for {display_name} ({email}).", "success")
+            mode = "password + Google sign-in" if password else "Google sign-in only"
+            flash(f"Created account for {display_name} ({email}) — {mode}.", "success")
         return redirect(url_for("admin.manage_agents"))
 
     agents = Agent.query.order_by(Agent.display_name).all()
