@@ -110,6 +110,41 @@ def _parse_currency(value: str) -> float:
     return float(value.strip().replace("$", "").replace(",", "") or 0)
 
 
+def _zero_unit_holding_result(agent_name: str) -> dict:
+    """A $0/0-unit commission result shape, for a period where an agent has
+    no genuinely cleared or safe-cancel unit but still needs SOME result
+    entry to attach client records to (a clawback landing in a period with
+    no other activity — see Step 4 — or a client record that needs to stay
+    visible after Step 3 reclassifies it — see the pass right after Step 3).
+    calculate_agent_commission() rejects units_cleared=0 (tiers start at 1),
+    so this is built by hand instead. Every value here is 0/empty — this
+    cannot change what any agent is paid, only what shows up in the UI."""
+    return {
+        "agent_name": agent_name,
+        "units_cleared": 0,
+        "total_cleared_debt": 0.0,
+        "cancellation_rate": 0.0,
+        "hourly_draw": 0.0,
+        "raw_tier": 0,
+        "adjusted_tier": 0,
+        "tier_rate": 0.0,
+        "gross_commission": 0.0,
+        "clawback_amount": 0.0,
+        "net_commission": 0.0,
+        "payout": 0.0,
+        "payout_type": "none",
+        "quality_bonus_eligible": False,
+        "cancellation_penalty_applied": False,
+        "nsf_flagged": False,
+        "pending_units": 0,
+        "pending_debt": 0.0,
+        "source": "crm",
+        "notes": "",
+        "_cleared_clients": [],
+        "_all_period_clients": [],
+    }
+
+
 def parse_crm_and_calculate(file_bytes: bytes, filename: str, already_cleared_crm_ids: set = None,
                              already_charged_back_crm_ids: set = None,
                              already_low_credit_crm_ids: set = None) -> list:
@@ -401,6 +436,9 @@ def parse_crm_and_calculate(file_bytes: bytes, filename: str, already_cleared_cr
         nsf_flagged = any(c["nsf_count"] >= NSF_FLAG_THRESHOLD
                           for c in tier_units + cancelled + pending)
 
+        # units_cleared is always >= 1 here — key came from cleared_buckets or
+        # safe_cancel_buckets, both of which only gain a key when something is
+        # appended to it.
         result = calculate_agent_commission(
             agent_name=agent_name,
             units_cleared=units_cleared,
@@ -470,6 +508,10 @@ def parse_crm_and_calculate(file_bytes: bytes, filename: str, already_cleared_cr
     # ---------------------------------------------------------------
     # (agent, target_period) → list of (client, clawback_amount)
     clawback_by_target_period = defaultdict(list)
+    # Clients reclassified out of "clawback" below (no proof of prior payment,
+    # or low-credit) — tracked so the visibility pass right after this loop
+    # can make sure they still show up somewhere. See that pass for why.
+    reclassified_clients = []
 
     for c in all_clients:
         if c["unit_status"] != "clawback":
@@ -500,6 +542,7 @@ def parse_crm_and_calculate(file_bytes: bytes, filename: str, already_cleared_cr
             # Reclassify as a non-paying cancel — no clawback applies.
             c["unit_status"] = "same_month_cancel"
             c["is_cancelled"] = True
+            reclassified_clients.append(c)
             continue
 
         # Guard: a Credit Score <= 500 client earns zero commission when they clear
@@ -512,6 +555,7 @@ def parse_crm_and_calculate(file_bytes: bytes, filename: str, already_cleared_cr
         if c.get("is_low_credit") or (crm_id and crm_id in already_low_credit_crm_ids):
             c["unit_status"] = "same_month_cancel"
             c["is_cancelled"] = True
+            reclassified_clients.append(c)
             continue
 
         orig_result = agent_period_results.get(orig_key)
@@ -537,6 +581,45 @@ def parse_crm_and_calculate(file_bytes: bytes, filename: str, already_cleared_cr
         clawback_by_target_period[(agent_name, target_period)].append(c)
 
     # ---------------------------------------------------------------
+    # Step 3.5: BUGFIX — visibility for clients just reclassified above.
+    #
+    # A client reclassified from "clawback" to "same_month_cancel" (no proof
+    # of prior payment, or low-credit) was only ever added to cancel_buckets
+    # during the initial classification pass, never cleared_buckets or
+    # safe_cancel_buckets. If that was the ONLY activity for their agent in
+    # their own cleared period, Step 2's tier_keys never included that
+    # (agent, period) at all — no result entry was created, so the client's
+    # record has nowhere to attach and silently vanishes from EVERY page,
+    # with zero trace. Reproduced: a single-row file shaped exactly like this
+    # (cleared one month, dropped a later month, no prior upload/backfill to
+    # prove the agent was ever paid) returned "No commissionable rows found
+    # in file" even though the row parsed and classified correctly.
+    #
+    # If some OTHER client already gave this (agent, period) a result entry
+    # in Step 2, there's nothing to do — cancel_buckets holds a reference to
+    # the same dict Step 2 already read into that entry's _all_period_clients,
+    # so the reclassification above is already reflected there. This only
+    # ever creates a $0/0-unit holding entry for a client whose own row was
+    # never worth anything anyway (the whole reason they were reclassified);
+    # it cannot change any dollar amount for any agent.
+    # ---------------------------------------------------------------
+    for c in reclassified_clients:
+        key = (c["agent_name"], c["cleared_period"])
+        if key in agent_period_results:
+            continue
+        pending = pending_buckets.get(key, [])
+        # Only the reclassified sibling(s) sharing this key — a genuine
+        # (non-reclassified) clawback client sharing the same key deliberately
+        # stays invisible at their OWN cleared period (see Step 3's "latest
+        # period in file" policy above); this must not resurrect them here.
+        cancelled = [x for x in cancel_buckets.get(key, []) if x["unit_status"] != "clawback"]
+        result = _zero_unit_holding_result(c["agent_name"])
+        result["pending_units"] = len(pending)
+        result["pending_debt"] = sum(x["enrolled_debt"] for x in pending)
+        result["_all_period_clients"] = cancelled + pending + same_month_cancel_buckets.get(key, [])
+        agent_period_results[key] = result
+
+    # ---------------------------------------------------------------
     # Step 4: Apply clawbacks to the target period's results (the latest
     # period in the file — see Step 3). If no commission result exists there
     # yet, create a zero-unit entry just to carry the clawback.
@@ -547,30 +630,7 @@ def parse_crm_and_calculate(file_bytes: bytes, filename: str, already_cleared_cr
 
         if key not in agent_period_results:
             # Agent had no cleared units in the target period — create a holding entry
-            agent_period_results[key] = {
-                "agent_name": agent_name,
-                "units_cleared": 0,
-                "total_cleared_debt": 0.0,
-                "cancellation_rate": 0.0,
-                "hourly_draw": 0.0,
-                "raw_tier": 0,
-                "adjusted_tier": 0,
-                "tier_rate": 0.0,
-                "gross_commission": 0.0,
-                "clawback_amount": 0.0,
-                "net_commission": 0.0,
-                "payout": 0.0,
-                "payout_type": "none",
-                "quality_bonus_eligible": False,
-                "cancellation_penalty_applied": False,
-                "nsf_flagged": False,
-                "pending_units": 0,
-                "pending_debt": 0.0,
-                "source": "crm",
-                "notes": "",
-                "_cleared_clients": [],
-                "_all_period_clients": [],
-            }
+            agent_period_results[key] = _zero_unit_holding_result(agent_name)
 
         r = agent_period_results[key]
         r["clawback_amount"] = round(r.get("clawback_amount", 0.0) + total_cb, 2)
