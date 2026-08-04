@@ -67,6 +67,15 @@
 
     <div class="agent-card-body">
       <div class="agent-section">
+        <div class="user-section-label">Email</div>
+        <form method="post" action="{{ url_for('admin.update_email', agent_id=a.id) }}" class="user-actions">
+          <input type="email" name="email" value="{{ a.email }}" required>
+          <button type="submit" class="btn btn-secondary btn-sm">Update</button>
+        </form>
+        <p class="form-hint" style="margin:0.5rem 0 0;">Used to log in (password and/or Google) — the agent must use the new address next time.</p>
+      </div>
+
+      <div class="agent-section">
         <div class="user-section-label">Mapped CRM Name(s)</div>
         <div class="alias-chip-row">
           {% for alias in a.aliases %}

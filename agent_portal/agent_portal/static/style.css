@@ -146,10 +146,9 @@ h2 { font-size: 1.15rem; margin-bottom: 0.75rem; margin-top: 1.5rem; }
 .agent-name-row { display: flex; align-items: center; gap: 0.5rem; flex-wrap: wrap; margin-bottom: 0.2rem; }
 .agent-card-body {
   display: grid;
-  grid-template-columns: 1fr 1fr;
-  gap: 1.5rem;
+  grid-template-columns: repeat(auto-fit, minmax(240px, 1fr));
+  gap: 1.25rem;
 }
-@media (max-width: 720px) { .agent-card-body { grid-template-columns: 1fr; } }
 .agent-section {
   background: #f8fafc;
   border: 1px solid #eef2f7;
