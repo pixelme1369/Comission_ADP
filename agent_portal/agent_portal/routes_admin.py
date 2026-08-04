@@ -1,5 +1,6 @@
 from flask import Blueprint, current_app, jsonify, render_template, request, redirect, url_for, flash
 from flask_login import current_user
+from sqlalchemy import inspect as sa_inspect, text
 
 from agent_portal import db
 from agent_portal.auth import admin_required
@@ -22,6 +23,23 @@ bp = Blueprint("admin", __name__, url_prefix="/admin")
 cron_bp = Blueprint("cron", __name__, url_prefix="/cron")
 
 
+def _password_column_is_nullable():
+    """Whether agent.password_hash currently allows NULL — False on a database
+    created before "Sign in with Google" shipped (that column was originally
+    NOT NULL). Used to surface a one-click fix on the dashboard instead of
+    silently 500ing the moment someone leaves the password field blank; see
+    run_nullable_password_migration below. Fails open (returns True, i.e. "no
+    action needed") on any introspection error so a permissions hiccup here
+    never blocks the rest of the dashboard from rendering."""
+    try:
+        for col in sa_inspect(db.engine).get_columns("agent"):
+            if col["name"] == "password_hash":
+                return bool(col["nullable"])
+    except Exception:
+        pass
+    return True
+
+
 @bp.route("/")
 @admin_required
 def dashboard():
@@ -34,10 +52,31 @@ def dashboard():
     return render_template(
         "admin_dashboard.html", agents=agents, last_sync=last_sync,
         drive_configured=drive_configured,
+        password_migration_needed=not _password_column_is_nullable(),
         crm_uploads=group_periods_by_filename(crm_periods),
         history_uploads=group_periods_by_filename(history_periods),
         cordoba_uploads=list_cordoba_uploads(),
     )
+
+
+@bp.route("/migrate/nullable-password", methods=["POST"])
+@admin_required
+def run_nullable_password_migration():
+    """One-click fix for databases created before "Sign in with Google"
+    shipped: agent.password_hash was originally NOT NULL, so creating a
+    Google-sign-in-only agent (blank password) 500s until this runs. Same SQL
+    as migrate_nullable_password.py, just triggerable from the admin UI
+    instead of needing local Python + DATABASE_URL access. Safe to click more
+    than once — dropping a constraint that's already gone is a no-op on
+    Postgres, not an error."""
+    try:
+        db.session.execute(text("ALTER TABLE agent ALTER COLUMN password_hash DROP NOT NULL"))
+        db.session.commit()
+        flash("Migration applied: you can now create agent accounts with no password (Google sign-in only).", "success")
+    except Exception as exc:
+        db.session.rollback()
+        flash(f"Migration failed: {exc}", "error")
+    return redirect(url_for("admin.dashboard"))
 
 
 @bp.route("/period/<int:period_id>")
@@ -326,7 +365,21 @@ def manage_agents():
             if password:
                 agent.set_password(password)
             db.session.add(agent)
-            db.session.flush()
+            try:
+                db.session.flush()
+            except Exception:
+                # Most likely cause: a database created before "Sign in with Google"
+                # shipped still has agent.password_hash as NOT NULL, and this account
+                # was left password-less. Point at the one-click fix on the dashboard
+                # instead of surfacing a raw 500.
+                db.session.rollback()
+                flash(
+                    "Couldn't create that account. If you left the password blank, this "
+                    "database needs a one-time migration first — go to Admin and click "
+                    "\"Fix Now\" under Google Sign-In Setup, then try again.",
+                    "error",
+                )
+                return redirect(url_for("admin.manage_agents"))
             if alias_raw.strip():
                 db.session.add(AgentAlias(agent_id=agent.id, agent_name=alias_raw.strip()))
             db.session.commit()
