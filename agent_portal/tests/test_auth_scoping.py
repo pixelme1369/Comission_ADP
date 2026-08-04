@@ -218,6 +218,60 @@ class TestAdminScoping:
         )
         assert b"Admin access required" in resp.data
 
+    def test_admin_can_update_an_agents_email(self, app, db, client):
+        with app.app_context():
+            _make_agent(db, "saman@example.com", "Saman", "Saman Agent", is_admin=True)
+            alice = _make_agent(db, "alice@example.com", "Alice", "Alice Agent")
+            alice_id = alice.id
+
+        _login(client, "saman@example.com")
+        resp = client.post(
+            f"/admin/agents/{alice_id}/email", data={"email": "alice.new@example.com"}, follow_redirects=True,
+        )
+        assert b"Updated email for Alice" in resp.data
+        client.get("/logout")
+
+        # Old email no longer logs in, new one does
+        resp = _login(client, "alice@example.com", password="pw12345")
+        assert b"Invalid email or password" in resp.data
+        resp = _login(client, "alice.new@example.com", password="pw12345")
+        assert resp.request.path == "/portal/"
+
+    def test_email_update_rejects_a_duplicate(self, app, db, client):
+        with app.app_context():
+            _make_agent(db, "saman@example.com", "Saman", "Saman Agent", is_admin=True)
+            alice = _make_agent(db, "alice@example.com", "Alice", "Alice Agent")
+            _make_agent(db, "bob@example.com", "Bob", "Bob Agent")
+            alice_id = alice.id
+
+        _login(client, "saman@example.com")
+        resp = client.post(
+            f"/admin/agents/{alice_id}/email", data={"email": "bob@example.com"}, follow_redirects=True,
+        )
+        assert b"Another account already uses bob@example.com" in resp.data
+
+    def test_email_update_rejects_blank(self, app, db, client):
+        with app.app_context():
+            _make_agent(db, "saman@example.com", "Saman", "Saman Agent", is_admin=True)
+            alice = _make_agent(db, "alice@example.com", "Alice", "Alice Agent")
+            alice_id = alice.id
+
+        _login(client, "saman@example.com")
+        resp = client.post(f"/admin/agents/{alice_id}/email", data={"email": ""}, follow_redirects=True)
+        assert b"Email is required" in resp.data
+
+    def test_non_admin_cannot_update_email(self, app, db, client):
+        with app.app_context():
+            alice = _make_agent(db, "alice@example.com", "Alice", "Alice Agent")
+            bob = _make_agent(db, "bob@example.com", "Bob", "Bob Agent")
+            bob_id = bob.id
+
+        _login(client, "alice@example.com")
+        resp = client.post(
+            f"/admin/agents/{bob_id}/email", data={"email": "sneaky@example.com"}, follow_redirects=True,
+        )
+        assert b"Admin access required" in resp.data
+
     def test_admin_can_delete_an_agent_without_touching_their_commission_history(self, app, db, client):
         with app.app_context():
             _make_agent(db, "saman@example.com", "Saman", "Saman Agent", is_admin=True)

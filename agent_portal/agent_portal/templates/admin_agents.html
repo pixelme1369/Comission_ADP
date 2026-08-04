@@ -40,49 +40,68 @@
 <div class="user-list">
   {% for a in agents %}
   {% set parts = a.display_name.split() %}
-  <div class="user-row">
-    <div class="user-avatar{% if a.is_admin %} is-admin{% endif %}">
-      {% if parts|length >= 2 %}{{ (parts[0][0] + parts[1][0])|upper }}{% else %}{{ a.display_name[:2]|upper }}{% endif %}
+  <div class="agent-card">
+    <div class="agent-card-header">
+      <div class="agent-identity">
+        <div class="user-avatar{% if a.is_admin %} is-admin{% endif %}">
+          {% if parts|length >= 2 %}{{ (parts[0][0] + parts[1][0])|upper }}{% else %}{{ a.display_name[:2]|upper }}{% endif %}
+        </div>
+        <div>
+          <div class="agent-name-row">
+            <span class="user-name">{{ a.display_name }}</span>
+            {% if a.is_admin %}<span class="badge badge-purple">Admin</span>{% endif %}
+            {% if a.password_hash %}<span class="badge badge-gray">Password + Google</span>{% else %}<span class="badge badge-green">Google sign-in only</span>{% endif %}
+          </div>
+          <div class="user-email">{{ a.email }}</div>
+        </div>
+      </div>
+      {% if a.id != current_user.id %}
+      <form method="post" action="{{ url_for('admin.delete_agent', agent_id=a.id) }}" class="js-heavy-action"
+            data-loading-text="Removing user…"
+            data-loading-hint="Revoking login access."
+            onsubmit="return confirm('Remove {{ a.display_name }}\'s login? They will no longer be able to sign in. Their commission history is not affected.');">
+        <button type="submit" class="btn btn-danger btn-sm">Remove User</button>
+      </form>
+      {% endif %}
     </div>
-    <div class="user-main">
-      <div class="user-identity">
-        <span class="user-name">{{ a.display_name }}</span>
-        {% if a.is_admin %}<span class="badge badge-purple">Admin</span>{% endif %}
-        {% if a.password_hash %}<span class="badge badge-gray">Password + Google</span>{% else %}<span class="badge badge-green">Google sign-in only</span>{% endif %}
-        {% if a.id != current_user.id %}
-        <form method="post" action="{{ url_for('admin.delete_agent', agent_id=a.id) }}" style="margin-left:auto;" class="js-heavy-action"
-              data-loading-text="Removing user…"
-              data-loading-hint="Revoking login access."
-              onsubmit="return confirm('Remove {{ a.display_name }}\'s login? They will no longer be able to sign in. Their commission history is not affected.');">
-          <button type="submit" class="btn btn-danger btn-sm">Remove User</button>
+
+    <div class="agent-card-body">
+      <div class="agent-section">
+        <div class="user-section-label">Email</div>
+        <form method="post" action="{{ url_for('admin.update_email', agent_id=a.id) }}" class="user-actions">
+          <input type="email" name="email" value="{{ a.email }}" required>
+          <button type="submit" class="btn btn-secondary btn-sm">Update</button>
         </form>
-        {% endif %}
+        <p class="form-hint" style="margin:0.5rem 0 0;">Used to log in (password and/or Google) — the agent must use the new address next time.</p>
       </div>
-      <div class="user-email">{{ a.email }}</div>
 
-      <div class="user-section-label">Mapped CRM Name(s)</div>
-      <div class="user-actions" style="margin-bottom:0.4rem;">
-        {% for alias in a.aliases %}
-        <span class="chip">
-          {{ alias.agent_name }}
-          <form method="post" action="{{ url_for('admin.delete_alias', alias_id=alias.id) }}">
-            <button type="submit" title="Remove mapping">×</button>
-          </form>
-        </span>
-        {% else %}
-        <span class="chip-empty">No CRM name mapped yet</span>
-        {% endfor %}
+      <div class="agent-section">
+        <div class="user-section-label">Mapped CRM Name(s)</div>
+        <div class="alias-chip-row">
+          {% for alias in a.aliases %}
+          <span class="chip">
+            {{ alias.agent_name }}
+            <form method="post" action="{{ url_for('admin.delete_alias', alias_id=alias.id) }}">
+              <button type="submit" title="Remove mapping">×</button>
+            </form>
+          </span>
+          {% else %}
+          <span class="chip-empty">No CRM name mapped yet</span>
+          {% endfor %}
+        </div>
+        <form method="post" action="{{ url_for('admin.add_alias', agent_id=a.id) }}" class="user-actions">
+          <input type="text" name="agent_name" placeholder="Add another CRM name spelling">
+          <button type="submit" class="btn btn-secondary btn-sm">Add</button>
+        </form>
       </div>
-      <form method="post" action="{{ url_for('admin.add_alias', agent_id=a.id) }}" class="user-actions">
-        <input type="text" name="agent_name" placeholder="Add another CRM name spelling">
-        <button type="submit" class="btn btn-secondary btn-sm">Add</button>
-      </form>
 
-      <div class="user-section-label">Password</div>
-      <form method="post" action="{{ url_for('admin.reset_password', agent_id=a.id) }}" class="user-actions">
-        <input type="password" name="password" placeholder="New password" minlength="6" required>
-        <button type="submit" class="btn btn-secondary btn-sm">Reset Password</button>
-      </form>
+      <div class="agent-section">
+        <div class="user-section-label">Password</div>
+        <form method="post" action="{{ url_for('admin.reset_password', agent_id=a.id) }}" class="user-actions">
+          <input type="password" name="password" placeholder="New password" minlength="6" required>
+          <button type="submit" class="btn btn-secondary btn-sm">Reset Password</button>
+        </form>
+      </div>
     </div>
   </div>
   {% endfor %}

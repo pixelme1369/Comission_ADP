@@ -407,6 +407,29 @@ def add_alias(agent_id):
     return redirect(url_for("admin.manage_agents"))
 
 
+@bp.route("/agents/<int:agent_id>/email", methods=["POST"])
+@admin_required
+def update_email(agent_id):
+    """Lets the admin correct/change an agent's login email in place — the
+    same address is both the email/password login and the Google
+    sign-in match key (see auth.py::google_login), so a typo here otherwise
+    has no fix short of deleting and recreating the account."""
+    agent = Agent.query.get_or_404(agent_id)
+    new_email = (request.form.get("email") or "").strip().lower()
+    if not new_email:
+        flash("Email is required.", "error")
+    elif Agent.query.filter(Agent.email == new_email, Agent.id != agent.id).first():
+        flash(f"Another account already uses {new_email}.", "error")
+    elif new_email == agent.email:
+        flash("That's already this agent's email.", "error")
+    else:
+        old_email = agent.email
+        agent.email = new_email
+        db.session.commit()
+        flash(f"Updated email for {agent.display_name}: {old_email} → {new_email}.", "success")
+    return redirect(url_for("admin.manage_agents"))
+
+
 @bp.route("/agents/aliases/<int:alias_id>/delete", methods=["POST"])
 @admin_required
 def delete_alias(alias_id):
