@@ -41,6 +41,33 @@ def _password_column_is_nullable():
     return True
 
 
+# Must match migrate_widen_client_record_columns.py's COLUMNS list.
+_WIDENED_CLIENT_RECORD_COLUMNS = {
+    "crm_id": 100, "stage": 255, "status": 255, "submitted_date": 100,
+    "enrolled_date": 100, "first_payment_date": 100, "first_payment_cleared_date": 100,
+    "second_payment_cleared_date": 100, "dropped_date": 100, "pay_freq": 100,
+}
+
+
+def _client_record_columns_are_wide_enough():
+    """Whether client_record's VARCHAR columns already match the widths in
+    models.py — False on a database created before a real CRM export was
+    found to overflow one of them (originally sized off a single sample
+    row). See run_widen_client_record_columns_migration below. Fails open
+    (True, "no action needed") on any introspection error, same reasoning
+    as _password_column_is_nullable above."""
+    try:
+        cols = {c["name"]: c for c in sa_inspect(db.engine).get_columns("client_record")}
+        for name, wanted_len in _WIDENED_CLIENT_RECORD_COLUMNS.items():
+            col = cols.get(name)
+            actual_len = getattr(col["type"], "length", None) if col else None
+            if actual_len is not None and actual_len < wanted_len:
+                return False
+    except Exception:
+        pass
+    return True
+
+
 @bp.route("/")
 @admin_required
 def dashboard():
@@ -54,6 +81,7 @@ def dashboard():
         "admin_dashboard.html", agents=agents, last_sync=last_sync,
         drive_configured=drive_configured,
         password_migration_needed=not _password_column_is_nullable(),
+        column_widen_migration_needed=not _client_record_columns_are_wide_enough(),
         crm_uploads=group_periods_by_filename(crm_periods),
         history_uploads=group_periods_by_filename(history_periods),
         cordoba_uploads=list_cordoba_uploads(),
@@ -74,6 +102,30 @@ def run_nullable_password_migration():
         db.session.execute(text("ALTER TABLE agent ALTER COLUMN password_hash DROP NOT NULL"))
         db.session.commit()
         flash("Migration applied: you can now create agent accounts with no password (Google sign-in only).", "success")
+    except Exception as exc:
+        db.session.rollback()
+        flash(f"Migration failed: {exc}", "error")
+    return redirect(url_for("admin.dashboard"))
+
+
+@bp.route("/migrate/widen-client-record-columns", methods=["POST"])
+@admin_required
+def run_widen_client_record_columns_migration():
+    """One-click fix for databases created before client_record's VARCHAR
+    columns were widened: a real CRM export with a longer value than the
+    original (guessed) limit in one of them — an ID, a verbose Status/Stage
+    string, etc. — used to crash the whole upload with a raw "value too
+    long for type character varying(N)" Postgres error and no exception
+    handling around it, surfacing as a bare Internal Server Error. Same SQL
+    as migrate_widen_client_record_columns.py. Safe to click more than
+    once — widening an already-wide-enough column is a no-op on Postgres."""
+    try:
+        for column, new_length in _WIDENED_CLIENT_RECORD_COLUMNS.items():
+            db.session.execute(text(
+                f"ALTER TABLE client_record ALTER COLUMN {column} TYPE VARCHAR({new_length})"
+            ))
+        db.session.commit()
+        flash("Migration applied: client_record columns widened — longer CRM values will no longer fail to import.", "success")
     except Exception as exc:
         db.session.rollback()
         flash(f"Migration failed: {exc}", "error")
@@ -233,11 +285,21 @@ def upload_csv():
 
     file_bytes = file.read()
     already_cleared, already_charged_back, already_low_credit = already_known_crm_id_sets()
-    period_results = parse_crm_and_calculate(
-        file_bytes, file.filename, already_cleared, already_charged_back, already_low_credit,
-    )
-    outcome = save_period_results(period_results, file.filename, source_label="manual")
-    db.session.commit()
+    try:
+        period_results = parse_crm_and_calculate(
+            file_bytes, file.filename, already_cleared, already_charged_back, already_low_credit,
+        )
+        outcome = save_period_results(period_results, file.filename, source_label="manual")
+        db.session.commit()
+    except Exception as exc:
+        # Anything unexpected (a value too long for a column, a malformed
+        # row the parser didn't anticipate, etc.) used to bubble all the way
+        # up as a raw 500 "Internal Server Error" with no indication of what
+        # went wrong or that nothing was saved. Roll back so a half-applied
+        # import can never linger, and tell the admin what actually broke.
+        db.session.rollback()
+        flash(f"Import failed — nothing was saved. Error: {exc}", "error")
+        return redirect(url_for("admin.dashboard"))
 
     if outcome["periods_created"]:
         flash(f"Imported {len(outcome['periods_created'])} period(s): {', '.join(outcome['periods_created'])}.", "success")
@@ -264,7 +326,12 @@ def upload_cordoba_payout():
         flash(f"Only .xlsx files are accepted for Cordoba payout uploads: {', '.join(bad_names)}", "error")
         return redirect(url_for("admin.dashboard"))
 
-    results = [process_cordoba_file(file) for file in files]
+    try:
+        results = [process_cordoba_file(file) for file in files]
+    except Exception as exc:
+        db.session.rollback()
+        flash(f"Cordoba payout processing failed — nothing was saved. Error: {exc}", "error")
+        return redirect(url_for("admin.dashboard"))
 
     for r in results:
         for err in r["errors"]:
@@ -344,7 +411,12 @@ def upload_commission_history():
         return redirect(url_for("admin.dashboard"))
     year = int(year_raw)
 
-    outcome = import_commission_history_files(files, year)
+    try:
+        outcome = import_commission_history_files(files, year)
+    except Exception as exc:
+        db.session.rollback()
+        flash(f"Commission history import failed — nothing was saved. Error: {exc}", "error")
+        return redirect(url_for("admin.dashboard"))
 
     if outcome["saved_period_ids"]:
         flash(f"Commission history import: {len(outcome['saved_period_ids'])} month(s) backfilled.", "success")

@@ -117,22 +117,30 @@ class ClientRecord(db.Model):
     period_id = db.Column(db.Integer, db.ForeignKey("commission_period.id"), nullable=False, index=True)
     agent_commission_id = db.Column(db.Integer, db.ForeignKey("agent_commission.id"), nullable=True, index=True)
 
-    crm_id = db.Column(db.String(50), index=True)
+    # These were sized off one sample row rather than any documented CRM field
+    # limit — a real export overflowing one of them used to crash the whole
+    # upload with a raw "Internal Server Error" (a Postgres "value too long"
+    # error with no exception handling around it — see routes_admin.py's
+    # upload routes, and migrate_widen_client_record_columns.py for widening
+    # these on an already-deployed database, since db.create_all() never
+    # alters an existing column's type). Widened with real headroom instead
+    # of guessing again at the exact limit.
+    crm_id = db.Column(db.String(100), index=True)
     agent_name = db.Column(db.String(255), index=True)
     client_name = db.Column(db.String(255))
     email = db.Column(db.String(255))
     phone = db.Column(db.String(50))
-    stage = db.Column(db.String(100))
-    status = db.Column(db.String(100))
+    stage = db.Column(db.String(255))
+    status = db.Column(db.String(255))
 
-    submitted_date = db.Column(db.String(50))
-    enrolled_date = db.Column(db.String(50))
-    first_payment_date = db.Column(db.String(50))
-    first_payment_cleared_date = db.Column(db.String(50))
-    second_payment_cleared_date = db.Column(db.String(50))
-    dropped_date = db.Column(db.String(50))
+    submitted_date = db.Column(db.String(100))
+    enrolled_date = db.Column(db.String(100))
+    first_payment_date = db.Column(db.String(100))
+    first_payment_cleared_date = db.Column(db.String(100))
+    second_payment_cleared_date = db.Column(db.String(100))
+    dropped_date = db.Column(db.String(100))
 
-    pay_freq = db.Column(db.String(50))
+    pay_freq = db.Column(db.String(100))
     payments_made = db.Column(db.Integer, default=0)
     nsf_count = db.Column(db.Integer, default=0)
     enrolled_debt = db.Column(db.Float, default=0.0)
