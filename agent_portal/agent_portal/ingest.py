@@ -10,6 +10,37 @@ from agent_portal.models import (
 )
 
 
+def bulk_delete_period(period):
+    """Deletes one CommissionPeriod and everything under it via a handful of
+    bulk `DELETE ... WHERE` statements, instead of `db.session.delete(period)`
+    relying on the model's `cascade="all, delete-orphan"` relationships.
+
+    That ORM cascade path measurably does NOT scale: to cascade-delete it has
+    to first SELECT every AgentCommission for the period, then SELECT every
+    ClientRecord for EACH of those agents individually (an N+1 — one query
+    per agent), and then — the expensive part — delete every row one at a
+    time. SQLAlchemy batches those per-row deletes into a single
+    `executemany()` call, but psycopg2's `executemany()` is not a real
+    server-side batch operation: it silently loops and sends one individual
+    statement per row. Verified directly against PostgreSQL's own
+    server-side log: deleting a period with 5 agents and 100 ClientRecord
+    rows produced exactly 100 separate `DELETE FROM client_record WHERE
+    id = <single row>` lines, not one. A real CRM upload can easily be an
+    order of magnitude bigger than that per period — and the "Delete &
+    Reset" button on the dashboard does this once per month in the file.
+
+    Filtering directly on ClientRecord.period_id and AgentCommission.period_id
+    (both indexed, non-nullable FKs — see models.py) collapses that down to
+    three bulk statements total, regardless of how many rows are involved.
+    synchronize_session=False is safe here because nothing touches the
+    session's in-memory copies of these rows afterward — the caller commits
+    and moves on. Does NOT commit — same contract as `db.session.delete()`,
+    caller commits."""
+    ClientRecord.query.filter_by(period_id=period.id).delete(synchronize_session=False)
+    AgentCommission.query.filter_by(period_id=period.id).delete(synchronize_session=False)
+    db.session.delete(period)
+
+
 def _new_client_record(period_id, agent_commission_id, cr, **overrides):
     fields = dict(
         period_id=period_id,
@@ -174,14 +205,25 @@ def delete_periods_by_filename(filename, source_values):
     created by one of the given upload types (source_values, e.g. ("drive",
     "manual") for a CRM upload or ("history_import",) for a history backfill)
     — lets the admin dashboard delete/reset an entire multi-month upload in
-    one action instead of one period at a time. Cascades to AgentCommission/
-    ClientRecord via the model relationships, same as deleting a period
-    individually. Returns the list of period_labels actually deleted."""
+    one action instead of one period at a time. Returns the list of
+    period_labels actually deleted.
+
+    Uses bulk_delete_period (see there for why) instead of
+    db.session.delete(period)'s ORM cascade — this matters even more here
+    than deleting a single period, since a multi-month CRM export runs this
+    once per month it contains. The source check below also queries just the
+    one column needed instead of loading each period's full `.agents`
+    collection (which would re-introduce the same N+1 this function exists
+    to avoid, just one level up)."""
     periods = CommissionPeriod.query.filter_by(filename=filename).all()
     deleted_labels = []
     for period in periods:
-        if period.agents and period.agents[0].source in source_values:
+        first_source = (
+            db.session.query(AgentCommission.source)
+            .filter_by(period_id=period.id).first()
+        )
+        if first_source and first_source[0] in source_values:
             deleted_labels.append(period.period_label)
-            db.session.delete(period)
+            bulk_delete_period(period)
     db.session.commit()
     return deleted_labels
