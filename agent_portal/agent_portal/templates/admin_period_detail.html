@@ -9,7 +9,9 @@
 </div>
 
 <div class="table-actions">
-  <form method="post" action="{{ url_for('admin.delete_period', period_id=period.id) }}"
+  <form method="post" action="{{ url_for('admin.delete_period', period_id=period.id) }}" class="js-heavy-action"
+        data-loading-text="Deleting period…"
+        data-loading-hint="Removing every agent and client record in it."
         onsubmit="return confirm('Delete period {{ period.period_label }}? This removes every agent and client record in it. You would need to re-upload its CRM export to get it back. This cannot be undone.');">
     <button type="submit" class="btn btn-danger">Delete Period</button>
   </form>

@@ -7,6 +7,16 @@
   <link rel="stylesheet" href="{{ url_for('static', filename='style.css') }}">
 </head>
 <body>
+  <div id="loading-bar" aria-hidden="true"></div>
+  <div id="loading-overlay" class="loading-overlay" aria-hidden="true">
+    <div class="loading-card">
+      <div class="loading-spinner"></div>
+      <div id="loading-overlay-text" class="loading-card-text">Processing…</div>
+      <div id="loading-overlay-hint" class="loading-card-hint">This can take a few seconds for larger files.</div>
+      <div class="loading-dots"><span></span><span></span><span></span></div>
+    </div>
+  </div>
+
   <nav class="navbar">
     <div class="nav-brand">ADP Agent Portal</div>
     <div class="nav-links">
