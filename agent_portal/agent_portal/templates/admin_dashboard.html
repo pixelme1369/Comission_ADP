@@ -20,7 +20,9 @@
   <div class="card upload-card">
     <h2>Sync from Google Drive</h2>
     <p class="form-hint">Pulls the newest CRM export from the <code>Cordoba_ADP</code> Drive folder and imports any new periods. Runs automatically once a day via cron — use this to sync on demand.</p>
-    <form method="post" action="{{ url_for('admin.sync_now') }}">
+    <form method="post" action="{{ url_for('admin.sync_now') }}" class="js-heavy-action"
+          data-loading-text="Syncing from Google Drive…"
+          data-loading-hint="Pulling the newest CRM export and importing any new periods.">
       <button type="submit" class="btn btn-primary">Sync Now</button>
     </form>
   </div>
@@ -29,7 +31,9 @@
   <div class="card upload-card">
     <h2>Import CRM Export</h2>
     <p class="form-hint">Download the day's CRM export from the <code>Cordoba_ADP</code> Drive folder and upload it here — same file format used everywhere else in this system.</p>
-    <form method="post" action="{{ url_for('admin.upload_csv') }}" enctype="multipart/form-data">
+    <form method="post" action="{{ url_for('admin.upload_csv') }}" enctype="multipart/form-data" class="js-heavy-action"
+          data-loading-text="Uploading & processing CRM export…"
+          data-loading-hint="Classifying clients and calculating commissions.">
       <div class="form-group">
         <input type="file" name="csv_file" accept=".csv" required>
       </div>
@@ -40,7 +44,9 @@
   <div class="card upload-card">
     <h2>Cordoba Payout Check</h2>
     <p class="form-hint">Upload one or more Cordoba payout exports (.xlsx). First Pays/EPF tabs confirm Cordoba paid us; the Chargebacks tab claws back an agent's commission for previously-paid clients that Cordoba took the payout back on.</p>
-    <form method="post" action="{{ url_for('admin.upload_cordoba_payout') }}" enctype="multipart/form-data">
+    <form method="post" action="{{ url_for('admin.upload_cordoba_payout') }}" enctype="multipart/form-data" class="js-heavy-action"
+          data-loading-text="Processing Cordoba payout file(s)…"
+          data-loading-hint="Matching payouts and chargebacks against your records.">
       <div class="form-group">
         <input type="file" name="cordoba_file" accept=".xlsx" multiple required>
       </div>
@@ -51,7 +57,9 @@
   <div class="card upload-card">
     <h2>Commission History Backfill</h2>
     <p class="form-hint">Import a prior account manager's ledger (.xlsx or .csv, NOT a CRM export) to backfill months from before this portal existed — so Cordoba chargebacks can find and claw back agents paid on those clients. The Month column has no year, so enter one.</p>
-    <form method="post" action="{{ url_for('admin.upload_commission_history') }}" enctype="multipart/form-data">
+    <form method="post" action="{{ url_for('admin.upload_commission_history') }}" enctype="multipart/form-data" class="js-heavy-action"
+          data-loading-text="Importing commission history…"
+          data-loading-hint="Backfilling periods from the uploaded ledger.">
       <div class="form-group">
         <label for="history_year">Year</label>
         <input type="text" id="history_year" name="history_year" placeholder="2026" style="max-width:120px;" required>
@@ -77,7 +85,9 @@
         </td>
         <td>{{ u.periods[0].uploaded_at.strftime('%Y-%m-%d %H:%M') if u.periods[0].uploaded_at else '—' }}</td>
         <td>
-          <form method="post" action="{{ url_for('admin.delete_crm_upload') }}"
+          <form method="post" action="{{ url_for('admin.delete_crm_upload') }}" class="js-heavy-action"
+                data-loading-text="Deleting period(s)…"
+                data-loading-hint="Removing every agent and client record they contain."
                 onsubmit="return confirm('Delete {{ u.periods|length }} period(s) from &quot;{{ u.filename }}&quot;? This removes every agent and client record they contain. You would need to re-upload to get it back. This cannot be undone.');">
             <input type="hidden" name="filename" value="{{ u.filename }}">
             <button type="submit" class="btn btn-danger btn-sm">Delete &amp; Reset</button>
@@ -104,7 +114,9 @@
         <td>{% if u.clawback_count %}<span class="badge badge-red">{{ u.clawback_count }} (-${{ "{:,.2f}".format(u.clawback_total) }})</span>{% else %}—{% endif %}</td>
         <td>{{ u.uploaded_at.strftime('%Y-%m-%d %H:%M') if u.uploaded_at else '—' }}</td>
         <td>
-          <form method="post" action="{{ url_for('admin.delete_cordoba_upload_route') }}"
+          <form method="post" action="{{ url_for('admin.delete_cordoba_upload_route') }}" class="js-heavy-action"
+                data-loading-text="Reversing Cordoba payout upload…"
+                data-loading-hint="Restoring clawbacks and clearing payout flags."
                 onsubmit="return confirm('Reset &quot;{{ u.filename }}&quot;? This reverses any clawbacks it applied (restores the money to agent commissions), un-flags Cordoba Payout confirmations no other file also confirmed, and clears its chargeback-match and reconciliation entries. This cannot be undone.');">
             <input type="hidden" name="filename" value="{{ u.filename }}">
             <button type="submit" class="btn btn-danger btn-sm">Delete &amp; Reset</button>
@@ -131,7 +143,9 @@
         </td>
         <td>{{ u.periods[0].uploaded_at.strftime('%Y-%m-%d %H:%M') if u.periods[0].uploaded_at else '—' }}</td>
         <td>
-          <form method="post" action="{{ url_for('admin.delete_history_upload') }}"
+          <form method="post" action="{{ url_for('admin.delete_history_upload') }}" class="js-heavy-action"
+                data-loading-text="Deleting backfilled period(s)…"
+                data-loading-hint="Removing every agent and client record they contain."
                 onsubmit="return confirm('Delete {{ u.periods|length }} backfilled period(s) from &quot;{{ u.filename }}&quot;? This removes every agent and client record they contain. This cannot be undone.');">
             <input type="hidden" name="filename" value="{{ u.filename }}">
             <button type="submit" class="btn btn-danger btn-sm">Delete &amp; Reset</button>

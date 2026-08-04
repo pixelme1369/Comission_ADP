@@ -48,7 +48,9 @@
         <span class="user-name">{{ a.display_name }}</span>
         {% if a.is_admin %}<span class="badge badge-purple">Admin</span>{% endif %}
         {% if a.id != current_user.id %}
-        <form method="post" action="{{ url_for('admin.delete_agent', agent_id=a.id) }}" style="margin-left:auto;"
+        <form method="post" action="{{ url_for('admin.delete_agent', agent_id=a.id) }}" style="margin-left:auto;" class="js-heavy-action"
+              data-loading-text="Removing user…"
+              data-loading-hint="Revoking login access."
               onsubmit="return confirm('Remove {{ a.display_name }}\'s login? They will no longer be able to sign in. Their commission history is not affected.');">
           <button type="submit" class="btn btn-danger btn-sm">Remove User</button>
         </form>

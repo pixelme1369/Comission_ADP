@@ -23,6 +23,53 @@ function _sortKey(text) {
   return { num: false, value: text };
 }
 
+/* ---------- Loading UI (uploads / deletes) ----------
+ * Every form submit gets a top progress bar + a spinner on the button that
+ * triggered it. Forms flagged with class="js-heavy-action" (uploads, and
+ * deletes/resets that touch the DB) also get a full-screen "processing"
+ * overlay, with the message pulled from data-loading-text/data-loading-hint.
+ * Runs after any inline onsubmit="return confirm(...)" — if the user hits
+ * Cancel, that sets e.defaultPrevented and we skip the loading UI entirely.
+ */
+(function () {
+  var bar = document.getElementById("loading-bar");
+  var overlay = document.getElementById("loading-overlay");
+  var overlayText = document.getElementById("loading-overlay-text");
+  var overlayHint = document.getElementById("loading-overlay-hint");
+
+  document.addEventListener("submit", function (e) {
+    if (e.defaultPrevented) return; // user cancelled a confirm() dialog
+    var form = e.target;
+    if (!(form instanceof HTMLFormElement)) return;
+
+    if (bar) {
+      bar.style.transition = "none";
+      bar.style.width = "0%";
+      bar.classList.add("active");
+      // Force a reflow so the width reset above actually applies before the
+      // transition to 85% kicks in on the next frame.
+      // eslint-disable-next-line no-unused-expressions
+      bar.offsetHeight;
+      bar.style.transition = "";
+      requestAnimationFrame(function () { bar.style.width = "85%"; });
+    }
+
+    var btn = (e.submitter && e.submitter.tagName === "BUTTON")
+      ? e.submitter
+      : form.querySelector('button[type="submit"]');
+    if (btn && !btn.classList.contains("is-loading")) {
+      btn.classList.add("is-loading");
+      btn.disabled = true;
+    }
+
+    if (form.classList.contains("js-heavy-action") && overlay) {
+      if (overlayText) overlayText.textContent = form.dataset.loadingText || "Processing…";
+      if (overlayHint) overlayHint.textContent = form.dataset.loadingHint || "This can take a few seconds for larger files.";
+      overlay.classList.add("active");
+    }
+  }, false);
+})();
+
 document.querySelectorAll("table.sortable").forEach(function(table) {
   var tbody = table.querySelector("tbody");
   var headers = table.querySelectorAll("th[data-col]");
