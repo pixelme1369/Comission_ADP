@@ -8,7 +8,7 @@
   <p class="muted">Create a login for each agent, then map it to the exact "Sales Rep" spelling(s) that appear in the CRM export.</p>
 </div>
 
-<div class="card" style="max-width:480px;">
+<div class="card create-agent-card">
   <h2 style="margin-top:0;">Create Agent Account</h2>
   <form method="post" action="{{ url_for('admin.manage_agents') }}">
     <div class="form-group">
@@ -35,76 +35,120 @@
   </form>
 </div>
 
-<h2>Existing Agents ({{ agents|length }})</h2>
+<div class="agents-section-header">
+  <h2>Existing Agents (<span data-role="agent-count">{{ agents|length }}</span>)</h2>
+  {% if agents %}
+  <div class="agents-search">
+    <svg width="15" height="15" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><circle cx="11" cy="11" r="7"></circle><line x1="21" y1="21" x2="16.65" y2="16.65"></line></svg>
+    <input type="search" id="agent-search" placeholder="Search name, email, or CRM name…" aria-label="Search agents">
+  </div>
+  {% endif %}
+</div>
+
 {% if agents %}
-<div class="user-list">
+<div class="user-list" data-role="agent-list">
   {% for a in agents %}
   {% set parts = a.display_name.split() %}
-  <div class="agent-card">
+  <div class="agent-card" data-agent-id="{{ a.id }}"
+       data-search="{{ (a.display_name ~ ' ' ~ a.email ~ ' ' ~ a.alias_names()|join(' '))|lower }}">
     <div class="agent-card-header">
       <div class="agent-identity">
         <div class="user-avatar{% if a.is_admin %} is-admin{% endif %}">
           {% if parts|length >= 2 %}{{ (parts[0][0] + parts[1][0])|upper }}{% else %}{{ a.display_name[:2]|upper }}{% endif %}
         </div>
-        <div>
+        <div class="agent-identity-text">
           <div class="agent-name-row">
             <span class="user-name">{{ a.display_name }}</span>
             {% if a.is_admin %}<span class="badge badge-purple">Admin</span>{% endif %}
-            {% if a.password_hash %}<span class="badge badge-gray">Password + Google</span>{% else %}<span class="badge badge-green">Google sign-in only</span>{% endif %}
+            <span class="agent-identity-badges" data-role="identity-badges">
+              {% if a.password_hash %}
+              <span class="status-pill status-pill-neutral" title="Can log in with a password, or with Google">
+                <svg width="11" height="11" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><path d="M21 2l-2 2m-7.61 7.61a5.5 5.5 0 1 1-7.778 7.778 5.5 5.5 0 0 1 7.777-7.777zm0 0L15.5 7.5m0 0l3 3L22 7l-3-3m-3.5 3.5L19 4"></path></svg>
+                Password set
+              </span>
+              {% else %}
+              <span class="status-pill status-pill-google" title="Signs in with their company Google account only">
+                <svg width="11" height="11" viewBox="0 0 18 18"><path fill="#4285F4" d="M17.64 9.2c0-.64-.06-1.25-.16-1.84H9v3.48h4.84a4.14 4.14 0 0 1-1.8 2.72v2.26h2.9c1.7-1.57 2.7-3.88 2.7-6.62z"/><path fill="#34A853" d="M9 18c2.43 0 4.47-.8 5.96-2.18l-2.9-2.26c-.8.54-1.84.86-3.06.86-2.35 0-4.34-1.59-5.05-3.72H.96v2.33A9 9 0 0 0 9 18z"/><path fill="#FBBC05" d="M3.95 10.7A5.4 5.4 0 0 1 3.67 9c0-.59.1-1.17.28-1.7V4.97H.96A9 9 0 0 0 0 9c0 1.45.35 2.83.96 4.03l2.99-2.33z"/><path fill="#EA4335" d="M9 3.58c1.32 0 2.5.46 3.44 1.35l2.58-2.58C13.46.89 11.43 0 9 0A9 9 0 0 0 .96 4.97l2.99 2.33C4.66 5.17 6.65 3.58 9 3.58z"/></svg>
+                Google sign-in only
+              </span>
+              {% endif %}
+            </span>
           </div>
           <div class="user-email">{{ a.email }}</div>
         </div>
       </div>
+
       {% if a.id != current_user.id %}
-      <form method="post" action="{{ url_for('admin.delete_agent', agent_id=a.id) }}" class="js-heavy-action"
-            data-loading-text="Removing user…"
-            data-loading-hint="Revoking login access."
-            onsubmit="return confirm('Remove {{ a.display_name }}\'s login? They will no longer be able to sign in. Their commission history is not affected.');">
-        <button type="submit" class="btn btn-danger btn-sm">Remove User</button>
-      </form>
+      <div class="agent-menu" data-role="agent-menu">
+        <button type="button" class="agent-menu-trigger" data-role="menu-trigger" aria-haspopup="true" aria-expanded="false" title="More actions">
+          <svg width="16" height="16" viewBox="0 0 24 24" fill="currentColor"><circle cx="12" cy="5" r="1.6"></circle><circle cx="12" cy="12" r="1.6"></circle><circle cx="12" cy="19" r="1.6"></circle></svg>
+        </button>
+        <div class="agent-menu-dropdown" data-role="menu-dropdown" role="menu" hidden>
+          <form method="post" action="{{ url_for('admin.delete_agent', agent_id=a.id) }}" data-role="remove-user-form">
+            <button type="button" class="agent-menu-item agent-menu-item-danger" data-role="remove-user-trigger">
+              Remove User
+            </button>
+            <div class="agent-menu-confirm" data-role="remove-user-confirm" hidden>
+              <span>Remove {{ a.display_name }}'s login? They'll no longer be able to sign in.</span>
+              <div class="agent-menu-confirm-actions">
+                <button type="button" class="link-btn" data-role="remove-user-cancel">Cancel</button>
+                <button type="submit" class="link-btn link-btn-danger" data-role="remove-user-confirm-btn">Remove</button>
+              </div>
+            </div>
+          </form>
+        </div>
+      </div>
       {% endif %}
     </div>
 
     <div class="agent-card-body">
-      <div class="agent-section">
-        <div class="user-section-label">Email</div>
-        <form method="post" action="{{ url_for('admin.update_email', agent_id=a.id) }}" class="user-actions">
-          <input type="email" name="email" value="{{ a.email }}" required>
-          <button type="submit" class="btn btn-secondary btn-sm">Update</button>
+      <div class="agent-field">
+        <div class="agent-field-label">Email</div>
+        <form class="agent-inline-form" method="post" action="{{ url_for('admin.update_email', agent_id=a.id) }}"
+              data-role="email-form">
+          <div class="agent-input-wrap">
+            <input type="email" name="email" value="{{ a.email }}" data-original="{{ a.email }}" class="agent-input" required>
+            <span class="agent-input-status" data-role="status" aria-live="polite"></span>
+          </div>
         </form>
-        <p class="form-hint" style="margin:0.5rem 0 0;">Used to log in (password and/or Google) — the agent must use the new address next time.</p>
       </div>
 
-      <div class="agent-section">
-        <div class="user-section-label">Mapped CRM Name(s)</div>
-        <div class="alias-chip-row">
+      <div class="agent-field">
+        <div class="agent-field-label">CRM Mapping</div>
+        <div class="chip-row" data-role="chip-row">
           {% for alias in a.aliases %}
-          <span class="chip">
+          <span class="tag-chip" data-alias-id="{{ alias.id }}">
             {{ alias.agent_name }}
-            <form method="post" action="{{ url_for('admin.delete_alias', alias_id=alias.id) }}">
-              <button type="submit" title="Remove mapping">×</button>
+            <form method="post" action="{{ url_for('admin.delete_alias', alias_id=alias.id) }}" data-role="remove-alias-form">
+              <button type="submit" class="tag-chip-remove" title="Remove mapping" aria-label="Remove {{ alias.agent_name }}">×</button>
             </form>
           </span>
-          {% else %}
-          <span class="chip-empty">No CRM name mapped yet</span>
           {% endfor %}
+          <form method="post" action="{{ url_for('admin.add_alias', agent_id=a.id) }}" class="tag-add-form" data-role="add-alias-form">
+            <input type="text" name="agent_name" class="tag-add-input" placeholder="{% if not a.aliases %}No mapping — add one{% else %}+ Add name{% endif %}">
+          </form>
         </div>
-        <form method="post" action="{{ url_for('admin.add_alias', agent_id=a.id) }}" class="user-actions">
-          <input type="text" name="agent_name" placeholder="Add another CRM name spelling">
-          <button type="submit" class="btn btn-secondary btn-sm">Add</button>
-        </form>
       </div>
 
-      <div class="agent-section">
-        <div class="user-section-label">Password</div>
-        <form method="post" action="{{ url_for('admin.reset_password', agent_id=a.id) }}" class="user-actions">
-          <input type="password" name="password" placeholder="New password" minlength="6" required>
-          <button type="submit" class="btn btn-secondary btn-sm">Reset Password</button>
+      <div class="agent-field">
+        <div class="agent-field-label">Password</div>
+        <div class="password-row" data-role="password-row">
+          <span class="password-status">{{ "Password set" if a.password_hash else "Not set — Google only" }}</span>
+          <button type="button" class="link-btn" data-role="password-toggle">{{ "Change" if a.password_hash else "Set password" }}</button>
+        </div>
+        <form class="agent-inline-form password-reveal-form" method="post" action="{{ url_for('admin.reset_password', agent_id=a.id) }}"
+              data-role="password-form" hidden>
+          <div class="agent-input-wrap">
+            <input type="password" name="password" class="agent-input" placeholder="New password (min. 6 characters)" minlength="6" required>
+            <button type="submit" class="btn btn-primary btn-xs">Save</button>
+            <span class="agent-input-status" data-role="status" aria-live="polite"></span>
+          </div>
         </form>
       </div>
     </div>
   </div>
   {% endfor %}
+  <p class="agent-search-empty" data-role="search-empty" hidden>No agents match your search.</p>
 </div>
 {% else %}
 <p class="muted">No agent accounts yet.</p>
