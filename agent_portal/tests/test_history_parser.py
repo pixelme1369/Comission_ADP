@@ -2,7 +2,7 @@
 
 import pytest
 
-from agent_portal.commission_history_parser import parse_commission_history
+from commission_core.commission_history_parser import parse_commission_history
 
 HEADER = "Month,ID,Sales Rep,Full Name,Enrolled Debt,To subtract,Payments Made,Units,Status,Marketing Campaign\r\n"
 

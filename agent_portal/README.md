@@ -12,25 +12,27 @@ internal app today, just no Google Cloud project or automation involved. The aut
 code path (Option A) is still in the codebase and can be turned on later without any rebuilding —
 see "Google Drive access" below.
 
-This app does not read or write anything in `app/` — it vendors its own copies of
-`calculator.py`, `crm_parser.py`, and `cordoba_parser.py` (see "What's vendored" below) so the two
-apps can evolve independently.
+This app does not read or write anything in `app/`'s own database, but as of August 2026 it
+**shares its commission math with `app/` through `commission_core/`** (see that package's
+`README.md`, right next to this one) instead of vendoring a separate copy — a business-rule change
+now needs one edit, not two kept in sync by hand.
 
-## What's vendored vs. new
+## What's shared vs. new
 
-- `agent_portal/calculator.py`, `agent_portal/cordoba_parser.py`,
-  `agent_portal/commission_history_parser.py` — byte-for-byte copies of the business logic in
-  `app/`'s equivalents (only the internal import path was changed). If the tier table, clawback
-  rules, or classification logic ever change in the main app, copy the updated file here too —
-  there's no shared import between the two apps by design.
-- `agent_portal/crm_parser.py` — same as above, with **one intentional divergence**: it also
-  saves `SAME_MONTH_CANCEL` clients (dropped the same month they cleared, or dropped before
-  their own payout date) as display-only `ClientRecord` rows, so agents can see who dropped
-  without any commission ever being paid on them. The internal app computes this classification
-  too but never persists it anywhere. This never touches units/debt/rate/commission math — see
-  the divergence note at the top of the file. If re-syncing this file from the internal app after
-  a future business-rule change there, re-apply this addition (the `same_month_cancel_buckets`
-  block) rather than dropping it.
+- `commission_core/calculator.py`, `commission_core/cordoba_parser.py`,
+  `commission_core/commission_history_parser.py`, `commission_core/crm_parser.py` — the single
+  shared copy of all commission math, used by both this app and `app/`. See
+  `commission_core/README.md` for why the package physically lives inside `agent_portal/` rather
+  than at the repo root, and that package's own module docstrings for the exact business rules.
+  `commission_core/crm_parser.py`'s **one intentional divergence** from `app/`'s behavior — saving
+  `SAME_MONTH_CANCEL` clients (dropped the same month they cleared, or dropped before their own
+  payout date) as display-only `ClientRecord` rows, so agents can see who dropped without any
+  commission ever being paid on them — plus a second, separate divergence around clawback/late-
+  activation proof-of-payment (owner-confirmed August 2026) are both preserved via keyword-only
+  flags on `parse_crm_and_calculate()`, passed explicitly at this app's own call sites
+  (`routes_admin.py`, `drive_sync.py`) — **do not remove those flags or fork the file** if a future
+  business-rule change needs a third app-specific behavior; add another explicit flag instead and
+  document it in that file's module docstring.
 - Everything else (`models.py`, `auth.py`, `drive_sync.py`, `ingest.py`, `cordoba_ingest.py`,
   `history_ingest.py`, `routes_agent.py`, `routes_admin.py`, templates) is new, built for this
   portal.

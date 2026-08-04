@@ -1,7 +1,59 @@
 """
 Parses a full-history CRM export (one row per client, all months in one file).
 
-For each client row:
+Shared between app/ (the internal single-user tool) and agent_portal/ (the
+multi-user portal) — see commission_core/README.md for why this package
+exists and physically lives where it does. The two apps' calculated
+commission/clawback numbers are IDENTICAL except for two owner-confirmed,
+explicit divergences, both controlled by keyword-only flags on
+parse_crm_and_calculate() rather than forked copies of this file:
+
+1. persist_same_month_cancel (default False, matching app/'s original
+   behavior; agent_portal passes True): when True, clients who dropped the
+   same month they cleared (or before their own payout date) are also
+   surfaced as display-only rows in each period's client list, so agents can
+   see who dropped without any commission ever being paid on them. This
+   never touches units_cleared/total_cleared_debt/cancellation_rate/
+   gross_commission either way — purely a display list. app/ has never
+   shown this list at all; agent_portal added it deliberately.
+
+2. require_prior_payment_evidence (default True, matching app/'s original/
+   still-current policy; agent_portal passes False): governs two related
+   mechanisms that both hinge on "do we have proof this portal already paid
+   the agent for this client, from EARLIER data in our own database":
+     - Late activation: reassigning a client's commission credit forward to
+       the latest period in the file when they're currently cleared but
+       their crm_id was never seen as paid before (see the block below).
+     - The Step 3 clawback guard: refusing to claw back a "clawback"-
+       classified client unless they were either in this file's own cleared
+       bucket or already recorded as paid in the database.
+   True (app/'s policy): both run — a client with no prior-payment evidence
+   in the file/DB is NOT trusted as a genuine late activation or clawback.
+   False (agent_portal's policy, owner-confirmed August 2026 — see
+   "always assume i paid them for previous cleared files" in the commit
+   history): a client's own 1st Payment Cleared Date on the row IS treated
+   as proof enough on its own — every client is always credited in their own
+   real cleared_period (no late-activation reassignment at all), and every
+   clawback-classified row is always clawed back (no proof-of-payment guard)
+   regardless of whether this portal's own upload history happens to be
+   complete. This was an explicit, repeated owner directive for agent_portal
+   specifically; app/ was deliberately left on the older, more conservative
+   policy per owner sign-off during the commission_core merge (August 2026)
+   rather than silently unifying the money math.
+
+Both apps get the Step 3.5 visibility-fix pass (see below) UNCONDITIONALLY,
+regardless of either flag — it has zero effect on any dollar amount, and
+fixes a latent "client silently vanishes from every page" display bug that
+existed under app/'s original policy just as much as agent_portal's (a
+solo reclassified client with no other activity in their own cleared period
+never got a result entry to attach their ClientRecord to). This is the one
+behavior change this merge makes to app/'s output versus its pre-merge code:
+a client who used to vanish now shows up (still $0, still no clawback) in
+the period they belong to. No calculated commission or clawback dollar
+amount for any agent changes.
+
+For each client row, the row-level classification is identical in every
+build:
   - If 1st Payment Cleared Date filled + Dropped Date empty + Status != Pending Affiliate Cancellation
     → CLEARED: counts as a unit in the cleared month, commission is owed
 
@@ -21,14 +73,14 @@ For each client row:
 
   - If 1st Payment Cleared Date filled + Dropped Date filled + different month + never hit the safe
     threshold + dropped on/after the payout date
-    → CLAWBACK: commission was paid in the cleared month, must be deducted in the dropped month
+    → CLAWBACK: commission was paid in the cleared month, must be deducted (see the
+    "latest period in file" policy in Step 3 below)
 
   - If 1st Payment Cleared Date filled + Status == Pending Affiliate Cancellation
     → PENDING: not paid yet
 
 Clawbacks are computed entirely within the parser (no DB lookups needed) since
-the full history is in one file. The clawback amount is applied to the agent's
-dropped-month commission period.
+the full history is in one file.
 
 Credit Score (optional column, owner decision July 2026): a client who clears with
 Credit Score <= 500 still counts as a full unit toward the agent's tier, but earns
@@ -45,7 +97,7 @@ import io
 from collections import defaultdict
 from datetime import datetime
 
-from app.calculator import calculate_agent_commission, calculate_clawback_amount, get_fixed_rate
+from commission_core.calculator import calculate_agent_commission, calculate_clawback_amount, get_fixed_rate
 
 NSF_FLAG_THRESHOLD = 3
 
@@ -103,11 +155,53 @@ def _parse_currency(value: str) -> float:
     return float(value.strip().replace("$", "").replace(",", "") or 0)
 
 
+def _zero_unit_holding_result(agent_name: str) -> dict:
+    """A $0/0-unit commission result shape, for a period where an agent has
+    no genuinely cleared or safe-cancel unit but still needs SOME result
+    entry to attach client records to (a clawback landing in a period with
+    no other activity — see Step 4 — or a client record that needs to stay
+    visible after Step 3 reclassifies it — see the pass right after Step 3).
+    calculate_agent_commission() rejects units_cleared=0 (tiers start at 1),
+    so this is built by hand instead. Every value here is 0/empty — this
+    cannot change what any agent is paid, only what shows up in the UI."""
+    return {
+        "agent_name": agent_name,
+        "units_cleared": 0,
+        "total_cleared_debt": 0.0,
+        "cancellation_rate": 0.0,
+        "hourly_draw": 0.0,
+        "raw_tier": 0,
+        "adjusted_tier": 0,
+        "tier_rate": 0.0,
+        "gross_commission": 0.0,
+        "clawback_amount": 0.0,
+        "net_commission": 0.0,
+        "payout": 0.0,
+        "payout_type": "none",
+        "quality_bonus_eligible": False,
+        "cancellation_penalty_applied": False,
+        "nsf_flagged": False,
+        "pending_units": 0,
+        "pending_debt": 0.0,
+        "source": "crm",
+        "notes": "",
+        "_cleared_clients": [],
+        "_all_period_clients": [],
+    }
+
+
 def parse_crm_and_calculate(file_bytes: bytes, filename: str, already_cleared_crm_ids: set = None,
                              already_charged_back_crm_ids: set = None,
-                             already_low_credit_crm_ids: set = None) -> list:
+                             already_low_credit_crm_ids: set = None,
+                             *,
+                             persist_same_month_cancel: bool = False,
+                             require_prior_payment_evidence: bool = True) -> list:
     """
     Parse a full-history CRM export and return one dict per commission period found.
+
+    persist_same_month_cancel and require_prior_payment_evidence are the two
+    owner-confirmed, app-specific policy flags described in the module
+    docstring above — see there before changing either default.
 
     Returns list of:
     {
@@ -267,11 +361,17 @@ def parse_crm_and_calculate(file_bytes: bytes, filename: str, already_cleared_cr
         })
 
     # ---------------------------------------------------------------
-    # Late activation: if a client is currently cleared (active) but
-    # their crm_id was never saved as is_cleared in the DB, and their
-    # cleared_period is earlier than the latest period in this file,
-    # they were pending before and just became active. Credit their
-    # commission in the latest period instead of their cleared month.
+    # Late activation: gated behind require_prior_payment_evidence (see the
+    # module docstring). When True (app/'s policy): if a client is currently
+    # cleared (active) but their crm_id was never saved as is_cleared in the
+    # DB, and their cleared_period is earlier than the latest period in this
+    # file, they were pending before and just became active — credit their
+    # commission in the latest period instead of their cleared month. When
+    # False (agent_portal's policy): skipped entirely — every client is
+    # always credited in their own real cleared_period, no reassignment,
+    # since a real cleared date on the row is treated as proof enough on its
+    # own that the agent was paid, regardless of what this portal's own
+    # upload history happens to show.
     #
     # Only meaningful when already_cleared_crm_ids reflects real prior
     # history. On a brand-new database (first-ever upload, or right after
@@ -288,12 +388,13 @@ def parse_crm_and_calculate(file_bytes: bytes, filename: str, already_cleared_cr
         already_charged_back_crm_ids = set()
 
     # The latest cleared-month found anywhere in this file — used both for late
-    # activation (below) and, per owner policy (July 2026, see Step 3), as the
-    # period a "commission already paid, needs clawback" deduction lands in.
+    # activation (above, when enabled) and, per owner policy (July 2026, see
+    # Step 3), as the period a "commission already paid, needs clawback"
+    # deduction lands in.
     all_cleared_periods = [c["cleared_period"] for c in all_clients if c["cleared_period"]]
     latest_period_in_file = max(all_cleared_periods) if all_cleared_periods else None
 
-    if already_cleared_crm_ids:
+    if require_prior_payment_evidence and already_cleared_crm_ids:
         latest_period = latest_period_in_file
 
         for c in all_clients:
@@ -317,11 +418,18 @@ def parse_crm_and_calculate(file_bytes: bytes, filename: str, already_cleared_cr
     cancel_buckets = defaultdict(list)       # (agent, period) → cancelled clients (for cancel rate)
     pending_buckets = defaultdict(list)      # (agent, period) → pending clients
     safe_cancel_buckets = defaultdict(list)  # (agent, period) → safe-cancel clients
+    # same_month_cancel_buckets is always built (cheap) — whether it actually
+    # reaches any output depends on persist_same_month_cancel below, in Step 2
+    # and Step 3.5. Never merged into any bucket that feeds units/debt/rate/
+    # commission, regardless of the flag.
+    same_month_cancel_buckets = defaultdict(list)  # (agent, period) → same-month-cancel clients
 
     for c in all_clients:
         key = (c["agent_name"], c["cleared_period"])
         if c["unit_status"] == "cleared":
             cleared_buckets[key].append(c)
+        elif c["unit_status"] == "same_month_cancel":
+            same_month_cancel_buckets[key].append(c)
         elif c["unit_status"] == "safe_cancel":
             # OWNER POLICY (confirmed July 2026): a safe_cancel client protected the
             # agent's commission (enough payments landed before they dropped), but the
@@ -360,6 +468,7 @@ def parse_crm_and_calculate(file_bytes: bytes, filename: str, already_cleared_cr
         safe_cancels = safe_cancel_buckets.get(key, [])
         cancelled = cancel_buckets.get(key, [])
         pending = pending_buckets.get(key, [])
+        same_month_cancels = same_month_cancel_buckets.get(key, []) if persist_same_month_cancel else []
 
         # OWNER POLICY (confirmed July 2026): safe-cancel clients still count as a full
         # unit toward the agent's tier (same "unit credited, $0 commission" treatment as
@@ -385,6 +494,9 @@ def parse_crm_and_calculate(file_bytes: bytes, filename: str, already_cleared_cr
         nsf_flagged = any(c["nsf_count"] >= NSF_FLAG_THRESHOLD
                           for c in tier_units + cancelled + pending)
 
+        # units_cleared is always >= 1 here — key came from cleared_buckets or
+        # safe_cancel_buckets, both of which only gain a key when something is
+        # appended to it.
         result = calculate_agent_commission(
             agent_name=agent_name,
             units_cleared=units_cleared,
@@ -399,7 +511,10 @@ def parse_crm_and_calculate(file_bytes: bytes, filename: str, already_cleared_cr
         result["pending_debt"] = sum(c["enrolled_debt"] for c in pending)
         result["source"] = "crm"
         result["_cleared_clients"] = tier_units
-        result["_all_period_clients"] = tier_units + cancelled + pending
+        # same_month_cancels is display-only (see persist_same_month_cancel above) —
+        # it never touches units_cleared, total_cleared_debt, cancellation_rate, or
+        # gross_commission either way.
+        result["_all_period_clients"] = tier_units + cancelled + pending + same_month_cancels
 
         if len(pending) > 0:
             result["notes"] += f" | {len(pending)} unit(s) pending Affiliate Cancellation review"
@@ -452,6 +567,11 @@ def parse_crm_and_calculate(file_bytes: bytes, filename: str, already_cleared_cr
     # ---------------------------------------------------------------
     # (agent, target_period) → list of (client, clawback_amount)
     clawback_by_target_period = defaultdict(list)
+    # Clients reclassified out of "clawback" below (no proof of prior payment
+    # under require_prior_payment_evidence, or low-credit) — tracked so the
+    # visibility pass right after this loop can make sure they still show up
+    # somewhere. See that pass for why.
+    reclassified_clients = []
 
     for c in all_clients:
         if c["unit_status"] != "clawback":
@@ -468,21 +588,32 @@ def parse_crm_and_calculate(file_bytes: bytes, filename: str, already_cleared_cr
             # double-charge the agent when the CRM export later reflects the drop.
             continue
 
-        # Guard: only clawback if commission was actually paid on this client.
-        # It was paid if the client was in the cleared bucket this file (commission
-        # calculated now) OR was saved as is_cleared=True in a prior DB upload.
-        was_cleared_in_file = any(
-            x.get("crm_id") == crm_id
-            for x in cleared_buckets.get(orig_key, [])
-        )
-        was_paid_in_db = bool(crm_id and crm_id in already_cleared_crm_ids)
+        # Proof-of-payment guard — gated behind require_prior_payment_evidence
+        # (see the module docstring). When True (app/'s policy): a "clawback"
+        # row is reclassified to a non-paying same_month_cancel (no deduction)
+        # unless the client also appeared in THIS file's cleared bucket or had
+        # a prior DB record of is_cleared=True — i.e. we need proof the agent
+        # was ever actually paid before clawing anything back. When False
+        # (agent_portal's policy): skipped — a real 1st Payment Cleared Date
+        # on the row IS treated as proof enough on its own, so every such row
+        # is always clawed back regardless of this portal's own upload
+        # history. Either way, only two things still block a deduction:
+        # already clawed back via Cordoba (above), and low-credit clients,
+        # who were never paid anything to claw back regardless (below).
+        if require_prior_payment_evidence:
+            was_cleared_in_file = any(
+                x.get("crm_id") == crm_id
+                for x in cleared_buckets.get(orig_key, [])
+            )
+            was_paid_in_db = bool(crm_id and crm_id in already_cleared_crm_ids)
 
-        if not was_cleared_in_file and not was_paid_in_db:
-            # Commission was never paid (e.g. client was pending then cancelled).
-            # Reclassify as a non-paying cancel — no clawback applies.
-            c["unit_status"] = "same_month_cancel"
-            c["is_cancelled"] = True
-            continue
+            if not was_cleared_in_file and not was_paid_in_db:
+                # Commission was never paid (e.g. client was pending then cancelled).
+                # Reclassify as a non-paying cancel — no clawback applies.
+                c["unit_status"] = "same_month_cancel"
+                c["is_cancelled"] = True
+                reclassified_clients.append(c)
+                continue
 
         # Guard: a Credit Score <= 500 client earns zero commission when they clear
         # (see Step 2) — there's nothing to claw back if they later drop, even though
@@ -494,6 +625,7 @@ def parse_crm_and_calculate(file_bytes: bytes, filename: str, already_cleared_cr
         if c.get("is_low_credit") or (crm_id and crm_id in already_low_credit_crm_ids):
             c["unit_status"] = "same_month_cancel"
             c["is_cancelled"] = True
+            reclassified_clients.append(c)
             continue
 
         orig_result = agent_period_results.get(orig_key)
@@ -519,6 +651,48 @@ def parse_crm_and_calculate(file_bytes: bytes, filename: str, already_cleared_cr
         clawback_by_target_period[(agent_name, target_period)].append(c)
 
     # ---------------------------------------------------------------
+    # Step 3.5: BUGFIX — visibility for clients just reclassified above.
+    # Applies UNCONDITIONALLY regardless of either policy flag (see the
+    # module docstring) — it has zero effect on any dollar amount.
+    #
+    # A client reclassified from "clawback" to "same_month_cancel" (no proof
+    # of prior payment, or low-credit) was only ever added to cancel_buckets
+    # during the initial classification pass, never cleared_buckets or
+    # safe_cancel_buckets. If that was the ONLY activity for their agent in
+    # their own cleared period, Step 2's tier_keys never included that
+    # (agent, period) at all — no result entry was created, so the client's
+    # record has nowhere to attach and silently vanishes from EVERY page,
+    # with zero trace. Reproduced: a single-row file shaped exactly like this
+    # (cleared one month, dropped a later month, no prior upload/backfill to
+    # prove the agent was ever paid) returned "No commissionable rows found
+    # in file" even though the row parsed and classified correctly.
+    #
+    # If some OTHER client already gave this (agent, period) a result entry
+    # in Step 2, there's nothing to do — cancel_buckets holds a reference to
+    # the same dict Step 2 already read into that entry's _all_period_clients,
+    # so the reclassification above is already reflected there. This only
+    # ever creates a $0/0-unit holding entry for a client whose own row was
+    # never worth anything anyway (the whole reason they were reclassified);
+    # it cannot change any dollar amount for any agent.
+    # ---------------------------------------------------------------
+    for c in reclassified_clients:
+        key = (c["agent_name"], c["cleared_period"])
+        if key in agent_period_results:
+            continue
+        pending = pending_buckets.get(key, [])
+        # Only the reclassified sibling(s) sharing this key — a genuine
+        # (non-reclassified) clawback client sharing the same key deliberately
+        # stays invisible at their OWN cleared period (see Step 3's "latest
+        # period in file" policy above); this must not resurrect them here.
+        cancelled = [x for x in cancel_buckets.get(key, []) if x["unit_status"] != "clawback"]
+        result = _zero_unit_holding_result(c["agent_name"])
+        result["pending_units"] = len(pending)
+        result["pending_debt"] = sum(x["enrolled_debt"] for x in pending)
+        same_month_cancels = same_month_cancel_buckets.get(key, []) if persist_same_month_cancel else []
+        result["_all_period_clients"] = cancelled + pending + same_month_cancels
+        agent_period_results[key] = result
+
+    # ---------------------------------------------------------------
     # Step 4: Apply clawbacks to the target period's results (the latest
     # period in the file — see Step 3). If no commission result exists there
     # yet, create a zero-unit entry just to carry the clawback.
@@ -529,30 +703,7 @@ def parse_crm_and_calculate(file_bytes: bytes, filename: str, already_cleared_cr
 
         if key not in agent_period_results:
             # Agent had no cleared units in the target period — create a holding entry
-            agent_period_results[key] = {
-                "agent_name": agent_name,
-                "units_cleared": 0,
-                "total_cleared_debt": 0.0,
-                "cancellation_rate": 0.0,
-                "hourly_draw": 0.0,
-                "raw_tier": 0,
-                "adjusted_tier": 0,
-                "tier_rate": 0.0,
-                "gross_commission": 0.0,
-                "clawback_amount": 0.0,
-                "net_commission": 0.0,
-                "payout": 0.0,
-                "payout_type": "none",
-                "quality_bonus_eligible": False,
-                "cancellation_penalty_applied": False,
-                "nsf_flagged": False,
-                "pending_units": 0,
-                "pending_debt": 0.0,
-                "source": "crm",
-                "notes": "",
-                "_cleared_clients": [],
-                "_all_period_clients": [],
-            }
+            agent_period_results[key] = _zero_unit_holding_result(agent_name)
 
         r = agent_period_results[key]
         r["clawback_amount"] = round(r.get("clawback_amount", 0.0) + total_cb, 2)

@@ -4,11 +4,11 @@ from sqlalchemy import inspect as sa_inspect, text
 
 from agent_portal import db
 from agent_portal.auth import admin_required
-from agent_portal.calculator import units_to_next_tier, commission_gain_at_next_tier
+from commission_core.calculator import units_to_next_tier, commission_gain_at_next_tier
 from agent_portal.cordoba_ingest import (
     cordoba_display_context, delete_cordoba_upload, list_cordoba_uploads, process_cordoba_file,
 )
-from agent_portal.crm_parser import parse_crm_and_calculate
+from commission_core.crm_parser import parse_crm_and_calculate
 from agent_portal.drive_sync import sync_from_drive
 from agent_portal.history_ingest import allowed_history_file, import_commission_history_files
 from agent_portal.ingest import (
@@ -288,6 +288,10 @@ def upload_csv():
     try:
         period_results = parse_crm_and_calculate(
             file_bytes, file.filename, already_cleared, already_charged_back, already_low_credit,
+            # agent_portal-specific policy flags — see commission_core/crm_parser.py's
+            # module docstring for the owner-confirmed reasoning behind both.
+            persist_same_month_cancel=True,
+            require_prior_payment_evidence=False,
         )
         outcome = save_period_results(period_results, file.filename, source_label="manual")
         db.session.commit()

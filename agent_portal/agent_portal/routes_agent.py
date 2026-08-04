@@ -2,7 +2,7 @@ from flask import Blueprint, render_template, abort
 from flask_login import login_required
 
 from agent_portal.auth import agent_scope_names
-from agent_portal.calculator import units_to_next_tier, commission_gain_at_next_tier
+from commission_core.calculator import units_to_next_tier, commission_gain_at_next_tier
 from agent_portal.cordoba_ingest import cordoba_display_context
 from agent_portal.models import AgentCommission, ClientRecord, CommissionPeriod
 

@@ -24,7 +24,7 @@ import csv
 import io
 from collections import defaultdict
 
-from agent_portal.calculator import calculate_agent_commission
+from commission_core.calculator import calculate_agent_commission
 
 REQUIRED_COLUMNS = {"month", "id", "sales rep", "enrolled debt", "to subtract"}
 

@@ -10,7 +10,7 @@ import io
 
 import pytest
 
-from app.crm_parser import parse_crm_and_calculate, _safe_payment_threshold
+from commission_core.crm_parser import parse_crm_and_calculate, _safe_payment_threshold
 
 HEADERS = [
     "ID", "Sales Rep", "Full Name", "1st Payment Cleared Date", "Dropped Date",
