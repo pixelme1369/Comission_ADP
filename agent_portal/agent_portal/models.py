@@ -14,7 +14,10 @@ class Agent(db.Model, UserMixin):
 
     id = db.Column(db.Integer, primary_key=True)
     email = db.Column(db.String(255), unique=True, nullable=False, index=True)
-    password_hash = db.Column(db.String(255), nullable=False)
+    # Nullable: an agent added by the admin without a password is Google-sign-in-only
+    # (see auth.py's /login/google route). Password login is simply unavailable for
+    # them until an admin sets one via the "Reset Password" form.
+    password_hash = db.Column(db.String(255), nullable=True)
     display_name = db.Column(db.String(255), nullable=False)
     is_admin = db.Column(db.Boolean, default=False, server_default=db.false())
     created_at = db.Column(db.DateTime, default=lambda: datetime.now(timezone.utc))
@@ -25,6 +28,8 @@ class Agent(db.Model, UserMixin):
         self.password_hash = generate_password_hash(password)
 
     def check_password(self, password):
+        if not self.password_hash:
+            return False  # Google-sign-in-only account — no password to check against.
         return check_password_hash(self.password_hash, password)
 
     def alias_names(self):
