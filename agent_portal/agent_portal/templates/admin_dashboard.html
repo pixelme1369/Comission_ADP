@@ -49,6 +49,24 @@
 </div>
 {% endif %}
 
+{% if paid_rate_migration_needed %}
+<div class="card" style="border-left: 4px solid #f59e0b; margin-bottom:1.25rem;">
+  <h2 style="margin-top:0;">⚠ CRM Import Fix Needed</h2>
+  <p class="form-hint" style="margin-bottom:1rem;">
+    This database was created before the Commission History "Rate" column feature shipped, so
+    <code>client_record.paid_rate</code> doesn't exist yet. Uploads currently fall back to the
+    old clawback math automatically, but this one-time fix adds the missing column so the Rate
+    feature (and any upload that queries it) works normally again. It's safe to click even if
+    you're not sure — running it twice does nothing the second time.
+  </p>
+  <form method="post" action="{{ url_for('admin.run_add_paid_rate_column_migration') }}" class="js-heavy-action"
+        data-loading-text="Applying migration…"
+        data-loading-hint="Adding the paid_rate column to client_record.">
+    <button type="submit" class="btn btn-primary">Fix Now</button>
+  </form>
+</div>
+{% endif %}
+
 <div class="upload-grid">
   {% if drive_configured %}
   <div class="card upload-card">

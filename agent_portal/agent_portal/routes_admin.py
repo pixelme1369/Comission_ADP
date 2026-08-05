@@ -69,6 +69,23 @@ def _client_record_columns_are_wide_enough():
     return True
 
 
+def _client_record_has_paid_rate_column():
+    """Whether client_record.paid_rate already exists — False on a database
+    created before the Commission History "Rate" column feature shipped.
+    Every CRM upload queries this column (known_rate_by_crm_id in ingest.py)
+    so a database that hasn't run this migration yet fails the WHOLE upload
+    with a raw Postgres "UndefinedColumn" error, not just the Rate feature.
+    See run_add_paid_rate_column_migration below. Fails open (True, "no
+    action needed") on any introspection error, same reasoning as
+    _password_column_is_nullable above."""
+    try:
+        cols = {c["name"] for c in sa_inspect(db.engine).get_columns("client_record")}
+        return "paid_rate" in cols
+    except Exception:
+        pass
+    return True
+
+
 @bp.route("/")
 @admin_required
 def dashboard():
@@ -87,6 +104,7 @@ def dashboard():
         drive_configured=drive_configured,
         password_migration_needed=not _password_column_is_nullable(),
         column_widen_migration_needed=not _client_record_columns_are_wide_enough(),
+        paid_rate_migration_needed=not _client_record_has_paid_rate_column(),
         crm_uploads=group_periods_by_filename(crm_periods),
         history_uploads=group_periods_by_filename(history_periods),
         cordoba_uploads=list_cordoba_uploads(),
@@ -131,6 +149,29 @@ def run_widen_client_record_columns_migration():
             ))
         db.session.commit()
         flash("Migration applied: client_record columns widened — longer CRM values will no longer fail to import.", "success")
+    except Exception as exc:
+        db.session.rollback()
+        flash(f"Migration failed: {exc}", "error")
+    return redirect(url_for("admin.dashboard"))
+
+
+@bp.route("/migrate/add-paid-rate-column", methods=["POST"])
+@admin_required
+def run_add_paid_rate_column_migration():
+    """One-click fix for databases created before the Commission History
+    "Rate" column feature shipped: client_record.paid_rate doesn't exist yet,
+    so EVERY CRM upload's known_rate_by_crm_id() query 500s with a raw
+    Postgres "UndefinedColumn" error — not just Rate-related clawbacks, the
+    entire import fails and nothing is saved. Same SQL as
+    migrate_add_client_record_paid_rate.py, just triggerable from the admin
+    UI instead of needing local Python + DATABASE_URL access. Safe to click
+    more than once — IF NOT EXISTS is a no-op the second time."""
+    try:
+        db.session.execute(text(
+            "ALTER TABLE client_record ADD COLUMN IF NOT EXISTS paid_rate DOUBLE PRECISION"
+        ))
+        db.session.commit()
+        flash("Migration applied: client_record.paid_rate now exists — CRM uploads will work again.", "success")
     except Exception as exc:
         db.session.rollback()
         flash(f"Migration failed: {exc}", "error")

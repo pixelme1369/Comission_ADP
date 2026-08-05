@@ -178,10 +178,16 @@ agent accounts (see "Sign in with Google" above). Column *type/length* changes a
 `migrate_widen_client_record_columns.py` widens several `client_record` VARCHAR columns that were
 originally sized off one sample CRM row; a real export with a longer value in one of them (an ID,
 a verbose Status/Stage string, etc.) failed the whole import with a raw Postgres "value too long"
-error. All three of these one-off migrations also have a matching **"Fix Now" button on the admin
-dashboard** (shown only when the live database's schema is actually out of date, via a runtime
-`sa_inspect` check) — running the script by hand against `DATABASE_URL` is only needed if you'd
-rather not use the browser.
+error. `migrate_add_client_record_paid_rate.py` adds `client_record.paid_rate` (Commission
+History's "Rate" column feature) the same way — until it runs, every CRM upload's
+`known_rate_by_crm_id()` query fails open (falls back to the old clawback math, doesn't block the
+upload), but any upload that INSERTs a new `ClientRecord` row still hits a raw Postgres
+"UndefinedColumn" error at the ORM level (the model declares the column whether or not the table
+has it), so this one is effectively as urgent as the others despite the read path being
+defensive. All four of these one-off migrations also have a matching **"Fix Now" button on the
+admin dashboard** (shown only when the live database's schema is actually out of date, via a
+runtime `sa_inspect` check) — running the script by hand against `DATABASE_URL` is only needed if
+you'd rather not use the browser.
 
 **`migrate_split_commission_period_source.py` — MUST be run before this code is deployed, not
 self-serve.** It adds `commission_period.source` (needed so Commission History imports and
