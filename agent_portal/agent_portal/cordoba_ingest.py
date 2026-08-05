@@ -36,6 +36,69 @@ def cordoba_display_context(agent_row, clients):
     return cordoba_charged_back_ids, cordoba_chargeback_entries
 
 
+def merge_clawback_with_cordoba_entries(clawback_clients, cordoba_chargeback_entries):
+    """Combines "Clawbacks Applied This Period" (real $ deductions) with
+    "Cordoba Charge back" (a verbatim, looser-gated reconciliation listing —
+    see CordobaChargebackEntry's own docstring) into ONE list for display,
+    instead of two separate page sections (owner request, confirmed): every
+    real clawback row gets a "Cordoba Charge back" Yes/No badge (Yes when a
+    CordobaChargebackEntry also exists for that crm_id), and any crm_id
+    that's ONLY in the Cordoba listing — Cordoba's file says charged back,
+    but nothing has actually been deducted from the agent yet (most commonly:
+    no Dropped Date on file for it yet) — is still shown, with $0.00 and Yes,
+    rather than silently dropped from the page (owner confirmed: nothing
+    should disappear, a $0.00 row just means "flagged, not deducted yet").
+
+    Returns a list of plain dicts (not ClientRecord objects — the two
+    sources don't share a model) with a uniform shape the template can
+    render identically either way."""
+    entry_by_crm_id = {e.crm_id: e for e in cordoba_chargeback_entries if e.crm_id}
+    matched_crm_ids = set()
+    merged = []
+
+    for c in clawback_clients:
+        merged.append({
+            "crm_id": c.crm_id, "client_name": c.client_name, "enrolled_date": c.enrolled_date,
+            "enrolled_debt": c.enrolled_debt, "credit_score": c.credit_score, "is_low_credit": c.is_low_credit,
+            "first_payment_cleared_date": c.first_payment_cleared_date, "dropped_date": c.dropped_date,
+            "payments_made": c.payments_made, "pay_freq": c.pay_freq, "clawback_amount": c.clawback_amount,
+            "email": c.email, "phone": c.phone,
+            "cordoba_charge_back": bool(c.crm_id) and c.crm_id in entry_by_crm_id,
+        })
+        if c.crm_id:
+            matched_crm_ids.add(c.crm_id)
+
+    for crm_id, e in entry_by_crm_id.items():
+        if crm_id in matched_crm_ids:
+            continue
+        # Backfill from OUR OWN ClientRecord history when we have any row for
+        # this crm_id, so this looks the same shape as a real deduction row
+        # wherever possible — never from the Chargebacks file's own Marketing
+        # Payout Debt column (see CLAUDE.md: that column is never used, even
+        # as a fallback, for anything that touches an agent's dollars).
+        own_record = ClientRecord.query.filter_by(crm_id=crm_id).order_by(ClientRecord.id.desc()).first()
+        merged.append({
+            "crm_id": crm_id,
+            "client_name": (own_record.client_name if own_record else None) or e.client_name,
+            "enrolled_date": own_record.enrolled_date if own_record else None,
+            "enrolled_debt": own_record.enrolled_debt if own_record else 0.0,
+            "credit_score": own_record.credit_score if own_record else None,
+            "is_low_credit": own_record.is_low_credit if own_record else False,
+            "first_payment_cleared_date": (
+                own_record.first_payment_cleared_date if own_record else e.first_payment_cleared_date
+            ),
+            "dropped_date": own_record.dropped_date if own_record else None,
+            "payments_made": own_record.payments_made if own_record else e.payments_made,
+            "pay_freq": own_record.pay_freq if own_record else e.pay_freq,
+            "clawback_amount": 0.0,
+            "email": own_record.email if own_record else None,
+            "phone": own_record.phone if own_record else None,
+            "cordoba_charge_back": True,
+        })
+
+    return merged
+
+
 def _get_or_create_agent_period_row(period_label, agent_name, filename):
     """Find (or create a zero-unit) AgentCommission row to carry a clawback that
     has no cleared units of its own in this period. A real, ongoing deduction

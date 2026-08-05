@@ -3,7 +3,7 @@ from flask_login import login_required
 
 from agent_portal.auth import agent_scope_names
 from commission_core.calculator import units_to_next_tier, commission_gain_at_next_tier
-from agent_portal.cordoba_ingest import cordoba_display_context
+from agent_portal.cordoba_ingest import cordoba_display_context, merge_clawback_with_cordoba_entries
 from agent_portal.models import AgentCommission, ClientRecord, CommissionPeriod
 
 bp = Blueprint("agent", __name__, url_prefix="/portal")
@@ -62,11 +62,13 @@ def period_detail(period_id, agent_commission_id):
     clawback_clients = [c for c in clients if c.clawback_applied]
     active_clients = [c for c in clients if not c.clawback_applied]
     cordoba_charged_back_ids, cordoba_chargeback_entries = cordoba_display_context(agent_row, active_clients)
+    # Owner request: one merged "Clawbacks Applied This Period" table with a
+    # Cordoba Charge back Yes/No column, instead of two separate sections.
+    merged_clawback_clients = merge_clawback_with_cordoba_entries(clawback_clients, cordoba_chargeback_entries)
     return render_template(
         "period_detail.html", agent=agent_row, period=agent_row.period,
-        clients=active_clients, clawback_clients=clawback_clients,
+        clients=active_clients, clawback_clients=merged_clawback_clients,
         cordoba_charged_back_ids=cordoba_charged_back_ids,
-        cordoba_chargeback_entries=cordoba_chargeback_entries,
         units_to_next_tier=units_to_next_tier(agent_row.units_cleared, agent_row.agent_name),
         commission_gain_at_next_tier=commission_gain_at_next_tier(
             agent_row.adjusted_tier, agent_row.total_cleared_debt, agent_row.gross_commission,
