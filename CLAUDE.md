@@ -308,7 +308,7 @@ Checked in this order — the payments-made safe threshold is evaluated before t
 | Cleared and dropped same calendar month | `same_month_cancel` — no clawback |
 | Cleared Month A, dropped any time, payments >= threshold | `safe_cancel` — no clawback ever, even if dropped before the payout date |
 | Cleared Month A, dropped before payment date, payments < threshold | `same_month_cancel` — never paid, excluded, no clawback |
-| Cleared Month A, dropped on/after payment date, payments < threshold | `clawback` — commission already sent, deduct from the latest period in the file (see below) |
+| Cleared Month A, dropped on/after payment date, payments < threshold | `clawback` — commission already sent, deduct in the client's own Dropped Date month (see below) |
 
 **Safe payment threshold** (from `Pay Freq.` column):
 | Pay Freq. | Payments needed to be safe |
@@ -336,27 +336,54 @@ cancel — payment threshold met before drop)"` note on the period. Regression-t
 
 **Tier recalculation on clawback:** if removing the cancelled unit drops the agent's tier for the original cleared month, the clawback = full commission difference on all that month's debt (not just the one client's share). If the tier is unchanged, the clawback is just that client's share (`enrolled_debt × orig_rate`). If the agent has no commission result at all for the original cleared month (e.g. they had 0 net cleared units there after other cancels), the clawback falls back to a flat `enrolled_debt × 1%` (lowest tier rate).
 
-**Clawbacks land on the LATEST period found in the file, not the client's own dropped month
-(OWNER POLICY, confirmed July 2026 — supersedes the earlier "deduct in dropped month" rule).**
-Rationale: a CRM export represents "as of now," and its most recent cleared month is effectively
-the payment run about to go out (e.g. uploading in June for a May period paid 6/25) — an
-already-paid client caught dropping should reduce THAT payout directly, not get filed away in a
-separate, possibly-already-passed calendar month that the agent would never otherwise see audited.
-Concretely: a client cleared in March (already paid), and a June upload shows them dropping on
-6/23 with too few payments — since May is the latest cleared month in that file, the deduction
-lands on **May's** commission, not March's or June's. Computed as `latest_period_in_file = max()`
-over every client's `cleared_period` in the file (`crm_parser.py`); clawbacks are summed per
-`(agent, latest_period_in_file)` (`net_commission = max(0, gross_commission - clawback_amount)`).
-If the agent has no cleared units in that period, a zero-unit holding entry is created just to
-carry the clawback — same mechanic as before, just keyed to the latest period instead of the
-dropped month. This does **not** apply to the "dropped before their own payment date" case (`same_month_cancel`
-above) — that client was never paid anything, so there's nothing to redirect; it nets to $0
-regardless of which period it's attributed to. Regression-tested in
-`tests/test_crm_parser.py::TestClawback`.
+**Clawbacks land in the client's own Dropped Date month (OWNER POLICY, confirmed August 2026,
+applies to both `app/` and `agent_portal/` — supersedes the July 2026 "latest period in file"
+rule that used to live here).** Rationale: for payroll/accounting purposes, a clawback needs to be
+traceable to the real event that caused it — this client dropped in *this* month — not floated
+onto whatever the newest month in an unrelated upload happens to be. This is also now consistent
+with how the separate Cordoba-chargeback clawback path has always worked (see below). Concretely:
+a client cleared in March (already paid), and a June upload shows them dropping on 6/23 with too
+few payments — the deduction lands on **June's** commission (their own Dropped Date month), not
+March's (when they were paid) or whatever else happens to be the latest month in that upload.
+Computed as `target_period = c["dropped_period"]` in `crm_parser.py`'s Step 3; clawbacks are
+summed per `(agent, dropped_period)` (`net_commission = max(0, gross_commission -
+clawback_amount)`). If the agent has no cleared units in that period, a zero-unit holding entry is
+created just to carry the clawback. This does **not** apply to the "dropped before their own
+payment date" case (`same_month_cancel` above) — that client was never paid anything, so there's
+nothing to redirect; it nets to $0 regardless of which period it's attributed to. Regression-tested
+in `tests/test_crm_parser.py::TestClawback`.
 
-**Second, independent clawback trigger — Cordoba chargebacks:** everything above describes clawbacks detected from the CRM export itself (a Dropped Date appearing in a later CRM upload). A client can also get clawed back because Cordoba's Chargebacks tab shows they took the marketing payout back from the company — see "Cordoba payout check" above. That path skips the safe-payment-threshold table entirely (claws back unconditionally whenever we previously paid the agent) but reuses the same tier-recalculation math (`calculator.calculate_clawback_amount`). **This path is unaffected by the "latest period in file" change above** — it still deducts in the client's own `ClientRecord.dropped_date` month (`routes.py::_apply_cordoba_chargebacks`), since it operates on one client ID at a time from a Chargebacks-tab file with no broader "latest period" context to anchor to. **The same client is never clawed back twice, in either order:** Cordoba-first is guarded by the `CordobaChargedBackClient` ledger passed into `crm_parser.py` as `already_charged_back_crm_ids`; CRM-first (or history-import "To subtract"-first) is guarded by the Cordoba flow's third gate, which skips any `crm_id` that already has a `clawback_applied=True` `ClientRecord`.
+**Because the target period is now the client's own (fixed, unchanging) Dropped Date instead of a
+"latest period" that advanced forward with every upload, a client's own Dropped Date month is very
+often one that *already has a saved calculated period on file* — this used to be rare under the
+old policy and is now the common case.** Two consequences, both required by this policy and not
+optional extras:
+- **A clawback for an already-existing period is still applied, not silently dropped.** The
+  "period already exists → skip the whole thing" guard that protects against double-importing
+  already-recorded calculated data now applies *only* to genuinely new cleared/safe-cancel units
+  for that month — a clawback found for an existing period is applied via find-or-create (locate
+  or create the agent's zero-unit row within that existing period, add the deduction to it),
+  mirroring how the Cordoba-chargeback path has always attached a deduction to an existing period.
+  If the same upload also tried to credit genuine new units for that month, those are still
+  skipped with a warning (delete the period first to re-import it) — only the clawback portion
+  bypasses the guard. Implemented in `routes.py::upload_crm` (app/) and
+  `ingest.py::save_period_results` (agent_portal/).
+- **`already_charged_back_crm_ids` must include every `crm_id` with `ClientRecord.clawback_applied
+  = True` from ANY source, not just Cordoba's own ledger.** A full-history CRM export re-includes
+  every client ever seen, forever — under the old "latest period in file" rule this was implicitly
+  harmless, because the target period kept advancing forward with each new upload, so a
+  re-detected clawback would (mostly by accident) land somewhere fresh rather than re-deducting an
+  already-recorded one. That accidental protection is gone now that the target period is stable:
+  without broadening this set, every future full-history upload that still contains an
+  already-clawed-back client's row would re-detect and re-apply the same clawback again. Both
+  apps' upload routes now build this set from `CordobaChargedBackClient` **union**
+  `ClientRecord.query.filter_by(clawback_applied=True)`. Regression-tested end to end (real upload
+  routes, not just the parser in isolation) in `tests/test_crm_clawback_own_dropped_month.py` (both
+  apps).
 
-**Skipped-period clawback warning:** when a CRM upload skips a period because it already exists in the DB, any *new* clawback the parser routed into that month (e.g. a Dropped Date backdated into an already-uploaded month) is NOT applied — the upload flashes an explicit warning naming the agent, client, and amount so it isn't silently lost. Clawbacks already recorded in the DB are excluded from the warning, so routine monthly re-uploads of the full-history file stay quiet.
+**Second, independent clawback trigger — Cordoba chargebacks:** everything above describes clawbacks detected from the CRM export itself (a Dropped Date appearing in a later CRM upload). A client can also get clawed back because Cordoba's Chargebacks tab shows they took the marketing payout back from the company — see "Cordoba payout check" above. That path skips the safe-payment-threshold table entirely (claws back unconditionally whenever we previously paid the agent) but reuses the same tier-recalculation math (`calculator.calculate_clawback_amount`). It deducts in the client's own `ClientRecord.dropped_date` month (`routes.py::_apply_cordoba_chargebacks`) — now the same placement rule the CRM-driven path above uses too, so the two paths are consistent with each other. **The same client is never clawed back twice, in either order:** Cordoba-first is guarded by the `CordobaChargedBackClient` ledger passed into `crm_parser.py` as `already_charged_back_crm_ids`; CRM-first (or history-import "To subtract"-first) is guarded by the Cordoba flow's third gate, which skips any `crm_id` that already has a `clawback_applied=True` `ClientRecord`.
+
+**Skipped-period warning, genuine units only:** when a CRM upload finds a period that already exists in the DB, any genuinely new cleared/safe-cancel activity the parser computed for that month is NOT re-imported — the upload flashes an explicit warning so it isn't silently assumed to have been saved; delete the period first to re-import it. (Clawbacks are no longer part of this warning — see above; they're applied to the existing period instead of being lost.)
 
 ## Client Classification (`crm_parser.py`)
 

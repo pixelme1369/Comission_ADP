@@ -159,11 +159,10 @@ class TestClassification:
         ])
         periods = by_period(parse_crm_and_calculate(
             data, "f.csv", already_cleared_crm_ids={"A1", "A2"}))
-        # 3 < 4 -> not safe -> clawback applies, but lands in the latest period
-        # in the file (June, the only cleared month here) rather than the
-        # August drop month (owner policy, July 2026 — see TestClawback).
-        assert "2026-08" not in periods
-        assert periods["2026-06"]["results"][0]["clawback_amount"] > 0
+        # 3 < 4 -> not safe -> clawback applies, landing in A2's own Dropped
+        # Date month (owner policy, August 2026 — see TestClawback), not June.
+        assert periods["2026-06"]["results"][0]["clawback_amount"] == 0.0
+        assert periods["2026-08"]["results"][0]["clawback_amount"] > 0
 
     def test_pending_held_until_threshold(self):
         data = crm_csv([
@@ -188,15 +187,13 @@ class TestClassification:
 
 
 class TestClawback:
-    def test_clawback_deducted_in_latest_period_in_file(self):
-        """Owner policy (confirmed July 2026): a clawback is booked against the
-        LATEST period found anywhere in the file, not the client's own dropped
-        month. Rationale: the file represents "as of now," and its latest month
-        is effectively the payment run about to go out — an already-paid client
-        caught dropping should reduce THAT payout, not a separate calendar month
-        that may already be in the past. This file only contains June-cleared
-        clients, so even though A2 drops in August, the deduction lands on
-        June's own commission instead of creating a separate August entry."""
+    def test_clawback_deducted_in_the_clients_own_dropped_date_month(self):
+        """Owner policy (confirmed August 2026, supersedes the prior "latest
+        period in file" rule): a clawback is booked against the client's own
+        Dropped Date month, for payroll/accounting traceability — the
+        deduction needs to be attributable to the real event that caused it.
+        A2 cleared in June but dropped in August, so the deduction creates
+        its own August entry, separate from June's clean commission."""
         data = crm_csv([
             client("A1", cleared="06/10/2026", debt="20000"),
             client("A3", cleared="06/11/2026", debt="20000"),
@@ -206,22 +203,30 @@ class TestClawback:
         periods = by_period(parse_crm_and_calculate(
             data, "f.csv", already_cleared_crm_ids={"A1", "A2", "A3"}))
 
-        assert "2026-08" not in periods
+        assert set(periods) == {"2026-06", "2026-08"}
         june = periods["2026-06"]["results"][0]
         assert june["units_cleared"] == 2                        # A1, A3 only
         assert june["gross_commission"] == pytest.approx(400.0)  # 40,000 x 1%
         # cancel rate 1/3 = 33% -> penalty, but already Tier 1 (floor) -> no change.
-        # clawback = client share = 10,000 x 1%.
-        assert june["clawback_amount"] == pytest.approx(100.0)
-        assert june["net_commission"] == pytest.approx(300.0)
+        assert june["clawback_amount"] == pytest.approx(0.0)     # nothing deducted here now
+        assert june["net_commission"] == pytest.approx(400.0)
 
-    def test_clawback_from_earlier_cleared_month_lands_in_latest_period(self):
-        """The concrete real-world scenario this policy was built for: a client
-        cleared in March (already paid, per already_cleared_crm_ids), and drops
-        in June — after their own March payout date (April 25) but the file's
-        LATEST cleared month is May (from B1). The deduction lands on May, not
-        June or March, since May is effectively "the payment run about to go
-        out" (paid 6/25) as of this file — owner-confirmed, July 2026."""
+        august = periods["2026-08"]["results"][0]
+        assert august["units_cleared"] == 0                      # zero-unit holding entry
+        # June (A2's own cleared month) has a real result (A1+A3, 2 units) to
+        # recompute against: removing A2 leaves 1 unit, still Tier 1 either
+        # way (the tier floor), so the rate doesn't change -> clawback is
+        # just A2's own share = 10,000 x 1%.
+        assert august["clawback_amount"] == pytest.approx(100.0)
+        assert august["net_commission"] == pytest.approx(0.0)
+
+    def test_clawback_from_earlier_cleared_month_lands_in_own_dropped_month(self):
+        """The concrete real-world scenario this policy is built for: a client
+        cleared in March (already paid, per already_cleared_crm_ids), and
+        drops in June — after their own March payout date (April 25). The
+        deduction lands on June, the client's own Dropped Date month, not May
+        (the file's latest cleared month, from B1) and not March (when they
+        were originally paid) — owner-confirmed, August 2026."""
         data = crm_csv([
             client("B1", cleared="05/10/2026", debt="20000"),
             client("OLD1", cleared="03/05/2026", dropped="06/23/2026",
@@ -230,13 +235,37 @@ class TestClawback:
         periods = by_period(parse_crm_and_calculate(
             data, "f.csv", already_cleared_crm_ids={"B1", "OLD1"}))
 
-        assert "2026-06" not in periods
         assert "2026-03" not in periods
         may = periods["2026-05"]["results"][0]
         assert may["units_cleared"] == 1                        # B1 only
         assert may["gross_commission"] == pytest.approx(200.0)  # 20,000 x 1%
-        assert may["clawback_amount"] == pytest.approx(100.0)   # fallback: 10,000 x 1%
-        assert may["net_commission"] == pytest.approx(100.0)
+        assert may["clawback_amount"] == pytest.approx(0.0)     # nothing deducted here now
+        assert may["net_commission"] == pytest.approx(200.0)
+
+        june = periods["2026-06"]["results"][0]
+        assert june["units_cleared"] == 0                        # zero-unit holding entry
+        assert june["clawback_amount"] == pytest.approx(100.0)   # fallback: 10,000 x 1%
+        assert june["net_commission"] == pytest.approx(0.0)
+
+    def test_clawback_applied_into_the_same_period_as_genuine_activity(self):
+        """If the client's own Dropped Date month happens to coincide with
+        the SAME agent's genuinely-cleared month in this same file, the
+        clawback and the fresh commission land in the same period entry —
+        no separate holding entry needed."""
+        data = crm_csv([
+            client("N1", cleared="08/05/2026", debt="20000"),   # new this month
+            client("A2", cleared="06/12/2026", dropped="08/03/2026",
+                   payments="1", debt="10000"),                 # dropped this month
+        ])
+        periods = by_period(parse_crm_and_calculate(
+            data, "f.csv", already_cleared_crm_ids={"A2"}))
+
+        assert set(periods) == {"2026-08"}
+        august = periods["2026-08"]["results"][0]
+        assert august["units_cleared"] == 1                        # N1 only
+        assert august["gross_commission"] == pytest.approx(200.0)  # 20,000 x 1%
+        assert august["clawback_amount"] == pytest.approx(100.0)   # fallback: 10,000 x 1%
+        assert august["net_commission"] == pytest.approx(100.0)
 
     def test_first_upload_without_db_history_never_claws_back(self):
         # Fresh DB: the app never recorded paying this client, so no clawback.

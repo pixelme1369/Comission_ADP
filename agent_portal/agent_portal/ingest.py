@@ -76,9 +76,15 @@ def _new_client_record(period_id, agent_commission_id, cr, **overrides):
 def already_known_crm_id_sets():
     """crm_ids this DB already knows about, for the parser's late-activation /
     clawback-guard / low-credit-guard / already-paid-via-history logic.
-    already_charged_back comes from the Cordoba chargeback ledger (see
-    cordoba_ingest.py) so a CRM upload reflecting a drop already clawed back
-    via a Cordoba Chargebacks file never double-charges the agent.
+    already_charged_back comes from BOTH the Cordoba chargeback ledger (see
+    cordoba_ingest.py) AND every ClientRecord already clawed back via a PRIOR
+    CRM upload — owner policy, confirmed August 2026: clawbacks now land in
+    the client's own Dropped Date month (not "latest period in file"), which
+    is stable/unchanging across every future upload, so without the
+    CRM-sourced half of this set, a full-history re-upload would re-detect
+    and re-apply the SAME clawback every single time (the target period
+    never advances forward the way "latest period in file" used to). See
+    commission_core/crm_parser.py's module docstring for the full mechanism.
     already_history_paid comes from Commission History imports specifically
     (source="history_import" periods only) — owner policy, confirmed August
     2026: "This file has already been paid. Don't calculate it again. Only
@@ -90,6 +96,9 @@ def already_known_crm_id_sets():
     }
     already_charged_back = {
         r[0] for r in db.session.query(CordobaChargedBackClient.crm_id) if r[0]
+    } | {
+        r[0] for r in db.session.query(ClientRecord.crm_id)
+        .filter(ClientRecord.clawback_applied.is_(True)) if r[0]
     }
     already_low_credit = {
         r[0] for r in db.session.query(ClientRecord.crm_id)
@@ -104,6 +113,29 @@ def already_known_crm_id_sets():
     return already_cleared, already_charged_back, already_low_credit, already_history_paid
 
 
+def _get_or_create_crm_agent_row(period, agent_name):
+    """Find (or create a zero-unit) AgentCommission row to carry a clawback
+    that has no cleared units of its own in this period, tagged
+    source="crm" — the CRM-upload equivalent of cordoba_ingest.py's
+    _get_or_create_agent_period_row (source="cordoba" there), used now that
+    CRM-driven clawbacks can land in an already-existing period just as
+    often as Cordoba-driven ones can."""
+    agent_row = AgentCommission.query.filter_by(period_id=period.id, agent_name=agent_name).first()
+    if not agent_row:
+        agent_row = AgentCommission(
+            period_id=period.id, agent_name=agent_name,
+            units_cleared=0, total_cleared_debt=0.0, cancellation_rate=0.0, hourly_draw=0.0,
+            raw_tier=0, adjusted_tier=0, tier_rate=0.0, gross_commission=0.0,
+            clawback_amount=0.0, net_commission=0.0, payout=0.0, payout_type="none",
+            quality_bonus_eligible=False, cancellation_penalty_applied=False, nsf_flagged=False,
+            pending_units=0, pending_debt=0.0, source="crm", notes="",
+        )
+        db.session.add(agent_row)
+        db.session.flush()
+        period.total_agents = (period.total_agents or 0) + 1
+    return agent_row
+
+
 def save_period_results(period_results, filename, source_label="drive"):
     """Persist parse_crm_and_calculate()'s output. Does NOT commit — caller
     commits (so drive_sync.py can add its SyncedFile ledger row in the same
@@ -111,6 +143,10 @@ def save_period_results(period_results, filename, source_label="drive"):
     periods_created = []
     warnings = []
     seen_errors = set()
+
+    # A client already confirmed paid via a prior Cordoba First Pays/EPF
+    # upload should come in pre-flagged even though this file predates it.
+    already_cordoba_paid_ids = {r[0] for r in db.session.query(CordobaPaidClient.crm_id)}
 
     for parsed in period_results:
         for err in parsed.get("errors", []):
@@ -127,76 +163,111 @@ def save_period_results(period_results, filename, source_label="drive"):
         # CommissionPeriod's docstring) must never block a real calculated
         # period from being created for the same month.
         existing = CommissionPeriod.query.filter_by(period_label=period_label, source="crm").first()
-        if existing:
-            # A skipped period silently discards anything the parser computed for
-            # it, including any NEW clawback routed there — warn rather than lose
-            # it silently (mirrors app/routes.py's upload_crm skip-warning).
-            cb_clients = [c for r in parsed["results"] for c in r.get("_clawback_clients", [])]
-            if cb_clients:
-                cb_ids = {c["crm_id"] for c in cb_clients if c.get("crm_id")}
-                already_recorded = {
-                    r[0] for r in db.session.query(ClientRecord.crm_id).filter(
-                        ClientRecord.crm_id.in_(cb_ids),
-                        ClientRecord.clawback_applied.is_(True),
-                    )
-                } if cb_ids else set()
-                new_cb = [c for c in cb_clients
-                          if not c.get("crm_id") or c["crm_id"] not in already_recorded]
-                if new_cb:
-                    total = sum(c.get("clawback_amount", 0.0) for c in new_cb)
-                    warnings.append(
-                        f"Period {period_label} already exists — {len(new_cb)} new clawback(s) "
-                        f"totaling ${total:,.2f} were NOT applied. Delete period {period_label} "
-                        "and re-import to apply them."
-                    )
+
+        if not existing:
+            period = CommissionPeriod(
+                period_label=period_label, filename=filename, total_agents=len(parsed["results"]),
+                source="crm",
+            )
+            db.session.add(period)
+            db.session.flush()
+
+            agent_obj_map = {}
+            for r in parsed["results"]:
+                all_period_clients = r.pop("_all_period_clients", [])
+                clawback_clients = r.pop("_clawback_clients", [])
+                r.pop("_cleared_clients", None)
+                r.pop("_period_label", None)
+                r["source"] = source_label
+
+                agent_obj = AgentCommission(period_id=period.id, **r)
+                db.session.add(agent_obj)
+                db.session.flush()
+                agent_obj_map[r["agent_name"]] = {
+                    "obj": agent_obj,
+                    "all_period_clients": all_period_clients,
+                    "clawback_clients": clawback_clients,
+                }
+
+            for agent_name, data in agent_obj_map.items():
+                agent_obj = data["obj"]
+                for cr in data["all_period_clients"]:
+                    db.session.add(_new_client_record(
+                        period.id, agent_obj.id, cr,
+                        is_late_activation=cr.get("is_late_activation", False),
+                        original_cleared_period=cr.get("original_cleared_period"),
+                        cordoba_paid=cr.get("crm_id") in already_cordoba_paid_ids,
+                    ))
+                for cr in data["clawback_clients"]:
+                    db.session.add(_new_client_record(
+                        period.id, agent_obj.id, cr,
+                        is_cleared=False, is_pending=False, is_cancelled=True,
+                        commission_on_client=0.0, clawback_applied=True,
+                        clawback_period_id=period.id, clawback_amount=cr.get("clawback_amount", 0.0),
+                    ))
+
+            periods_created.append(period_label)
             continue
 
-        period = CommissionPeriod(
-            period_label=period_label, filename=filename, total_agents=len(parsed["results"]),
-            source="crm",
-        )
-        db.session.add(period)
-        db.session.flush()
+        # Period already exists. Genuine new cleared/safe-cancel activity for that
+        # month is NOT re-imported here (unchanged protection against double-counting
+        # an already-recorded month — delete it first to re-import). But any NEW
+        # clawback found for this month IS still applied: now that clawbacks target
+        # the client's own Dropped Date month (owner policy, confirmed August 2026),
+        # that month is very often one that already exists on file — that's no longer
+        # a reason to silently lose the clawback. Applied via find-or-create, mirroring
+        # how the separate Cordoba-chargeback flow has always attached a deduction to
+        # an existing period (cordoba_ingest.py's _get_or_create_agent_period_row).
+        period_had_new_units = any(r.get("units_cleared", 0) > 0 for r in parsed["results"])
+        new_clawback_total = 0.0
+        new_clawback_count = 0
 
-        # A client already confirmed paid via a prior Cordoba First Pays/EPF
-        # upload should come in pre-flagged even though this file predates it.
-        already_cordoba_paid_ids = {r[0] for r in db.session.query(CordobaPaidClient.crm_id)}
-
-        agent_obj_map = {}
         for r in parsed["results"]:
-            all_period_clients = r.pop("_all_period_clients", [])
-            clawback_clients = r.pop("_clawback_clients", [])
-            r.pop("_cleared_clients", None)
-            r.pop("_period_label", None)
-            r["source"] = source_label
+            clawback_clients = r.get("_clawback_clients", [])
+            if not clawback_clients:
+                continue
 
-            agent_obj = AgentCommission(period_id=period.id, **r)
-            db.session.add(agent_obj)
-            db.session.flush()
-            agent_obj_map[r["agent_name"]] = {
-                "obj": agent_obj,
-                "all_period_clients": all_period_clients,
-                "clawback_clients": clawback_clients,
-            }
+            agent_name = r["agent_name"]
+            cb_ids = {c["crm_id"] for c in clawback_clients if c.get("crm_id")}
+            already_recorded = {
+                x[0] for x in db.session.query(ClientRecord.crm_id).filter(
+                    ClientRecord.crm_id.in_(cb_ids),
+                    ClientRecord.clawback_applied.is_(True),
+                )
+            } if cb_ids else set()
+            new_cb = [c for c in clawback_clients
+                      if not c.get("crm_id") or c["crm_id"] not in already_recorded]
+            if not new_cb:
+                continue
 
-        for agent_name, data in agent_obj_map.items():
-            agent_obj = data["obj"]
-            for cr in data["all_period_clients"]:
+            agent_row = _get_or_create_crm_agent_row(existing, agent_name)
+            total_cb = round(sum(c.get("clawback_amount", 0.0) for c in new_cb), 2)
+            agent_row.clawback_amount = round((agent_row.clawback_amount or 0.0) + total_cb, 2)
+            agent_row.net_commission = max(0.0, round(agent_row.gross_commission - agent_row.clawback_amount, 2))
+            agent_row.notes = (agent_row.notes or "") + \
+                f" | Clawback -${total_cb:,.2f} from {len(new_cb)} previously-paid cancelled client(s)"
+
+            for cr in new_cb:
                 db.session.add(_new_client_record(
-                    period.id, agent_obj.id, cr,
-                    is_late_activation=cr.get("is_late_activation", False),
-                    original_cleared_period=cr.get("original_cleared_period"),
-                    cordoba_paid=cr.get("crm_id") in already_cordoba_paid_ids,
-                ))
-            for cr in data["clawback_clients"]:
-                db.session.add(_new_client_record(
-                    period.id, agent_obj.id, cr,
+                    existing.id, agent_row.id, cr,
                     is_cleared=False, is_pending=False, is_cancelled=True,
                     commission_on_client=0.0, clawback_applied=True,
-                    clawback_period_id=period.id, clawback_amount=cr.get("clawback_amount", 0.0),
+                    clawback_period_id=existing.id, clawback_amount=cr.get("clawback_amount", 0.0),
                 ))
+            new_clawback_total += total_cb
+            new_clawback_count += len(new_cb)
 
-        periods_created.append(period_label)
+        if period_had_new_units:
+            warnings.append(
+                f"Period {period_label} already exists — new cleared/safe-cancel activity for that "
+                "month was NOT re-imported. Delete it first if you need to re-import that month's "
+                "calculated commissions."
+            )
+        if new_clawback_count:
+            warnings.append(
+                f"Period {period_label} already existed — applied {new_clawback_count} new "
+                f"clawback(s) totaling ${new_clawback_total:,.2f} to it."
+            )
 
     return {"periods_created": periods_created, "warnings": warnings}
 
