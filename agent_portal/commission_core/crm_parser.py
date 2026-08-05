@@ -158,7 +158,10 @@ import io
 from collections import defaultdict
 from datetime import datetime
 
-from commission_core.calculator import calculate_agent_commission, calculate_clawback_amount, get_fixed_rate
+from commission_core.calculator import (
+    agent_identity_key, calculate_agent_commission, calculate_clawback_amount,
+    canonicalize_agent_names, get_fixed_rate,
+)
 
 NSF_FLAG_THRESHOLD = 3
 
@@ -453,6 +456,15 @@ def parse_crm_and_calculate(file_bytes: bytes, filename: str, already_cleared_cr
             "commission_on_client": 0.0,   # filled in below
             "clawback_amount": 0.0,        # filled in below
         })
+
+    # Collapse casing/whitespace variants of the same real agent's name into
+    # one canonical spelling BEFORE any bucket-keying below — see
+    # canonicalize_agent_names' own docstring for why this matters (a real,
+    # confirmed case: "amir moayeri" and "Amir Moayeri" both appearing in one
+    # CRM export, which would otherwise split that agent's production into
+    # two separate, artificially smaller tier calculations for the same
+    # period).
+    canonicalize_agent_names(all_clients)
 
     # ---------------------------------------------------------------
     # Late activation: gated behind require_prior_payment_evidence (see the
@@ -766,7 +778,13 @@ def parse_crm_and_calculate(file_bytes: bytes, filename: str, already_cleared_cr
         # own docstring above and the module docstring's item 4). Only falls back to
         # the in-file recomputation when the DB has no record of that period at all
         # yet (e.g. this same file is creating it for the first time).
-        orig_result = known_period_totals.get(orig_key) or agent_period_results.get(orig_key)
+        # Looked up by agent_identity_key (case/whitespace-insensitive), not the raw
+        # orig_key tuple — known_period_totals is built that way (see ingest.py)
+        # specifically so a casing difference between this file and an earlier
+        # upload (or the Commission History file) can't cause a miss here the way
+        # it can't within a single file either (see canonicalize_agent_names above).
+        known_key = (agent_identity_key(agent_name), cleared_period)
+        orig_result = known_period_totals.get(known_key) or agent_period_results.get(orig_key)
         if not orig_result:
             # Commission record not found (agent had 0 cleared in that month after cancels)
             # Clawback = just this client's debt × lowest possible rate (or the agent's
