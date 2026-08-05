@@ -261,7 +261,8 @@ def parse_crm_and_calculate(file_bytes: bytes, filename: str, already_cleared_cr
                              *,
                              persist_same_month_cancel: bool = False,
                              require_prior_payment_evidence: bool = True,
-                             known_period_totals: dict = None) -> list:
+                             known_period_totals: dict = None,
+                             known_enrolled_debt_by_crm_id: dict = None) -> list:
     """
     Parse a full-history CRM export and return one dict per commission period found.
 
@@ -269,6 +270,8 @@ def parse_crm_and_calculate(file_bytes: bytes, filename: str, already_cleared_cr
     already_history_paid_crm_ids, and known_period_totals are the four
     owner-confirmed/bug-fix, app-specific divergences described in the
     module docstring above — see there before changing any of them.
+    known_enrolled_debt_by_crm_id is a fifth, but NOT app-specific — both
+    apps should pass it; see its own docstring below.
 
     known_period_totals: {(agent_name, period_label): {"units_cleared": int,
     "total_cleared_debt": float, "gross_commission": float,
@@ -280,6 +283,34 @@ def parse_crm_and_calculate(file_bytes: bytes, filename: str, already_cleared_cr
     month (see already_history_paid_crm_ids above). Falls back to the
     in-file recomputation when a period hasn't been saved yet (e.g. this
     very file is about to create it for the first time).
+
+    known_enrolled_debt_by_crm_id: {crm_id: enrolled_debt, ...} — owner
+    policy, confirmed: a clawback's dollar amount must be based on the
+    Enrolled Debt that was ACTUALLY used to calculate the client's original
+    commission — not whatever a LATER CRM export happens to show for that
+    same crm_id's Enrolled Debt column today. Confirmed real case: a client
+    paid via a Commission History import with Enrolled Debt $30,688 showed
+    Enrolled Debt $2,664.62 in a later CRM export's row for the same crm_id
+    (the two disagreeing is a source-data fact, not a parsing bug — Cordoba's
+    own systems evidently revise this figure over time). Before this
+    parameter existed, a "clawback"-classified row (built entirely from THIS
+    file's own columns — see Step 1) always used ITS OWN row's Enrolled Debt
+    for both the displayed amount and the deduction math, silently pulling in
+    whatever the CRM currently says instead of what was actually paid on.
+    Callers should build this from ClientRecord.query.filter(is_cleared=True)
+    (crm_id -> enrolled_debt) — the same original-clear record already
+    consulted for already_cleared_crm_ids/already_history_paid_crm_ids —
+    covering both Commission-History-paid AND CRM-paid originals, since the
+    same drift can in principle happen between two CRM exports too, not just
+    History vs CRM. Step 3 overwrites c["enrolled_debt"] with the known value
+    (when present) for a "clawback"-classified row before either displaying
+    it or computing the deduction, so the two can never disagree with each
+    other the way the CRM's own re-exported figure could. Only ever touches
+    "clawback" rows — never "cleared"/"pending"/other statuses, and never
+    changes a currently-active client's own ongoing commission math. Falls
+    back to the row's own Enrolled Debt when the crm_id isn't in this dict
+    (e.g. a client dropping in the very same upload that first cleared them,
+    with nothing saved in the DB yet to compare against).
 
     already_charged_back_crm_ids (owner policy, confirmed August 2026): must
     contain every crm_id that already has ANY ClientRecord with
@@ -312,6 +343,8 @@ def parse_crm_and_calculate(file_bytes: bytes, filename: str, already_cleared_cr
         already_history_paid_crm_ids = set()
     if known_period_totals is None:
         known_period_totals = {}
+    if known_enrolled_debt_by_crm_id is None:
+        known_enrolled_debt_by_crm_id = {}
 
     try:
         text = file_bytes.decode("utf-8-sig")
@@ -723,6 +756,18 @@ def parse_crm_and_calculate(file_bytes: bytes, filename: str, already_cleared_cr
         cleared_period = c["cleared_period"]
         target_period = c["dropped_period"]
         orig_key = (agent_name, cleared_period)
+
+        # Use the Enrolled Debt that was ACTUALLY used to calculate this client's
+        # original commission (Commission History import or an earlier CRM period),
+        # not whatever THIS file's own row currently shows — a CRM re-export can
+        # (and does — see known_enrolled_debt_by_crm_id's own docstring above)
+        # report a different Enrolled Debt for the same crm_id than what the
+        # original payment was based on. Overwritten in place so the displayed
+        # "Enrolled Debt" and the clawback math below can never disagree with each
+        # other. Must happen before the calculate_clawback_amount call and the
+        # fallback branch right below it, both of which read c["enrolled_debt"].
+        if crm_id and crm_id in known_enrolled_debt_by_crm_id:
+            c["enrolled_debt"] = known_enrolled_debt_by_crm_id[crm_id]
 
         if crm_id and crm_id in already_charged_back_crm_ids:
             # Already clawed back — either via a Cordoba Chargebacks-tab
