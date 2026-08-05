@@ -145,11 +145,25 @@ def known_rate_by_crm_id():
     never appears here). Used to claw back enrolled_debt * paid_rate verbatim
     instead of recalculating a rate through the tier table. See
     known_rate_by_crm_id's own docstring on parse_crm_and_calculate for the
-    full mechanism."""
-    return {
-        r[0]: r[1] for r in db.session.query(ClientRecord.crm_id, ClientRecord.paid_rate)
-        .filter(ClientRecord.is_cleared.is_(True), ClientRecord.paid_rate.isnot(None)) if r[0]
-    }
+    full mechanism.
+
+    Fails open (returns {}, i.e. "no known rates" — every clawback just falls
+    back to the ordinary tier-recalculation formula, same as before this
+    feature existed) on a database that hasn't run
+    migrate_add_client_record_paid_rate.py yet, instead of taking down the
+    ENTIRE CRM upload with a raw Postgres "UndefinedColumn" error the moment
+    this query runs. See routes_admin.py's paid_rate_migration_needed for the
+    one-click fix banner shown on the admin dashboard in that case — this is
+    just the safety net so an upload still succeeds (just without the Rate
+    feature) even before that fix gets clicked."""
+    try:
+        return {
+            r[0]: r[1] for r in db.session.query(ClientRecord.crm_id, ClientRecord.paid_rate)
+            .filter(ClientRecord.is_cleared.is_(True), ClientRecord.paid_rate.isnot(None)) if r[0]
+        }
+    except Exception:
+        db.session.rollback()
+        return {}
 
 
 def known_period_totals():
