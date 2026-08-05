@@ -13,7 +13,7 @@ from agent_portal.drive_sync import sync_from_drive
 from agent_portal.history_ingest import allowed_history_file, import_commission_history_files
 from agent_portal.ingest import (
     already_known_crm_id_sets, bulk_delete_period, delete_periods_by_filename,
-    group_periods_by_filename, save_period_results,
+    group_periods_by_filename, known_period_totals, save_period_results,
 )
 from agent_portal.models import Agent, AgentAlias, AgentCommission, ClientRecord, CommissionPeriod, SyncedFile
 
@@ -294,9 +294,10 @@ def upload_csv():
             file_bytes, file.filename, already_cleared, already_charged_back, already_low_credit,
             already_history_paid,
             # agent_portal-specific policy flags — see commission_core/crm_parser.py's
-            # module docstring for the owner-confirmed reasoning behind all three.
+            # module docstring for the owner-confirmed reasoning behind all four.
             persist_same_month_cancel=True,
             require_prior_payment_evidence=False,
+            known_period_totals=known_period_totals(),
         )
         outcome = save_period_results(period_results, file.filename, source_label="manual")
         db.session.commit()

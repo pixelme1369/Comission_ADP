@@ -206,7 +206,7 @@
         <th>Enrolled Date</th>
         <th>Enrolled Debt</th>
         <th>Credit Score</th>
-        <th>Originally Cleared</th>
+        <th>1st Payment Cleared Date</th>
         <th>Dropped Date</th>
         <th>Payments Made</th>
         <th>Pay Freq.</th>
@@ -228,8 +228,8 @@
             <span class="badge badge-amber" title="Credit Score <= 500 — counts toward tier, no commission">$0</span>
           {% endif %}
         </td>
-        <td>{{ c.first_payment_cleared_date }}</td>
-        <td>{{ c.dropped_date }}</td>
+        <td>{{ c.first_payment_cleared_date or '—' }}</td>
+        <td>{{ c.dropped_date or '—' }}</td>
         <td>{{ c.payments_made }}</td>
         <td>{{ c.pay_freq or '—' }}</td>
         <td><strong style="color:#991b1b;">-${{ "{:,.2f}".format(c.clawback_amount) }}</strong></td>

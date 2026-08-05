@@ -71,6 +71,37 @@ parse_crm_and_calculate() rather than forked copies of this file:
    month in the first place — there is nothing for this set to protect
    against there. Passing None (app/'s call sites) is a complete no-op.
 
+4. known_period_totals (default None/empty dict; app/ never passes this —
+   structurally can't need it, same reasoning as already_history_paid_crm_ids
+   above — agent_portal passes the DB's actual saved totals for every
+   (agent_name, period_label) it already has on file, summed across every
+   source): fixes a real bug that already_history_paid_crm_ids introduces
+   into Step 3's clawback math. Step 3 needs to know "what was this agent's
+   tier/commission in their ORIGINAL cleared month" to compute how much of
+   it to claw back — and it reconstructs that purely by re-running Steps 1-2
+   on THIS SAME file's rows. That reconstruction is accurate for app/ (a
+   month is always either wholly a Commission History import or wholly
+   CRM-computed, never both, so every one of that month's real cleared
+   clients is always visible in cleared_buckets). It is NOT accurate for
+   agent_portal, precisely because already_history_paid_crm_ids exists:
+   most or all of a heavily-history-backfilled month's real clients get
+   deliberately excluded from cleared_buckets (to avoid double-crediting
+   them), so a fresh recompute of that month can land on far fewer units
+   than the agent was actually paid on — sometimes exactly one leftover
+   unit that wasn't in the history file at all (e.g. a Credit Score <= 500
+   or safe_cancel client, who contributes a unit but $0 debt/commission).
+   When that happens, calculate_clawback_amount's "orig_units <= 1 -> claw
+   back the whole month's gross_commission" shortcut returns that leftover
+   unit's $0 gross_commission for a COMPLETELY DIFFERENT client's clawback —
+   a real production bug, confirmed against a live case where 9+ clawbacks
+   across 9 different agents all landed at $0.00 this way. known_period_totals
+   fixes it by giving Step 3 the DB's actual authoritative totals for that
+   (agent, period) — summed across every CommissionPeriod source sharing that
+   period_label, since agent_portal allows a "crm" period and a
+   "history_import" period for the same month to coexist — to use INSTEAD OF
+   the in-file recompute whenever a DB record already exists. See
+   agent_portal/ingest.py's known_period_totals() for the query.
+
 Both apps get the Step 3.5 visibility-fix pass (see below) UNCONDITIONALLY,
 regardless of either flag — it has zero effect on any dollar amount, and
 fixes a latent "client silently vanishes from every page" display bug that
@@ -226,14 +257,26 @@ def parse_crm_and_calculate(file_bytes: bytes, filename: str, already_cleared_cr
                              already_history_paid_crm_ids: set = None,
                              *,
                              persist_same_month_cancel: bool = False,
-                             require_prior_payment_evidence: bool = True) -> list:
+                             require_prior_payment_evidence: bool = True,
+                             known_period_totals: dict = None) -> list:
     """
     Parse a full-history CRM export and return one dict per commission period found.
 
-    persist_same_month_cancel, require_prior_payment_evidence, and
-    already_history_paid_crm_ids are the three owner-confirmed, app-specific
-    policy divergences described in the module docstring above — see there
-    before changing any of them.
+    persist_same_month_cancel, require_prior_payment_evidence,
+    already_history_paid_crm_ids, and known_period_totals are the four
+    owner-confirmed/bug-fix, app-specific divergences described in the
+    module docstring above — see there before changing any of them.
+
+    known_period_totals: {(agent_name, period_label): {"units_cleared": int,
+    "total_cleared_debt": float, "gross_commission": float,
+    "cancellation_rate": float}, ...} — the DB's actual saved totals for
+    periods that already exist, summed across every source sharing that
+    period_label. Step 3 uses this INSTEAD OF its own in-file recomputation
+    of a client's original cleared period whenever an entry is present,
+    since the in-file recomputation can be an incomplete picture of that
+    month (see already_history_paid_crm_ids above). Falls back to the
+    in-file recomputation when a period hasn't been saved yet (e.g. this
+    very file is about to create it for the first time).
 
     already_charged_back_crm_ids (owner policy, confirmed August 2026): must
     contain every crm_id that already has ANY ClientRecord with
@@ -264,6 +307,8 @@ def parse_crm_and_calculate(file_bytes: bytes, filename: str, already_cleared_cr
         already_low_credit_crm_ids = set()
     if already_history_paid_crm_ids is None:
         already_history_paid_crm_ids = set()
+    if known_period_totals is None:
+        known_period_totals = {}
 
     try:
         text = file_bytes.decode("utf-8-sig")
@@ -714,7 +759,14 @@ def parse_crm_and_calculate(file_bytes: bytes, filename: str, already_cleared_cr
             reclassified_clients.append(c)
             continue
 
-        orig_result = agent_period_results.get(orig_key)
+        # Prefer the DB's actual saved totals for the original cleared period, when
+        # known — this file's own recomputation of that period (agent_period_results)
+        # can be an incomplete picture of it whenever already_history_paid_crm_ids
+        # excluded most/all of that month's real clients (see known_period_totals'
+        # own docstring above and the module docstring's item 4). Only falls back to
+        # the in-file recomputation when the DB has no record of that period at all
+        # yet (e.g. this same file is creating it for the first time).
+        orig_result = known_period_totals.get(orig_key) or agent_period_results.get(orig_key)
         if not orig_result:
             # Commission record not found (agent had 0 cleared in that month after cancels)
             # Clawback = just this client's debt × lowest possible rate (or the agent's
