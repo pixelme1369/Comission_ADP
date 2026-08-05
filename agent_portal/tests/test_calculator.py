@@ -66,6 +66,29 @@ class TestFixedRateOverride:
         )
         assert cb == pytest.approx(525.0)  # 30,000 x 1.75%
 
+    def test_fixed_rate_clawback_ignores_orig_units_shortcut(self):
+        # Real production bug: the client being clawed back doesn't count toward
+        # their own agent's orig_units for their own cleared month (a row that
+        # already shows both a cleared AND dropped date is classified straight to
+        # "clawback", never entering cleared_buckets — see crm_parser.py). So it's
+        # entirely possible for a fixed-rate agent's original cleared month to come
+        # back with orig_units <= 1 and orig_gross_commission == 0.0 (e.g. the only
+        # other "unit" that month was a Credit Score <= 500 client, who counts as a
+        # unit but contributes $0 debt/commission). The non-fixed-rate "only one
+        # unit cleared -> claw back the whole month's commission" shortcut must NOT
+        # apply here — a fixed-rate agent has no tier to drop, so this should always
+        # just be this client's own debt x their fixed rate, regardless of orig_units
+        # or orig_gross_commission.
+        cb = calculate_clawback_amount(
+            1, 0.0, 0.0, 0.0, 40_704.0, agent_name="Peter Godwin",
+        )
+        assert cb == pytest.approx(712.32)  # 40,704 x 1.75%, NOT the $0.0 orig_gross_commission
+
+        cb_zero_units = calculate_clawback_amount(
+            0, 0.0, 0.0, 0.0, 40_704.0, agent_name="Peter Godwin",
+        )
+        assert cb_zero_units == pytest.approx(712.32)
+
 
 class TestTierTable:
     @pytest.mark.parametrize("units,tier,rate", [

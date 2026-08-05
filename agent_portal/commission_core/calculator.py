@@ -188,14 +188,25 @@ def calculate_clawback_amount(
     If the tier is unchanged, the clawback is just this client's share of the rate.
 
     If agent_name has a contractual fixed rate, the tier never changes (there is no
-    tier), so the clawback is always just this client's share at that fixed rate.
+    tier), so the clawback is always just this client's share at that fixed rate —
+    checked FIRST, before the orig_units <= 1 shortcut below. A fixed-rate agent has
+    no tier to drop, so "only one unit cleared that month" carries no special meaning
+    for them the way it does under the tier table; falling into that shortcut instead
+    would return the month's total orig_gross_commission verbatim, which is wrong
+    whenever it doesn't equal this client's own debt × their fixed rate (e.g. the
+    only other "unit" that month was a Credit Score <= 500 client, who counts as a
+    unit but contributes $0 debt/commission — orig_gross_commission would be $0,
+    clawing back nothing on a client who may owe hundreds of dollars). Bug found and
+    fixed via a real production case: a fixed-rate agent's clawback landed at $0.00
+    instead of client_debt × fixed_rate. See
+    tests/test_calculator.py::TestFixedRateOverride::test_fixed_rate_clawback_ignores_orig_units_shortcut.
     """
-    if orig_units <= 1:
-        return round(orig_gross_commission, 2)
-
     fixed_rate = get_fixed_rate(agent_name)
     if fixed_rate is not None:
         return max(0.0, round(client_debt * fixed_rate, 2))
+
+    if orig_units <= 1:
+        return round(orig_gross_commission, 2)
 
     new_units = orig_units - 1
     new_debt = orig_total_debt - client_debt
