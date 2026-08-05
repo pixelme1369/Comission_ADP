@@ -249,7 +249,11 @@ class CordobaChargebackEntry(db.Model):
     reports. Does NOT deduct anything from gross/net commission — purely
     informational, for the agent/owner to reconcile Cordoba's own figures by hand.
     agent_name/period_label come from OUR OWN ClientRecord (crm_id match, our own
-    dropped_date), never from this file's own columns."""
+    dropped_date), never from this file's own columns. crm_id unique — a LATER
+    Chargebacks upload for a crm_id already listed UPDATES the existing row in
+    place with that file's numbers (owner request, confirmed) rather than
+    leaving it stale, since this is purely informational and safe to overwrite;
+    see cordoba_ingest.py::_list_cordoba_chargebacks."""
     __tablename__ = "cordoba_chargeback_entry"
 
     id = db.Column(db.Integer, primary_key=True)
