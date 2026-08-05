@@ -113,6 +113,61 @@ def already_known_crm_id_sets():
     return already_cleared, already_charged_back, already_low_credit, already_history_paid
 
 
+def known_period_totals():
+    """(agent_name, period_label) -> {"units_cleared", "total_cleared_debt",
+    "gross_commission", "cancellation_rate"} — the DB's actual saved totals for
+    every already-saved AgentCommission row, SUMMED across every source sharing
+    that period_label (agent_portal allows a "crm" period and a
+    "history_import" period to coexist for the same month — see
+    CommissionPeriod's docstring in models.py).
+
+    Bug fix (confirmed against a live case, see commission_core/crm_parser.py's
+    module docstring item 4): parse_crm_and_calculate()'s Step 3 needs to know
+    what an agent's tier/commission actually was in their original cleared
+    month to compute a later clawback against it. It gets that by recomputing
+    Steps 1-2 from THIS SAME file's own rows — accurate for a month that's
+    entirely CRM-computed, but NOT accurate for a month mostly or entirely
+    backfilled via Commission History, since already_history_paid_crm_ids
+    deliberately excludes those already-paid clients from that recomputation
+    (to avoid double-crediting them). Passing this dict in as
+    known_period_totals lets Step 3 use the DB's real, authoritative numbers
+    instead whenever they exist, rather than trusting a same-file
+    recomputation that can be missing most or all of that month's real
+    activity.
+
+    cancellation_rate can't be meaningfully summed across sources (it's
+    already a percentage, not a raw count) — this takes it from whichever
+    source row contributes the most units, so a tiny leftover holding row
+    (e.g. one Credit Score <= 500 client with its own 0% rate) never
+    overrides the real period's rate. Ties keep whichever row is seen last
+    from the query (order is not significant here — the tier-drop penalty
+    this feeds only matters at the >20% boundary either way)."""
+    rows = (
+        db.session.query(
+            AgentCommission.agent_name, CommissionPeriod.period_label,
+            AgentCommission.units_cleared, AgentCommission.total_cleared_debt,
+            AgentCommission.gross_commission, AgentCommission.cancellation_rate,
+        )
+        .join(CommissionPeriod, AgentCommission.period_id == CommissionPeriod.id)
+        .all()
+    )
+    totals = {}
+    dominant_units = {}
+    for agent_name, period_label, units, debt, gross, cxl_rate in rows:
+        key = (agent_name, period_label)
+        entry = totals.setdefault(key, {
+            "units_cleared": 0, "total_cleared_debt": 0.0,
+            "gross_commission": 0.0, "cancellation_rate": 0.0,
+        })
+        entry["units_cleared"] += units or 0
+        entry["total_cleared_debt"] += debt or 0.0
+        entry["gross_commission"] += gross or 0.0
+        if (units or 0) >= dominant_units.get(key, -1):
+            entry["cancellation_rate"] = cxl_rate or 0.0
+            dominant_units[key] = units or 0
+    return totals
+
+
 def _get_or_create_crm_agent_row(period, agent_name):
     """Find (or create a zero-unit) AgentCommission row to carry a clawback
     that has no cleared units of its own in this period, tagged
