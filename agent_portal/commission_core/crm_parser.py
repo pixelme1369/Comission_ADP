@@ -103,8 +103,8 @@ build:
 
   - If 1st Payment Cleared Date filled + Dropped Date filled + different month + never hit the safe
     threshold + dropped on/after the payout date
-    → CLAWBACK: commission was paid in the cleared month, must be deducted (see the
-    "latest period in file" policy in Step 3 below)
+    → CLAWBACK: commission was paid in the cleared month, must be deducted from the client's own
+    Dropped Date month (see Step 3 below)
 
   - If 1st Payment Cleared Date filled + Status == Pending Affiliate Cancellation
     → PENDING: not paid yet
@@ -234,6 +234,21 @@ def parse_crm_and_calculate(file_bytes: bytes, filename: str, already_cleared_cr
     already_history_paid_crm_ids are the three owner-confirmed, app-specific
     policy divergences described in the module docstring above — see there
     before changing any of them.
+
+    already_charged_back_crm_ids (owner policy, confirmed August 2026): must
+    contain every crm_id that already has ANY ClientRecord with
+    clawback_applied=True — not just Cordoba-sourced ones. This changed
+    meaning when clawback placement moved from "latest period in file" to
+    "the client's own Dropped Date month" (see Step 3): that target period
+    is now stable/unchanging for a given client across every future upload
+    (their Dropped Date never changes), so this set is the ONLY thing
+    preventing the same client from being re-clawed-back on every single
+    later upload that still contains their row — which every full-history
+    CRM export always will. Each app's ingest layer is responsible for
+    building this set from its own ClientRecord table (both Cordoba's own
+    ledger AND every clawback_applied=True row, regardless of what created
+    it) — see ingest.py/routes.py's already_known_crm_id_sets()-equivalent
+    for the query.
 
     Returns list of:
     {
@@ -421,10 +436,10 @@ def parse_crm_and_calculate(file_bytes: bytes, filename: str, already_cleared_cr
     if already_charged_back_crm_ids is None:
         already_charged_back_crm_ids = set()
 
-    # The latest cleared-month found anywhere in this file — used both for late
-    # activation (above, when enabled) and, per owner policy (July 2026, see
-    # Step 3), as the period a "commission already paid, needs clawback"
-    # deduction lands in.
+    # The latest cleared-month found anywhere in this file — used for late
+    # activation only (above, when enabled). No longer used for clawback
+    # placement (see Step 3: clawbacks now target the client's own Dropped
+    # Date month, owner policy confirmed August 2026).
     all_cleared_periods = [c["cleared_period"] for c in all_clients if c["cleared_period"]]
     latest_period_in_file = max(all_cleared_periods) if all_cleared_periods else None
 
@@ -612,16 +627,27 @@ def parse_crm_and_calculate(file_bytes: bytes, filename: str, already_cleared_cr
     # For each clawback client, find their original cleared period,
     # recalculate that period's commission without them, compute delta.
     #
-    # OWNER POLICY (confirmed July 2026): the deduction is booked against the
-    # LATEST period found anywhere in this file — not the client's own dropped
-    # month. Rationale: this file represents "as of now," and the latest month
-    # in it is effectively the payment run about to go out (e.g. uploading in
-    # June for a May period paid 6/25) — any already-paid client caught
-    # dropping before that run should reduce THAT payout, not get filed away
-    # under a separate, possibly-already-passed calendar month. This only
-    # applies to genuine clawbacks (commission already sent); a client who
-    # dropped before their OWN payout date was never paid to begin with, so
-    # there's nothing to redirect — that case is already excluded above.
+    # OWNER POLICY (confirmed August 2026, supersedes the "latest period in
+    # file" rule this used to be — see git history / CLAUDE.md for that
+    # policy's own reasoning while it was in effect): the deduction is booked
+    # against the client's own Dropped Date month — not the latest period
+    # found anywhere in the file. Rationale: for payroll/accounting purposes,
+    # a clawback needs to be traceable to the real event that caused it
+    # (this client dropped in THIS month), not floated onto whatever the
+    # newest month in an unrelated upload happens to be. This is the same
+    # placement rule the separate Cordoba-chargeback clawback path has
+    # always used (routes.py/cordoba_ingest.py's _get_or_create_agent_period_row)
+    # — the two paths are now consistent with each other.
+    #
+    # Because the target period is now STABLE per client (a client's own
+    # Dropped Date never changes across re-uploads, unlike "latest period in
+    # file" which shifted forward every time), already_charged_back_crm_ids
+    # below is the ONLY thing standing between a client and being re-clawed-
+    # back on every single future upload that still contains their row (which
+    # full-history CRM exports always do). Callers MUST feed this set from
+    # every ClientRecord.clawback_applied=True crm_id, not just Cordoba's own
+    # ledger — see the parameter's own note in the function signature above
+    # and each app's ingest layer for how it's built.
     # ---------------------------------------------------------------
     # (agent, target_period) → list of (client, clawback_amount)
     clawback_by_target_period = defaultdict(list)
@@ -638,12 +664,14 @@ def parse_crm_and_calculate(file_bytes: bytes, filename: str, already_cleared_cr
         crm_id = c.get("crm_id", "")
         agent_name = c["agent_name"]
         cleared_period = c["cleared_period"]
-        target_period = latest_period_in_file or c["dropped_period"]
+        target_period = c["dropped_period"]
         orig_key = (agent_name, cleared_period)
 
         if crm_id and crm_id in already_charged_back_crm_ids:
-            # Already clawed back via a Cordoba Chargebacks-tab upload — don't
-            # double-charge the agent when the CRM export later reflects the drop.
+            # Already clawed back — either via a Cordoba Chargebacks-tab
+            # upload, or via a PRIOR CRM upload's own clawback detection (see
+            # the note above this loop) — don't double-charge the agent for
+            # the same client twice.
             continue
 
         # Proof-of-payment guard — gated behind require_prior_payment_evidence
@@ -740,8 +768,9 @@ def parse_crm_and_calculate(file_bytes: bytes, filename: str, already_cleared_cr
         pending = pending_buckets.get(key, [])
         # Only the reclassified sibling(s) sharing this key — a genuine
         # (non-reclassified) clawback client sharing the same key deliberately
-        # stays invisible at their OWN cleared period (see Step 3's "latest
-        # period in file" policy above); this must not resurrect them here.
+        # stays invisible at their OWN cleared period (they show up at their
+        # Dropped Date month instead — see Step 3/4 above); this must not
+        # resurrect them here.
         cancelled = [x for x in cancel_buckets.get(key, []) if x["unit_status"] != "clawback"]
         result = _zero_unit_holding_result(c["agent_name"])
         result["pending_units"] = len(pending)
@@ -751,9 +780,9 @@ def parse_crm_and_calculate(file_bytes: bytes, filename: str, already_cleared_cr
         agent_period_results[key] = result
 
     # ---------------------------------------------------------------
-    # Step 4: Apply clawbacks to the target period's results (the latest
-    # period in the file — see Step 3). If no commission result exists there
-    # yet, create a zero-unit entry just to carry the clawback.
+    # Step 4: Apply clawbacks to the target period's results (the client's
+    # own Dropped Date month — see Step 3). If no commission result exists
+    # there yet, create a zero-unit entry just to carry the clawback.
     # ---------------------------------------------------------------
     for (agent_name, target_period), cb_clients in clawback_by_target_period.items():
         total_cb = round(sum(c["clawback_amount"] for c in cb_clients), 2)

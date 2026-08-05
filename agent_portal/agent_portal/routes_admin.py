@@ -148,8 +148,8 @@ def period_detail(period_id):
     # "Clawback Files" — every client dropped without hitting the safe payment
     # threshold, deducted from THIS period's payout, across every agent at
     # once. clawback_period_id/period_id both point at the period the
-    # deduction actually landed in (crm_parser.py's "latest period in file"
-    # rule, NOT necessarily the client's own dropped month) — see CLAUDE.md's
+    # deduction actually landed in — the client's own Dropped Date month
+    # (crm_parser.py, owner policy confirmed August 2026) — see CLAUDE.md's
     # Clawback Rules. Previously this was only visible one agent at a time on
     # their own detail page; this is the same underlying ClientRecord rows,
     # just queried across the whole period for one audit view.
