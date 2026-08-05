@@ -193,8 +193,10 @@ class CordobaChargebackEntry(db.Model):
     agent_name and period_label — used only to decide WHERE to show this entry — still
     come from OUR OWN ClientRecord (crm_id match, our own dropped_date), never from
     this file's own Assigned Company / Dropped Date columns, consistent with the real
-    clawback deduction path. crm_id unique so re-uploading the same Chargebacks file is
-    a no-op.
+    clawback deduction path. crm_id unique — a LATER Chargebacks upload for a crm_id
+    already listed UPDATES the existing row in place with that file's numbers (owner
+    request, confirmed) rather than leaving it stale, since this is purely
+    informational and safe to overwrite; see routes.py::_list_cordoba_chargebacks.
     """
     __tablename__ = "cordoba_chargeback_entry"
 

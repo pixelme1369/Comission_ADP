@@ -107,10 +107,10 @@ def test_never_paid_client_is_not_listed_as_cordoba_chargeback(db):
     ))
     db.session.commit()
 
-    listed, total, skipped = _list_cordoba_chargebacks(
+    listed, updated, total, skipped = _list_cordoba_chargebacks(
         FAKE_FILE, parsed([chargeback_row(name="Mary Brewer")]))
 
-    assert (listed, total) == (0, 0.0)
+    assert (listed, updated, total) == (0, 0, 0.0)
     assert skipped == [f"Mary Brewer (ID {CRM_ID})"]
     assert CordobaChargebackEntry.query.filter_by(crm_id=CRM_ID).count() == 0
 
@@ -120,10 +120,40 @@ def test_actually_paid_client_is_listed_as_cordoba_chargeback(db):
     eligible for the display-only listing."""
     seed_paid_june_client(db)
 
-    listed, total, skipped = _list_cordoba_chargebacks(FAKE_FILE, parsed([chargeback_row()]))
+    listed, updated, total, skipped = _list_cordoba_chargebacks(FAKE_FILE, parsed([chargeback_row()]))
 
-    assert (listed, skipped) == (1, [])
+    assert (listed, updated, skipped) == (1, 0, [])
     assert CordobaChargebackEntry.query.filter_by(crm_id=CRM_ID).count() == 1
+
+
+def test_reuploading_an_updated_chargebacks_file_refreshes_the_existing_entry(db):
+    """OWNER REQUEST: a LATER Cordoba file with new numbers for a client already
+    listed must overwrite the existing entry, not silently no-op — the old
+    "insert once" behavior left the reconciliation table showing stale figures
+    forever after the first upload."""
+    seed_paid_june_client(db)
+
+    _list_cordoba_chargebacks(FAKE_FILE, parsed([chargeback_row()]))
+    db.session.commit()
+    first = CordobaChargebackEntry.query.filter_by(crm_id=CRM_ID).one()
+    assert first.marketing_payout_debt == 0.0
+    assert first.uploaded_filename == "cordoba_payouts.xlsx"
+
+    newer_file = SimpleNamespace(filename="cordoba_payouts_week2.xlsx")
+    row = chargeback_row()
+    row["marketing_payout_debt"] = 1234.56
+    row["payments_made"] = 3
+    listed, updated, total, skipped = _list_cordoba_chargebacks(newer_file, parsed([row]))
+    db.session.commit()
+
+    assert (listed, updated, skipped) == (0, 1, [])
+    assert total == pytest.approx(1234.56)
+    # Still exactly one entry for this crm_id — updated in place, not duplicated.
+    assert CordobaChargebackEntry.query.filter_by(crm_id=CRM_ID).count() == 1
+    refreshed = CordobaChargebackEntry.query.filter_by(crm_id=CRM_ID).one()
+    assert refreshed.marketing_payout_debt == pytest.approx(1234.56)
+    assert refreshed.payments_made == 3
+    assert refreshed.uploaded_filename == "cordoba_payouts_week2.xlsx"
 
 
 def test_client_already_clawed_back_by_crm_upload_is_not_clawed_again(db):

@@ -651,19 +651,34 @@ def _list_cordoba_chargebacks(file, parsed):
     file for it yet (needed to know which period to show it under), or the client was
     never actually paid, it's skipped and reported back to the uploader so it isn't
     silently dropped.
-    Returns (newly_listed_count, total_marketing_payout_debt, skipped_no_match_labels).
+
+    UPSERT, not insert-once (owner request, confirmed): the first version of this only
+    ever inserted a crm_id's entry once — re-uploading a LATER Cordoba payout file with
+    updated figures for a client already listed (more Payments Made, a corrected
+    Marketing Payout Debt, a later Marketing Payment Chargeback date, etc.) was
+    silently a no-op, leaving the reconciliation table showing stale numbers forever.
+    An existing CordobaChargebackEntry for a crm_id is now overwritten in place with
+    this file's row instead, including uploaded_filename — so the entry always reflects
+    whichever Cordoba file most recently reported that client, and deleting an OLDER
+    upload no longer touches an entry a newer upload has since refreshed (see
+    _delete_cordoba_upload). Safe to do unconditionally: this table is purely
+    informational (never gross/net/clawback), unlike CordobaChargedBackClient's
+    real-money ledger, which deliberately still guards against ever re-applying the
+    same deduction twice — that policy is untouched here.
+    Returns (newly_listed_count, updated_count, total_marketing_payout_debt, skipped_no_match_labels).
     """
     chargebacks = parsed.get("chargebacks", [])
     incoming_ids = {row["crm_id"] for row in chargebacks if row["crm_id"]}
     if not incoming_ids:
-        return 0, 0.0, []
+        return 0, 0, 0.0, []
 
-    already_listed = {
-        r[0] for r in db.session.query(CordobaChargebackEntry.crm_id)
-        .filter(CordobaChargebackEntry.crm_id.in_(incoming_ids))
+    existing_by_id = {
+        e.crm_id: e for e in
+        CordobaChargebackEntry.query.filter(CordobaChargebackEntry.crm_id.in_(incoming_ids))
     }
 
     listed = 0
+    updated = 0
     total = 0.0
     skipped_no_match = []
     seen_this_file = set()
@@ -672,9 +687,6 @@ def _list_cordoba_chargebacks(file, parsed):
         if not crm_id or crm_id in seen_this_file:
             continue
         seen_this_file.add(crm_id)
-
-        if crm_id in already_listed:
-            continue
 
         candidates = ClientRecord.query.filter_by(crm_id=crm_id).order_by(ClientRecord.id.desc()).all()
         was_paid = any(c.is_cleared or c.clawback_applied for c in candidates)
@@ -685,8 +697,7 @@ def _list_cordoba_chargebacks(file, parsed):
             continue
 
         amount = row.get("marketing_payout_debt") or 0.0
-        db.session.add(CordobaChargebackEntry(
-            crm_id=crm_id,
+        fields = dict(
             agent_name=client_rec.agent_name,
             period_label=dropped_period,
             assigned_company=row.get("assigned_company") or "",
@@ -701,11 +712,19 @@ def _list_cordoba_chargebacks(file, parsed):
             marketing_payment_chargeback=row.get("marketing_payment_chargeback"),
             file_dropped_date=row.get("file_dropped_date"),
             uploaded_filename=file.filename,
-        ))
-        listed += 1
+        )
+
+        existing = existing_by_id.get(crm_id)
+        if existing:
+            for attr, value in fields.items():
+                setattr(existing, attr, value)
+            updated += 1
+        else:
+            db.session.add(CordobaChargebackEntry(crm_id=crm_id, **fields))
+            listed += 1
         total += amount
 
-    return listed, round(total, 2), skipped_no_match
+    return listed, updated, round(total, 2), skipped_no_match
 
 
 def _process_cordoba_file(file):
@@ -726,13 +745,13 @@ def _process_cordoba_file(file):
     (clawback_count, clawback_total, skipped_not_commissioned,
      skipped_not_confirmed_paid, skipped_already_clawed,
      skipped_no_dropped_date) = _apply_cordoba_chargebacks(file, parsed)
-    listed_count, listed_total, skipped_no_debt_match = _list_cordoba_chargebacks(file, parsed)
+    listed_count, updated_count, listed_total, skipped_no_debt_match = _list_cordoba_chargebacks(file, parsed)
 
     db.session.commit()
     return (new_count, flipped, clawback_count, clawback_total,
             skipped_not_commissioned, skipped_not_confirmed_paid, skipped_already_clawed,
             skipped_no_dropped_date, matched_count, unmatched_chargeback_ids,
-            listed_count, listed_total, skipped_no_debt_match)
+            listed_count, updated_count, listed_total, skipped_no_debt_match)
 
 
 def _list_cordoba_uploads():
@@ -826,18 +845,26 @@ def _delete_cordoba_upload(filename):
     matched_removed = CordobaChargebackMatchedClient.query.filter_by(uploaded_filename=filename).delete()
     entries_removed = CordobaChargebackEntry.query.filter_by(uploaded_filename=filename).delete()
 
-    paid_rows = CordobaPaidClient.query.filter_by(uploaded_filename=filename).all()
-    paid_crm_ids = [r.crm_id for r in paid_rows]
-    for row in paid_rows:
-        db.session.delete(row)
+    # Used to be one SELECT + one UPDATE per crm_id in this file (a First Pays/EPF
+    # roster is easily thousands of rows — thousands of individual round trips was
+    # the single slowest part of deleting a Cordoba upload). Same fix shape as
+    # ingest.py's bulk_delete_period: batch the "is this crm_id still confirmed by
+    # some OTHER upload" check into one query, then unflag the rest in one UPDATE.
+    paid_crm_ids = {
+        r[0] for r in db.session.query(CordobaPaidClient.crm_id)
+        .filter_by(uploaded_filename=filename)
+    }
+    CordobaPaidClient.query.filter_by(uploaded_filename=filename).delete(synchronize_session=False)
     db.session.flush()
 
-    unflagged = 0
-    for crm_id in paid_crm_ids:
-        if not CordobaPaidClient.query.filter_by(crm_id=crm_id).first():
-            unflagged += ClientRecord.query.filter_by(crm_id=crm_id).update(
-                {"cordoba_paid": False}, synchronize_session=False,
-            )
+    still_confirmed = {
+        r[0] for r in db.session.query(CordobaPaidClient.crm_id)
+        .filter(CordobaPaidClient.crm_id.in_(paid_crm_ids))
+    } if paid_crm_ids else set()
+    to_unflag = paid_crm_ids - still_confirmed
+    unflagged = ClientRecord.query.filter(ClientRecord.crm_id.in_(to_unflag)).update(
+        {"cordoba_paid": False}, synchronize_session=False,
+    ) if to_unflag else 0
 
     db.session.commit()
     return {
@@ -845,7 +872,7 @@ def _delete_cordoba_upload(filename):
         "amount_reversed": round(reversed_amount, 2),
         "matched_removed": matched_removed,
         "entries_removed": entries_removed,
-        "paid_confirmations_removed": len(paid_rows),
+        "paid_confirmations_removed": len(paid_crm_ids),
         "cordoba_paid_unflagged": unflagged,
     }
 
@@ -876,8 +903,9 @@ def upload_cordoba_payout():
     matched_total = sum(r[8] for r in results)
     unmatched_chargeback_ids = [name for r in results for name in r[9]]
     listed_total = sum(r[10] for r in results)
-    listed_amount_total = sum(r[11] for r in results)
-    skipped_no_debt_match = [name for r in results for name in r[12]]
+    updated_total = sum(r[11] for r in results)
+    listed_amount_total = sum(r[12] for r in results)
+    skipped_no_debt_match = [name for r in results for name in r[13]]
 
     file_word = "file" if len(files) == 1 else f"{len(files)} files"
     flash(
@@ -897,11 +925,16 @@ def upload_cordoba_payout():
             f"${clawback_amount_total:,.2f} clawed back from agent commissions.",
             "success",
         )
-    if listed_total > 0:
+    if listed_total > 0 or updated_total > 0:
+        parts = []
+        if listed_total > 0:
+            parts.append(f"{listed_total} newly listed")
+        if updated_total > 0:
+            parts.append(f"{updated_total} refreshed with this file's numbers")
         flash(
-            f"Cordoba Charge back: {listed_total} client(s) (${listed_amount_total:,.2f} total "
-            f"Marketing Payout Debt) listed on the relevant agents' commission reports for "
-            f"reference — informational only, not deducted.",
+            f"Cordoba Charge back: {', '.join(parts)} (${listed_amount_total:,.2f} total "
+            f"Marketing Payout Debt this upload) on the relevant agents' commission reports "
+            f"for reference — informational only, not deducted.",
             "success",
         )
 

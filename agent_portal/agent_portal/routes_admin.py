@@ -353,6 +353,7 @@ def upload_cordoba_payout():
     clawback_count_total = sum(r["clawback_count"] for r in results)
     clawback_amount_total = sum(r["clawback_total"] for r in results)
     listed_total = sum(r["listed_count"] for r in results)
+    updated_total = sum(r["updated_count"] for r in results)
     listed_amount_total = sum(r["listed_total"] for r in results)
 
     file_word = "file" if len(files) == 1 else f"{len(files)} files"
@@ -369,10 +370,15 @@ def upload_cordoba_payout():
             f"${clawback_amount_total:,.2f} clawed back from agent commissions.",
             "success",
         )
-    if listed_total > 0:
+    if listed_total > 0 or updated_total > 0:
+        parts = []
+        if listed_total > 0:
+            parts.append(f"{listed_total} newly listed")
+        if updated_total > 0:
+            parts.append(f"{updated_total} refreshed with this file's numbers")
         flash(
-            f"Cordoba Charge back: {listed_total} client(s) (${listed_amount_total:,.2f} total "
-            "Marketing Payout Debt) listed for reference — informational only, not deducted.",
+            f"Cordoba Charge back: {', '.join(parts)} (${listed_amount_total:,.2f} total "
+            "Marketing Payout Debt this upload) for reference — informational only, not deducted.",
             "success",
         )
 
