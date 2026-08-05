@@ -114,6 +114,24 @@ def already_known_crm_id_sets():
     return already_cleared, already_charged_back, already_low_credit, already_history_paid
 
 
+def known_enrolled_debt_by_crm_id():
+    """crm_id -> the Enrolled Debt that was ACTUALLY used to calculate that
+    client's original commission (Commission History import or an earlier CRM
+    period) — owner policy, confirmed: a clawback must be based on THIS, never
+    on whatever a later CRM re-export happens to show for the same crm_id
+    today. Confirmed real case: a client paid via Commission History with
+    Enrolled Debt $30,688 showed Enrolled Debt $2,664.62 in a later CRM
+    export's row for the same crm_id — Cordoba's own systems evidently revise
+    this figure over time. See known_enrolled_debt_by_crm_id's own docstring
+    on parse_crm_and_calculate for the full mechanism; this is the query that
+    builds it, same original-clear record (is_cleared=True) already consulted
+    for already_known_crm_id_sets() above."""
+    return {
+        r[0]: r[1] for r in db.session.query(ClientRecord.crm_id, ClientRecord.enrolled_debt)
+        .filter(ClientRecord.is_cleared.is_(True)) if r[0]
+    }
+
+
 def known_period_totals():
     """(agent_identity_key(agent_name), period_label) -> {"units_cleared",
     "total_cleared_debt", "gross_commission", "cancellation_rate"} — the DB's

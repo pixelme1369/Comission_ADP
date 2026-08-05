@@ -178,10 +178,21 @@ def upload_crm():
         r[0] for r in db.session.query(ClientRecord.crm_id)
         .filter(ClientRecord.is_low_credit.is_(True)) if r[0]
     }
+    # Enrolled Debt actually used to calculate each cleared client's original
+    # commission — owner policy: a clawback must be based on THIS, never on
+    # whatever a later CRM re-export happens to show for the same crm_id today
+    # (confirmed real case: Cordoba's own Enrolled Debt figure for a client can
+    # change between exports). See known_enrolled_debt_by_crm_id's own docstring
+    # in crm_parser.py.
+    known_enrolled_debt_by_crm_id = {
+        r[0]: r[1] for r in db.session.query(ClientRecord.crm_id, ClientRecord.enrolled_debt)
+        .filter(ClientRecord.is_cleared.is_(True)) if r[0]
+    }
 
     period_results = parse_crm_and_calculate(
         file_bytes, file.filename, already_cleared_crm_ids, already_charged_back_crm_ids,
         already_low_credit_crm_ids,
+        known_enrolled_debt_by_crm_id=known_enrolled_debt_by_crm_id,
     )
 
     saved_period_ids = []
