@@ -205,6 +205,7 @@
         <th>Client Name</th>
         <th>Enrolled Date</th>
         <th>Enrolled Debt</th>
+        <th>Credit Score</th>
         <th>Originally Cleared</th>
         <th>Dropped Date</th>
         <th>Payments Made</th>
@@ -221,6 +222,12 @@
         <td>{{ c.client_name }}</td>
         <td>{{ c.enrolled_date or '—' }}</td>
         <td>${{ "{:,.2f}".format(c.enrolled_debt) }}</td>
+        <td>
+          {{ c.credit_score if c.credit_score is not none else '—' }}
+          {% if c.is_low_credit %}
+            <span class="badge badge-amber" title="Credit Score <= 500 — counts toward tier, no commission">$0</span>
+          {% endif %}
+        </td>
         <td>{{ c.first_payment_cleared_date }}</td>
         <td>{{ c.dropped_date }}</td>
         <td>{{ c.payments_made }}</td>
