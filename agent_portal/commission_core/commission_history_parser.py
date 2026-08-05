@@ -2,19 +2,34 @@
 Parses a historical commission ledger (.xlsx or .csv) handed down from a prior account
 manager — NOT a CRM export. One row per client per month already paid (or clawed back) by
 that manager, format: Month, ID, Sales Rep, Full Name, Enrolled Debt, To subtract,
-Payments Made, Units, Status, Marketing Campaign.
+Payments Made, Units, Status, Rate, Marketing Campaign, Agent Month File Count.
 
 Each row is exactly one of two things (never both, per the source file):
   - Enrolled Debt filled  → a unit the agent was actually paid commission on that month
   - "To subtract" filled  → a clawback dollar amount already deducted from the agent
     that month (the negative number is the deduction; Enrolled Debt is blank on these
-    rows since the original enrolled debt isn't repeated here)
+    rows since the original enrolled debt isn't repeated here) — this already
+    represents money taken back, not a rate-based calculation, so Rate is never read
+    on these rows (owner confirmed).
 
 There's no Dropped Date, Pay Freq, or payout-date logic to apply here — the prior
 manager already resolved which clients got paid and which got clawed back and by how
 much, so we just replay those two facts into our own tier math to reconstruct each
 (agent, month) period, using the "To subtract" dollar amounts as-is rather than
 recomputing them (we don't have enough history to redo that math accurately).
+
+Rate (optional column, owner-added): the exact rate the agent was actually paid on an
+Enrolled-Debt row, e.g. "1.40%" for $42,869.00 x 1.40% = $600.17. Read per-row and
+passed through as "paid_rate" (a decimal fraction, e.g. 0.014) on each "cleared" client
+dict for the caller to persist on ClientRecord — so that if this exact client later
+drops (a CRM upload shows a Dropped Date), the app can claw back
+enrolled_debt * paid_rate verbatim instead of recalculating a rate through the tier
+table. See crm_parser.py's known_rate_by_crm_id for the consuming side. Optional and
+per-row: a blank/missing Rate cell (older files, or a row without one) just leaves
+paid_rate as None — no error, no required-column change.
+
+Agent Month File Count (optional column): not currently read or used by this parser —
+purely informational in the source file for now.
 
 The Month column has no year, so the caller supplies one — the whole file is assumed
 to be a single calendar year.
@@ -63,6 +78,34 @@ def _parse_int(value) -> int:
     """Lenient int for count-ish columns — bad values become 0 instead of crashing the upload."""
     parsed = _parse_number(value)
     return int(parsed) if parsed is not None else 0
+
+
+def _parse_rate(value):
+    """Parses a Rate cell into a decimal fraction (0.014 for a 1.40% rate). Handles
+    every shape this column can realistically arrive in:
+      - a literal string with a % sign: "1.40%" -> 0.014
+      - a plain string/number with no % sign, written as a percentage: "1.4"/1.4 -> 0.014
+      - a true Excel-percentage-formatted cell, which openpyxl (data_only=True) already
+        hands back as the raw fraction: 0.014 -> 0.014 (unchanged)
+    Distinguished by magnitude: every real commission rate in this business is well
+    under 1 as a fraction (max tier is 2.25%) and well under 100 as a raw percentage
+    number, so ">= 1" cleanly means "this is a percentage number, divide by 100" in
+    every realistic case. Returns None for blank/unparseable — Rate is optional."""
+    if value is None or value == "":
+        return None
+    if isinstance(value, (int, float)):
+        num = float(value)
+    else:
+        s = str(value).strip()
+        if not s:
+            return None
+        if s.endswith("%"):
+            s = s[:-1].strip()
+        try:
+            num = float(s)
+        except ValueError:
+            return None
+    return num / 100 if num >= 1 else num
 
 
 def _header_map_from_row(header_row) -> dict:
@@ -179,6 +222,10 @@ def parse_commission_history(file_bytes: bytes, filename: str, year: int) -> dic
 
         if enrolled_debt is not None:
             base["enrolled_debt"] = enrolled_debt
+            # Rate only applies to paid (Enrolled Debt) rows, never "To subtract" rows
+            # — those already represent a completed deduction, not a rate-based
+            # calculation (owner confirmed). None when the column is absent/blank.
+            base["paid_rate"] = _parse_rate(cell(row, "rate"))
             debt_by_id[crm_id] = enrolled_debt
             buckets[(period_label, agent_name)]["cleared"].append(base)
         elif to_subtract is not None:

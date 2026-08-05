@@ -14,7 +14,8 @@ from flask import current_app
 from agent_portal import db
 from commission_core.crm_parser import parse_crm_and_calculate
 from agent_portal.ingest import (
-    already_known_crm_id_sets, known_enrolled_debt_by_crm_id, known_period_totals, save_period_results,
+    already_known_crm_id_sets, known_enrolled_debt_by_crm_id, known_period_totals,
+    known_rate_by_crm_id, save_period_results,
 )
 from agent_portal.models import SyncedFile
 
@@ -102,6 +103,7 @@ def sync_from_drive():
         require_prior_payment_evidence=False,
         known_period_totals=known_period_totals(),
         known_enrolled_debt_by_crm_id=known_enrolled_debt_by_crm_id(),
+        known_rate_by_crm_id=known_rate_by_crm_id(),
     )
 
     outcome = save_period_results(period_results, file_meta["name"], source_label="drive")

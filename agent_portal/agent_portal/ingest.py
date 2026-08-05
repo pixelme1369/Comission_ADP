@@ -63,6 +63,10 @@ def _new_client_record(period_id, agent_commission_id, cr, **overrides):
         payments_made=cr.get("payments_made", 0),
         nsf_count=cr.get("nsf_count", 0),
         enrolled_debt=cr.get("enrolled_debt", 0.0),
+        # Only ever set by commission_history_parser.py's "cleared" rows (Rate
+        # column) — a CRM-parsed client dict has no "paid_rate" key at all, so this
+        # is just None for every CRM-originated ClientRecord. See known_rate_by_crm_id.
+        paid_rate=cr.get("paid_rate"),
         credit_score=cr.get("credit_score"),
         is_low_credit=cr.get("is_low_credit", False),
         is_cleared=cr.get("is_cleared", False),
@@ -129,6 +133,22 @@ def known_enrolled_debt_by_crm_id():
     return {
         r[0]: r[1] for r in db.session.query(ClientRecord.crm_id, ClientRecord.enrolled_debt)
         .filter(ClientRecord.is_cleared.is_(True)) if r[0]
+    }
+
+
+def known_rate_by_crm_id():
+    """crm_id -> the exact rate a Commission-History-paid client's original
+    commission was actually paid at (owner-added "Rate" column on Commission
+    History import files, e.g. "1.40%") — only ever set on ClientRecord rows
+    that came from a Commission History import (see ClientRecord.paid_rate;
+    a CRM-computed "cleared" client has no such column and stays NULL, so
+    never appears here). Used to claw back enrolled_debt * paid_rate verbatim
+    instead of recalculating a rate through the tier table. See
+    known_rate_by_crm_id's own docstring on parse_crm_and_calculate for the
+    full mechanism."""
+    return {
+        r[0]: r[1] for r in db.session.query(ClientRecord.crm_id, ClientRecord.paid_rate)
+        .filter(ClientRecord.is_cleared.is_(True), ClientRecord.paid_rate.isnot(None)) if r[0]
     }
 
 

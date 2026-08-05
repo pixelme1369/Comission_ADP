@@ -101,6 +101,10 @@ def _new_client_record(period_id, agent_commission_id, cr, **overrides):
         payments_made=cr.get("payments_made", 0),
         nsf_count=cr.get("nsf_count", 0),
         enrolled_debt=cr.get("enrolled_debt", 0.0),
+        # Only ever set by commission_history_parser.py's "cleared" rows (Rate
+        # column) — a CRM-parsed client dict has no "paid_rate" key at all, so this
+        # is just None for every CRM-originated ClientRecord. See known_rate_by_crm_id.
+        paid_rate=cr.get("paid_rate"),
         credit_score=cr.get("credit_score"),
         is_low_credit=cr.get("is_low_credit", False),
         is_cleared=cr.get("is_cleared", False),
@@ -188,11 +192,21 @@ def upload_crm():
         r[0]: r[1] for r in db.session.query(ClientRecord.crm_id, ClientRecord.enrolled_debt)
         .filter(ClientRecord.is_cleared.is_(True)) if r[0]
     }
+    # The exact rate a Commission-History-paid client's original commission was
+    # actually paid at (owner-added "Rate" column) — only ever set on rows that
+    # came from a Commission History import (see ClientRecord.paid_rate). Used to
+    # claw back enrolled_debt * paid_rate verbatim instead of recalculating a rate
+    # through the tier table. See known_rate_by_crm_id's own docstring in crm_parser.py.
+    known_rate_by_crm_id = {
+        r[0]: r[1] for r in db.session.query(ClientRecord.crm_id, ClientRecord.paid_rate)
+        .filter(ClientRecord.is_cleared.is_(True), ClientRecord.paid_rate.isnot(None)) if r[0]
+    }
 
     period_results = parse_crm_and_calculate(
         file_bytes, file.filename, already_cleared_crm_ids, already_charged_back_crm_ids,
         already_low_credit_crm_ids,
         known_enrolled_debt_by_crm_id=known_enrolled_debt_by_crm_id,
+        known_rate_by_crm_id=known_rate_by_crm_id,
     )
 
     saved_period_ids = []
