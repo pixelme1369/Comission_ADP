@@ -153,10 +153,90 @@ class TestClawbackUsesRealOriginalPeriodTotalsNotAnIncompleteRecompute:
 
         with app.app_context():
             from agent_portal.ingest import known_period_totals
+            from commission_core.calculator import agent_identity_key
             totals = known_period_totals()
-            combined = totals[("Agent B", "2026-03")]
+            combined = totals[(agent_identity_key("Agent B"), "2026-03")]
             assert combined["units_cleared"] == 2
             assert combined["total_cleared_debt"] == 15000.0
             # $100 (history: 10,000 x 1%, Tier 1) + $50 (crm: 5,000 x 1%, Tier 1)
             assert combined["gross_commission"] == 150.0
+
+
+class TestAgentNameCasingIsCollapsedToOneIdentity:
+    """Real production case: the same rep appeared as both "amir moayeri" and
+    "Amir Moayeri" — sometimes within the SAME CRM file. Without collapsing
+    these to one identity, the tier/commission math itself (not just
+    clawbacks) silently splits one agent's production into two smaller,
+    wrong calculations."""
+
+    def test_two_casings_in_the_same_crm_file_merge_into_one_agent(self, app, db, client):
+        admin = _make_admin(db)
+        _login_as(client, admin)
+
+        crm_bytes = _crm_csv_bytes([
+            {"ID": "1", "Sales Rep": "amir moayeri", "Full Name": "Client One",
+             "1st Payment Cleared Date": "03/05/2026", "Status": "Active",
+             "Enrolled Debt": "10000", "# NSF": "0", "Payments Made": "1", "Pay Freq.": "Monthly"},
+            {"ID": "2", "Sales Rep": "Amir Moayeri", "Full Name": "Client Two",
+             "1st Payment Cleared Date": "03/07/2026", "Status": "Active",
+             "Enrolled Debt": "12000", "# NSF": "0", "Payments Made": "1", "Pay Freq.": "Monthly"},
+        ])
+        client.post("/admin/upload-csv", data={"csv_file": (io.BytesIO(crm_bytes), "crm.csv")},
+                    content_type="multipart/form-data")
+
+        with app.app_context():
+            period = CommissionPeriod.query.filter_by(period_label="2026-03", source="crm").one()
+            rows = AgentCommission.query.filter_by(period_id=period.id).all()
+            # One merged agent row, not two — both clients' debt combined.
+            assert len(rows) == 1
+            assert rows[0].units_cleared == 2
+            assert rows[0].total_cleared_debt == 22000.0
+
+    def test_history_and_crm_casings_still_match_for_clawback_purposes(self, app, db, client):
+        """Same fix, cross-file this time: History says "Amir Moayeri",
+        a later CRM upload says "amir moayeri" for the exact same real
+        person — known_period_totals() must still find the real total."""
+        admin = _make_admin(db)
+        _login_as(client, admin)
+
+        history_bytes = _history_csv_bytes([
+            {"month": "January", "id": "777", "agent": "Amir Moayeri",
+             "name": "Real Paid Client", "debt": "20000", "payments": "5"},
+        ])
+        client.post(
+            "/admin/upload-commission-history",
+            data={"history_year": "2026", "history_file": (io.BytesIO(history_bytes), "history.csv")},
+            content_type="multipart/form-data",
+        )
+
+        # Lowercase spelling this time, plus an unrelated low-credit leftover
+        # -- exactly the shape that used to zero this clawback out.
+        crm_bytes_1 = _crm_csv_bytes([
+            {"ID": "777", "Sales Rep": "amir moayeri", "Full Name": "Real Paid Client",
+             "1st Payment Cleared Date": "01/15/2026", "Status": "Active",
+             "Enrolled Debt": "20000", "# NSF": "0", "Payments Made": "5", "Pay Freq.": "Monthly"},
+            {"ID": "888", "Sales Rep": "amir moayeri", "Full Name": "Low Credit Client",
+             "1st Payment Cleared Date": "01/20/2026", "Status": "Active",
+             "Enrolled Debt": "9000", "# NSF": "0", "Payments Made": "1", "Pay Freq.": "Monthly",
+             "Credit Score": "450"},
+        ])
+        client.post("/admin/upload-csv", data={"csv_file": (io.BytesIO(crm_bytes_1), "crm1.csv")},
+                    content_type="multipart/form-data")
+
+        crm_bytes_2 = _crm_csv_bytes([{
+            "ID": "777", "Sales Rep": "amir moayeri", "Full Name": "Real Paid Client",
+            "1st Payment Cleared Date": "01/15/2026", "Dropped Date": "06/20/2026",
+            "Status": "Cancelled", "Enrolled Debt": "20000", "# NSF": "0",
+            "Payments Made": "1", "Pay Freq.": "Monthly",
+        }])
+        resp = client.post(
+            "/admin/upload-csv", data={"csv_file": (io.BytesIO(crm_bytes_2), "crm2.csv")},
+            content_type="multipart/form-data", follow_redirects=True,
+        )
+        assert resp.status_code == 200
+
+        with app.app_context():
+            clawback_row = ClientRecord.query.filter_by(crm_id="777", clawback_applied=True).first()
+            assert clawback_row is not None
+            assert clawback_row.clawback_amount == 200.0  # NOT $0.00
 

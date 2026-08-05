@@ -8,6 +8,7 @@ from agent_portal.models import (
     AgentCommission, ClientRecord, CommissionPeriod,
     CordobaChargedBackClient, CordobaPaidClient,
 )
+from commission_core.calculator import agent_identity_key
 
 
 def bulk_delete_period(period):
@@ -114,12 +115,18 @@ def already_known_crm_id_sets():
 
 
 def known_period_totals():
-    """(agent_name, period_label) -> {"units_cleared", "total_cleared_debt",
-    "gross_commission", "cancellation_rate"} — the DB's actual saved totals for
-    every already-saved AgentCommission row, SUMMED across every source sharing
-    that period_label (agent_portal allows a "crm" period and a
-    "history_import" period to coexist for the same month — see
-    CommissionPeriod's docstring in models.py).
+    """(agent_identity_key(agent_name), period_label) -> {"units_cleared",
+    "total_cleared_debt", "gross_commission", "cancellation_rate"} — the DB's
+    actual saved totals for every already-saved AgentCommission row, SUMMED
+    across every source sharing that period_label (agent_portal allows a
+    "crm" period and a "history_import" period to coexist for the same month
+    — see CommissionPeriod's docstring in models.py) AND across every raw
+    agent_name spelling sharing the same case/whitespace-insensitive identity
+    (the CRM export and the Commission History file are parsed independently,
+    so nothing stops one from saving "Amir Moayeri" and a later upload of the
+    other saving "amir moayeri" for the literal same real agent — a
+    confirmed real case; keyed by agent_identity_key so both still combine
+    into one entry here regardless).
 
     Bug fix (confirmed against a live case, see commission_core/crm_parser.py's
     module docstring item 4): parse_crm_and_calculate()'s Step 3 needs to know
@@ -154,7 +161,7 @@ def known_period_totals():
     totals = {}
     dominant_units = {}
     for agent_name, period_label, units, debt, gross, cxl_rate in rows:
-        key = (agent_name, period_label)
+        key = (agent_identity_key(agent_name), period_label)
         entry = totals.setdefault(key, {
             "units_cleared": 0, "total_cleared_debt": 0.0,
             "gross_commission": 0.0, "cancellation_rate": 0.0,

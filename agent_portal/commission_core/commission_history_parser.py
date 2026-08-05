@@ -24,7 +24,7 @@ import csv
 import io
 from collections import defaultdict
 
-from commission_core.calculator import calculate_agent_commission
+from commission_core.calculator import agent_identity_key, build_canonical_agent_name_map, calculate_agent_commission
 
 REQUIRED_COLUMNS = {"month", "id", "sales rep", "enrolled debt", "to subtract"}
 
@@ -143,6 +143,14 @@ def parse_commission_history(file_bytes: bytes, filename: str, year: int) -> dic
     debt_by_id = {}
     row_errors = []
 
+    # Collapse casing/whitespace variants of the same real agent's name (a
+    # free-text column — see agent_identity_key's docstring) into one
+    # canonical spelling before any bucketing below, same reasoning and
+    # mechanism as crm_parser.py's own canonicalize_agent_names call.
+    canonical_by_key = build_canonical_agent_name_map(
+        str(cell(row, "sales rep") or "").strip() for row in data_rows if not _row_is_blank(row)
+    )
+
     for row_num, row in enumerate(data_rows, start=2):
         if _row_is_blank(row):
             continue
@@ -150,7 +158,8 @@ def parse_commission_history(file_bytes: bytes, filename: str, year: int) -> dic
         month_name = str(cell(row, "month") or "").strip().lower()
         month_num = MONTH_NUMBERS.get(month_name)
         crm_id = _clean_id(cell(row, "id"))
-        agent_name = str(cell(row, "sales rep") or "").strip()
+        agent_name_raw = str(cell(row, "sales rep") or "").strip()
+        agent_name = canonical_by_key.get(agent_identity_key(agent_name_raw), agent_name_raw)
 
         if not month_num or not crm_id or not agent_name:
             row_errors.append(f"Row {row_num}: missing Month/ID/Sales Rep — skipped")

@@ -27,6 +27,78 @@ def get_fixed_rate(agent_name: str):
     return AGENT_FIXED_RATES.get((agent_name or "").strip().lower())
 
 
+def agent_identity_key(agent_name: str) -> str:
+    """Case/whitespace-insensitive identity key for an agent name.
+
+    The CRM export has no stable per-agent ID — "Sales Rep" is a free-text
+    column — and the same real person can genuinely appear under different
+    casings, both across separate files AND within the SAME file (confirmed
+    real case: "amir moayeri" and "Amir Moayeri" both appearing in one CRM
+    export). Use this wherever agent identity needs to be MATCHED — grouping
+    rows within a parse (see canonicalize_agent_names below), matching a
+    clawback's original period against the DB (known_period_totals) — never
+    for display, where the actually-observed spelling should be kept.
+    """
+    return (agent_name or "").strip().lower()
+
+
+def build_canonical_agent_name_map(raw_names) -> dict:
+    """Given every raw agent-name spelling observed in one file (repeats
+    included — frequency is part of the tie-break), returns
+    {agent_identity_key(raw): canonical_spelling}.
+
+    Canonical spelling = whichever raw spelling occurs most often; ties
+    prefer a spelling that isn't ALL-lowercase (reads better than a free-text
+    field's all-lowercase entry), then first-seen order. Never invents a
+    spelling that wasn't actually present in `raw_names`. See
+    agent_identity_key's docstring for why this collapsing is needed at all.
+    """
+    seen_order = []
+    counts = {}
+    for raw in raw_names:
+        raw = (raw or "").strip()
+        if not raw:
+            continue
+        if raw not in counts:
+            counts[raw] = 0
+            seen_order.append(raw)
+        counts[raw] += 1
+
+    canonical_by_key = {}
+    for raw in seen_order:
+        key = agent_identity_key(raw)
+        current = canonical_by_key.get(key)
+        if current is None:
+            canonical_by_key[key] = raw
+            continue
+        # Strict improvement only, so first-seen naturally wins remaining ties.
+        challenger_rank = (counts[raw], raw != raw.lower())
+        current_rank = (counts[current], current != current.lower())
+        if challenger_rank > current_rank:
+            canonical_by_key[key] = raw
+    return canonical_by_key
+
+
+def canonicalize_agent_names(rows, name_key="agent_name"):
+    """Rewrites rows[i][name_key] in place so every raw spelling sharing the
+    same agent_identity_key() collapses to ONE canonical spelling across this
+    batch of rows (see build_canonical_agent_name_map for how the canonical
+    spelling is picked).
+
+    Without this, two casings of the same real agent appearing in the SAME
+    file (see agent_identity_key's docstring) would silently split their
+    production into two separate, artificially smaller tier/commission
+    calculations for what should be one agent's one period — tier is a
+    function of TOTAL units cleared, and a casing typo in a free-text column
+    is not a second agent.
+    """
+    canonical_by_key = build_canonical_agent_name_map(row.get(name_key) for row in rows)
+    for row in rows:
+        raw = (row.get(name_key) or "").strip()
+        if raw:
+            row[name_key] = canonical_by_key[agent_identity_key(raw)]
+
+
 def get_tier(units: int) -> tuple:
     """Return (tier_number, rate, label) for given units cleared."""
     if units < 1:
