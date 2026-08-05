@@ -262,7 +262,8 @@ def parse_crm_and_calculate(file_bytes: bytes, filename: str, already_cleared_cr
                              persist_same_month_cancel: bool = False,
                              require_prior_payment_evidence: bool = True,
                              known_period_totals: dict = None,
-                             known_enrolled_debt_by_crm_id: dict = None) -> list:
+                             known_enrolled_debt_by_crm_id: dict = None,
+                             known_rate_by_crm_id: dict = None) -> list:
     """
     Parse a full-history CRM export and return one dict per commission period found.
 
@@ -312,6 +313,26 @@ def parse_crm_and_calculate(file_bytes: bytes, filename: str, already_cleared_cr
     (e.g. a client dropping in the very same upload that first cleared them,
     with nothing saved in the DB yet to compare against).
 
+    known_rate_by_crm_id: {crm_id: rate, ...} (a decimal fraction, e.g. 0.014 for
+    1.40%) — owner policy, confirmed: Commission History import files now carry a
+    "Rate" column recording the EXACT rate a client's original commission was
+    actually paid at (e.g. $42,869.00 x 1.40% = $600.17). When a crm_id has a known
+    rate, Step 3 uses enrolled_debt * known_rate verbatim as the clawback amount —
+    a full replacement of the tier-recalculation formula below
+    (known_period_totals / agent_period_results / calculate_clawback_amount) for
+    that client, not an additional check on top of it. Scoped to Commission
+    History rows only (owner confirmed) — a CRM-computed "cleared" client was never
+    paid via a row carrying a Rate column, so their crm_id is never in this dict,
+    and their clawback still goes through the tier-recalculation formula exactly as
+    before. Every other guard still applies before this is even consulted
+    (already_charged_back_crm_ids, require_prior_payment_evidence, low-credit) —
+    this only changes HOW MUCH is clawed back, never WHETHER to. Falls back to the
+    tier-recalculation formula when the crm_id isn't in this dict (no known rate —
+    e.g. the client's original commission was CRM-computed, not Commission-History-
+    paid). See commission_history_parser.py's own "Rate" docstring for the parsing
+    side, and each app's ingest layer for how this dict gets built
+    (ClientRecord.paid_rate, populated only on Commission-History-sourced rows).
+
     already_charged_back_crm_ids (owner policy, confirmed August 2026): must
     contain every crm_id that already has ANY ClientRecord with
     clawback_applied=True — not just Cordoba-sourced ones. This changed
@@ -345,6 +366,8 @@ def parse_crm_and_calculate(file_bytes: bytes, filename: str, already_cleared_cr
         known_period_totals = {}
     if known_enrolled_debt_by_crm_id is None:
         known_enrolled_debt_by_crm_id = {}
+    if known_rate_by_crm_id is None:
+        known_rate_by_crm_id = {}
 
     try:
         text = file_bytes.decode("utf-8-sig")
@@ -814,6 +837,20 @@ def parse_crm_and_calculate(file_bytes: bytes, filename: str, already_cleared_cr
             c["unit_status"] = "same_month_cancel"
             c["is_cancelled"] = True
             reclassified_clients.append(c)
+            continue
+
+        # A known Rate (Commission History's own "Rate" column — see
+        # known_rate_by_crm_id's own docstring above) is the EXACT rate this
+        # client's original commission was actually paid at — use it verbatim,
+        # completely bypassing the tier-recalculation formula below. c["enrolled_debt"]
+        # was already corrected above (known_enrolled_debt_by_crm_id) if known, so
+        # this multiplies the ORIGINAL debt by the ORIGINAL rate, not anything from
+        # this file's own row.
+        known_rate = known_rate_by_crm_id.get(crm_id) if crm_id else None
+        if known_rate is not None:
+            cb = round(c["enrolled_debt"] * known_rate, 2)
+            c["clawback_amount"] = cb
+            clawback_by_target_period[(agent_name, target_period)].append(c)
             continue
 
         # Prefer the DB's actual saved totals for the original cleared period, when

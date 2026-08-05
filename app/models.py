@@ -116,6 +116,18 @@ class ClientRecord(db.Model):
     # time, which is exactly what caused every existing row to silently end up NULL once.
     cordoba_paid = db.Column(db.Boolean, default=False, server_default=db.text("0"))
 
+    # The exact rate this row's commission was actually paid at, when known (owner
+    # policy, confirmed): Commission History import files now carry a "Rate" column
+    # (e.g. "1.40%") recording what the prior account manager actually paid the agent
+    # on this specific client — see commission_history_parser.py. Nullable: only
+    # populated on rows that came with a Rate column (a CRM-computed "cleared" client
+    # has no such column and stays NULL — untouched by this feature, per owner
+    # instruction scoping this to Commission History rows only). When this client
+    # later drops and needs a clawback, the app uses enrolled_debt * paid_rate
+    # verbatim instead of recalculating a rate through the tier table — see
+    # crm_parser.py's known_rate_by_crm_id.
+    paid_rate = db.Column(db.Float, nullable=True)
+
 
 class CordobaPaidClient(db.Model):
     """

@@ -14,7 +14,7 @@ from agent_portal.history_ingest import allowed_history_file, import_commission_
 from agent_portal.ingest import (
     already_known_crm_id_sets, bulk_delete_period, delete_periods_by_filename,
     group_periods_by_filename, known_enrolled_debt_by_crm_id, known_period_totals,
-    save_period_results,
+    known_rate_by_crm_id, save_period_results,
 )
 from agent_portal.models import Agent, AgentAlias, AgentCommission, ClientRecord, CommissionPeriod, SyncedFile
 
@@ -300,6 +300,7 @@ def upload_csv():
             require_prior_payment_evidence=False,
             known_period_totals=known_period_totals(),
             known_enrolled_debt_by_crm_id=known_enrolled_debt_by_crm_id(),
+            known_rate_by_crm_id=known_rate_by_crm_id(),
         )
         outcome = save_period_results(period_results, file.filename, source_label="manual")
         db.session.commit()
