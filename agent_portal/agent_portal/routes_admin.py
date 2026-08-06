@@ -457,6 +457,8 @@ def upload_cordoba_payout():
                        "never actually paid commission (dropped before payout) — not listed under "
                        "\"Cordoba Charge back\"")
 
+    return redirect(url_for("admin.dashboard"))
+
 
 @bp.route("/upload-commission-history", methods=["POST"])
 @admin_required
