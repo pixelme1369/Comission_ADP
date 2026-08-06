@@ -149,7 +149,7 @@
 </p>
 <div class="table-wrapper">
   <table class="data-table">
-    <thead><tr><th>ID</th><th>Client Name</th><th>Enrolled Date</th><th>Enrolled Debt</th><th>Dropped Date</th><th>Payments Made</th><th>Pay Freq.</th><th>Clawback Amount</th><th>Cordoba Charge back</th></tr></thead>
+    <thead><tr><th>ID</th><th>Client Name</th><th>Enrolled Date</th><th>Enrolled Debt</th><th>Credit Score</th><th>Dropped Date</th><th>Payments Made</th><th>Pay Freq.</th><th>Clawback Amount</th><th>Cordoba Charge back</th></tr></thead>
     <tbody>
       {% for c in clawback_clients %}
       <tr class="row-red">
@@ -157,6 +157,12 @@
         <td>{{ c.client_name }}</td>
         <td>{{ c.enrolled_date or '—' }}</td>
         <td>${{ "{:,.2f}".format(c.enrolled_debt) }}</td>
+        <td>
+          {{ c.credit_score if c.credit_score is not none else '—' }}
+          {% if c.is_low_credit %}
+            <span class="badge badge-amber" title="Credit Score <= 500 — counts toward tier, no commission">$0</span>
+          {% endif %}
+        </td>
         <td>{{ c.dropped_date }}</td>
         <td>{{ c.payments_made }}</td>
         <td>{{ c.pay_freq or '—' }}</td>
