@@ -84,11 +84,12 @@
         <th data-col="1">ID</th>
         <th data-col="2">Client Name</th>
         <th data-col="3">Enrolled Debt</th>
-        <th data-col="4">1st Payment Cleared</th>
-        <th data-col="5">Dropped Date</th>
-        <th data-col="6">Payments Made</th>
-        <th data-col="7">Pay Freq.</th>
-        <th data-col="8">Clawback Amount</th>
+        <th data-col="4">Credit Score</th>
+        <th data-col="5">1st Payment Cleared</th>
+        <th data-col="6">Dropped Date</th>
+        <th data-col="7">Payments Made</th>
+        <th data-col="8">Pay Freq.</th>
+        <th data-col="9">Clawback Amount</th>
       </tr>
     </thead>
     <tbody>
@@ -102,6 +103,12 @@
         <td class="muted">{{ c.crm_id or '—' }}</td>
         <td>{{ c.client_name }}</td>
         <td>${{ "{:,.2f}".format(c.enrolled_debt) }}</td>
+        <td>
+          {{ c.credit_score if c.credit_score is not none else '—' }}
+          {% if c.is_low_credit %}
+            <span class="badge badge-amber" title="Credit Score <= 500 — counts toward tier, no commission">$0</span>
+          {% endif %}
+        </td>
         <td>{{ c.first_payment_cleared_date or '—' }}</td>
         <td>{{ c.dropped_date or '—' }}</td>
         <td>{{ c.payments_made }}</td>
