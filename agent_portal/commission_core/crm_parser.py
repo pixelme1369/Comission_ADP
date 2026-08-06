@@ -4,9 +4,9 @@ Parses a full-history CRM export (one row per client, all months in one file).
 Shared between app/ (the internal single-user tool) and agent_portal/ (the
 multi-user portal) — see commission_core/README.md for why this package
 exists and physically lives where it does. The two apps' calculated
-commission/clawback numbers are IDENTICAL except for two owner-confirmed,
-explicit divergences, both controlled by keyword-only flags on
-parse_crm_and_calculate() rather than forked copies of this file:
+commission/clawback numbers are IDENTICAL except for a handful of
+owner-confirmed, explicit divergences, all controlled by keyword-only flags
+on parse_crm_and_calculate() rather than forked copies of this file:
 
 1. persist_same_month_cancel (default False, matching app/'s original
    behavior; agent_portal passes True): when True, clients who dropped the
@@ -18,30 +18,64 @@ parse_crm_and_calculate() rather than forked copies of this file:
    shown this list at all; agent_portal added it deliberately.
 
 2. require_prior_payment_evidence (default True, matching app/'s original/
-   still-current policy; agent_portal passes False): governs two related
-   mechanisms that both hinge on "do we have proof this portal already paid
-   the agent for this client, from EARLIER data in our own database":
-     - Late activation: reassigning a client's commission credit forward to
-       the latest period in the file when they're currently cleared but
-       their crm_id was never seen as paid before (see the block below).
-     - The Step 3 clawback guard: refusing to claw back a "clawback"-
-       classified client unless they were either in this file's own cleared
-       bucket or already recorded as paid in the database.
-   True (app/'s policy): both run — a client with no prior-payment evidence
-   in the file/DB is NOT trusted as a genuine late activation or clawback.
+   still-current policy; agent_portal passes False): governs late
+   activation only — reassigning a client's commission credit forward to
+   the latest period in the file when they're currently cleared but their
+   crm_id was never seen as paid before (see the block below). ("Do we have
+   proof this portal already paid the agent for this client, from EARLIER
+   data in our own database" — the same question require_clawback_payment_
+   evidence below asks, but for the Step 3 clawback guard instead; the two
+   used to be one flag, see the NOTE below.)
+   True (app/'s policy): late activation runs — a client with no
+   prior-payment evidence in the file/DB is NOT trusted as a genuine late
+   activation and is credited in their own real cleared_period instead of
+   being reassigned forward.
    False (agent_portal's policy, owner-confirmed August 2026 — see
    "always assume i paid them for previous cleared files" in the commit
-   history): a client's own 1st Payment Cleared Date on the row IS treated
-   as proof enough on its own — every client is always credited in their own
-   real cleared_period (no late-activation reassignment at all), and every
-   clawback-classified row is always clawed back (no proof-of-payment guard)
-   regardless of whether this portal's own upload history happens to be
-   complete. This was an explicit, repeated owner directive for agent_portal
-   specifically; app/ was deliberately left on the older, more conservative
-   policy per owner sign-off during the commission_core merge (August 2026)
-   rather than silently unifying the money math.
+   history): no late-activation reassignment at all — every client is always
+   credited in their own real cleared_period regardless of whether this
+   portal's own upload history happens to be complete. This was an explicit,
+   repeated owner directive for agent_portal specifically; app/ was
+   deliberately left on the older, more conservative policy per owner
+   sign-off during the commission_core merge (August 2026) rather than
+   silently unifying the money math.
 
-3. already_history_paid_crm_ids (default None/empty set; app/ never passes
+   NOTE: until August 2026 this flag also gated the Step 3 clawback
+   proof-of-payment guard described under require_clawback_payment_evidence
+   below. It no longer does — see that parameter for why the two were split
+   apart and revised policy history.
+
+3. require_clawback_payment_evidence (default None; falls back to
+   require_prior_payment_evidence's value when not given explicitly — so
+   app/'s call site, which never passed either flag, is untouched and keeps
+   getting True/True): governs ONLY the Step 3 clawback guard — whether a
+   "clawback"-classified row is trusted without independent proof the agent
+   was ever actually paid on that client. True: a clawback is only applied
+   if the client either appeared in THIS file's own cleared bucket, or its
+   crm_id is already recorded is_cleared=True in the DB from an earlier
+   upload (a prior calculated period OR a Commission History import — both
+   set is_cleared=True the same way). Without either, the row is reclassified
+   to same_month_cancel (no deduction) instead of trusted on the strength of
+   its own single row. False: the row's own cleared date is treated as proof
+   enough by itself (agent_portal's original August 2026 policy, see above).
+
+   Split out from require_prior_payment_evidence on owner direction
+   (confirmed August 2026, same day as the original directive, after a real
+   case — Alonzo Caudill / ID 1223452256, cleared and dropped in the very
+   same first-ever CRM upload with no corroborating history — got clawed
+   back on the strength of one row alone): "we can't clawback something we
+   didn't pay the agent." agent_portal now passes
+   require_clawback_payment_evidence=True explicitly at both real call sites
+   (routes_admin.py's manual upload and drive_sync.py's automated sync) —
+   clawbacks now require the same proof-of-payment app/ has always required.
+   require_prior_payment_evidence itself stays False for agent_portal: late
+   activation is a deliberately separate, still-unchanged policy (owner
+   confirmed: keep late activation as-is) — a pending-then-active client is
+   still always credited in their own real cleared_period, never reassigned
+   forward. The two mechanisms no longer share one on/off switch precisely
+   so a future change to one can never silently drag the other along again.
+
+4. already_history_paid_crm_ids (default None/empty set; app/ never passes
    this — see below for why it's structurally impossible for app/ to need
    it — agent_portal passes every crm_id already recorded as paid via a
    separate Commission History import for that exact client): owner policy,
@@ -71,7 +105,7 @@ parse_crm_and_calculate() rather than forked copies of this file:
    month in the first place — there is nothing for this set to protect
    against there. Passing None (app/'s call sites) is a complete no-op.
 
-4. known_period_totals (default None/empty dict; app/ never passes this —
+5. known_period_totals (default None/empty dict; app/ never passes this —
    structurally can't need it, same reasoning as already_history_paid_crm_ids
    above — agent_portal passes the DB's actual saved totals for every
    (agent_name, period_label) it already has on file, summed across every
@@ -261,6 +295,7 @@ def parse_crm_and_calculate(file_bytes: bytes, filename: str, already_cleared_cr
                              *,
                              persist_same_month_cancel: bool = False,
                              require_prior_payment_evidence: bool = True,
+                             require_clawback_payment_evidence: bool = None,
                              known_period_totals: dict = None,
                              known_enrolled_debt_by_crm_id: dict = None,
                              known_rate_by_crm_id: dict = None) -> list:
@@ -268,11 +303,11 @@ def parse_crm_and_calculate(file_bytes: bytes, filename: str, already_cleared_cr
     Parse a full-history CRM export and return one dict per commission period found.
 
     persist_same_month_cancel, require_prior_payment_evidence,
-    already_history_paid_crm_ids, and known_period_totals are the four
-    owner-confirmed/bug-fix, app-specific divergences described in the
-    module docstring above — see there before changing any of them.
-    known_enrolled_debt_by_crm_id is a fifth, but NOT app-specific — both
-    apps should pass it; see its own docstring below.
+    require_clawback_payment_evidence, already_history_paid_crm_ids, and
+    known_period_totals are the owner-confirmed/bug-fix, app-specific
+    divergences described in the module docstring above — see there before
+    changing any of them. known_enrolled_debt_by_crm_id is another, but NOT
+    app-specific — both apps should pass it; see its own docstring below.
 
     known_period_totals: {(agent_name, period_label): {"units_cleared": int,
     "total_cleared_debt": float, "gross_commission": float,
@@ -325,7 +360,7 @@ def parse_crm_and_calculate(file_bytes: bytes, filename: str, already_cleared_cr
     paid via a row carrying a Rate column, so their crm_id is never in this dict,
     and their clawback still goes through the tier-recalculation formula exactly as
     before. Every other guard still applies before this is even consulted
-    (already_charged_back_crm_ids, require_prior_payment_evidence, low-credit) —
+    (already_charged_back_crm_ids, require_clawback_payment_evidence, low-credit) —
     this only changes HOW MUCH is clawed back, never WHETHER to. Falls back to the
     tier-recalculation formula when the crm_id isn't in this dict (no known rate —
     e.g. the client's original commission was CRM-computed, not Commission-History-
@@ -358,6 +393,12 @@ def parse_crm_and_calculate(file_bytes: bytes, filename: str, already_cleared_cr
     }
     """
     errors = []
+    # Not passed explicitly by either app's real call site except agent_portal
+    # (which now diverges from require_prior_payment_evidence on purpose — see
+    # the module docstring) -> defaults to require_prior_payment_evidence's own
+    # value, preserving every pre-split caller's behavior unchanged.
+    if require_clawback_payment_evidence is None:
+        require_clawback_payment_evidence = require_prior_payment_evidence
     if already_low_credit_crm_ids is None:
         already_low_credit_crm_ids = set()
     if already_history_paid_crm_ids is None:
@@ -765,7 +806,7 @@ def parse_crm_and_calculate(file_bytes: bytes, filename: str, already_cleared_cr
     # (agent, target_period) → list of (client, clawback_amount)
     clawback_by_target_period = defaultdict(list)
     # Clients reclassified out of "clawback" below (no proof of prior payment
-    # under require_prior_payment_evidence, or low-credit) — tracked so the
+    # under require_clawback_payment_evidence, or low-credit) — tracked so the
     # visibility pass right after this loop can make sure they still show up
     # somewhere. See that pass for why.
     reclassified_clients = []
@@ -799,19 +840,20 @@ def parse_crm_and_calculate(file_bytes: bytes, filename: str, already_cleared_cr
             # the same client twice.
             continue
 
-        # Proof-of-payment guard — gated behind require_prior_payment_evidence
-        # (see the module docstring). When True (app/'s policy): a "clawback"
-        # row is reclassified to a non-paying same_month_cancel (no deduction)
-        # unless the client also appeared in THIS file's cleared bucket or had
-        # a prior DB record of is_cleared=True — i.e. we need proof the agent
-        # was ever actually paid before clawing anything back. When False
-        # (agent_portal's policy): skipped — a real 1st Payment Cleared Date
-        # on the row IS treated as proof enough on its own, so every such row
-        # is always clawed back regardless of this portal's own upload
-        # history. Either way, only two things still block a deduction:
-        # already clawed back via Cordoba (above), and low-credit clients,
+        # Proof-of-payment guard — gated behind require_clawback_payment_evidence
+        # (see the module docstring; split out from require_prior_payment_evidence
+        # August 2026 — owner: "we can't clawback something we didn't pay the
+        # agent"). When True (both apps' current policy): a "clawback" row is
+        # reclassified to a non-paying same_month_cancel (no deduction) unless
+        # the client also appeared in THIS file's cleared bucket or had a prior
+        # DB record of is_cleared=True — i.e. we need proof the agent was ever
+        # actually paid before clawing anything back. When False: skipped — a
+        # real 1st Payment Cleared Date on the row IS treated as proof enough on
+        # its own, so every such row is always clawed back regardless of upload
+        # history. Either way, only two things still block a deduction beyond
+        # this: already clawed back via Cordoba (above), and low-credit clients,
         # who were never paid anything to claw back regardless (below).
-        if require_prior_payment_evidence:
+        if require_clawback_payment_evidence:
             was_cleared_in_file = any(
                 x.get("crm_id") == crm_id
                 for x in cleared_buckets.get(orig_key, [])

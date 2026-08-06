@@ -116,6 +116,52 @@ class TestUploadRoutesDoNotCrashOnUnexpectedErrors:
         assert b"Cordoba payout processing failed" in resp.data
         assert b"Internal Server Error" not in resp.data
 
+    def test_cordoba_upload_returns_a_response_on_success(self, app, db, client):
+        """Regression test: upload_cordoba_payout's success path used to fall
+        off the end of the function with no return statement -- Flask raised
+        TypeError('the view function did not return a valid response') on
+        EVERY successful Cordoba payout upload (the data was still committed
+        inside process_cordoba_file, only the response was missing), so a
+        real admin saw a raw 500 instead of the success flash messages. A
+        minimal, valid, empty-of-matches workbook exercises the success path
+        without touching process_cordoba_file at all."""
+        admin = _make_admin(db)
+        _login_as(client, admin)
+
+        import openpyxl
+        wb = openpyxl.Workbook()
+        first_pays = wb.active
+        first_pays.title = "First Pays"
+        first_pays.append([
+            "Assigned Marketing", "Enrolled Date", "ID", "Full Name", "Status",
+            "Enrolled Debt", "1st Payment Cleared Date", "Payments Made",
+            "Marketing Payment Cleared", "Home Phone", "Credit Score", "Source File",
+        ])
+        epf = wb.create_sheet("EPF")
+        epf.append([
+            "Contact ID", "Enrolled Date", "Enrolled Debt", "Marketing Company",
+            "Full Name", "Amount", "Cleared Date", "Amount Owed", "Source File",
+        ])
+        chargebacks = wb.create_sheet("Chargebacks")
+        chargebacks.append([
+            "Assigned Company", "Enrolled Date", "ID", "Full Name", "Status",
+            "Marketing Payout Debt", "1st Payment Cleared Date", "Pay Freq.",
+            "Payments Made", "Marketing Payment Cleared", "Marketing Payment Chargeback",
+            "Dropped Date", "Source File",
+        ])
+        buf = io.BytesIO()
+        wb.save(buf)
+        buf.seek(0)
+
+        resp = client.post(
+            "/admin/upload-cordoba-payout",
+            data={"cordoba_file": (buf, "cordoba.xlsx")},
+            content_type="multipart/form-data", follow_redirects=True,
+        )
+        assert resp.status_code == 200
+        assert b"Cordoba payout processed" in resp.data
+        assert b"Internal Server Error" not in resp.data
+
 
 class TestColumnWidenFixNowCardVisibility:
     def test_card_hidden_on_a_fresh_database(self, app, db, client):

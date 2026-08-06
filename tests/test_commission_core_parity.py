@@ -10,9 +10,15 @@ apps' real call sites import from it directly.
 
 1. TestBothAppsAgreeOnPlainCommissionMath / TestDivergencesAreScopedToTheirOwnFlagOnly:
    both apps' actual call sites compute IDENTICAL commission numbers from
-   identical CRM input, for every scenario except the two explicitly
+   identical CRM input, for every scenario except the explicitly
    owner-confirmed divergences — see commission_core/crm_parser.py's module
-   docstring for persist_same_month_cancel / require_prior_payment_evidence.
+   docstring for persist_same_month_cancel / require_prior_payment_evidence /
+   require_clawback_payment_evidence. Clawback proof-of-payment used to be a
+   real divergence (agent_portal trusted a row's own dates with no
+   corroboration; app/ didn't) — as of the August 2026 split, both apps
+   require the same proof for a clawback, so that scenario is no longer a
+   divergence and lives in TestBothAppsAgreeOnPlainCommissionMath now. Late
+   activation (require_prior_payment_evidence) is the one that remains.
    This drives commission_core.crm_parser.parse_crm_and_calculate() directly
    with each app's actual flag values (copied verbatim from
    app/routes.py's defaults and agent_portal/agent_portal/routes_admin.py's
@@ -48,12 +54,18 @@ except ImportError:
     AGENT_PORTAL_AVAILABLE = False
 
 # The exact flag values each app's real call site relies on: app/routes.py
-# never passes either flag, so these are parse_crm_and_calculate's own
-# defaults; agent_portal/agent_portal/routes_admin.py and drive_sync.py pass
-# these explicitly. Named here (not re-derived) so this test breaks loudly if
+# never passes any of these flags, so these are parse_crm_and_calculate's own
+# defaults (require_clawback_payment_evidence falls back to
+# require_prior_payment_evidence when omitted, landing on True either way);
+# agent_portal/agent_portal/routes_admin.py and drive_sync.py pass these
+# explicitly. Named here (not re-derived) so this test breaks loudly if
 # either app's real call site ever drifts from what's asserted below.
 APP_FLAGS = {"persist_same_month_cancel": False, "require_prior_payment_evidence": True}
-AGENT_PORTAL_FLAGS = {"persist_same_month_cancel": True, "require_prior_payment_evidence": False}
+AGENT_PORTAL_FLAGS = {
+    "persist_same_month_cancel": True,
+    "require_prior_payment_evidence": False,
+    "require_clawback_payment_evidence": True,
+}
 
 HEADERS = [
     "ID", "Sales Rep", "Full Name", "1st Payment Cleared Date", "Dropped Date",
@@ -144,6 +156,26 @@ class TestBothAppsAgreeOnPlainCommissionMath:
         (ap_result,) = ap_periods[0]["results"]
         assert _numeric_fields(app_result) == _numeric_fields(ap_result)
 
+    def test_first_time_clawback_without_prior_evidence_is_no_longer_a_divergence(self):
+        # No already_cleared_crm_ids/already_charged_back_crm_ids at all —
+        # the "first upload, no DB history yet" scenario. Until the August
+        # 2026 require_clawback_payment_evidence split, agent_portal clawed
+        # this back anyway (its own row's dates treated as proof enough) and
+        # app/ didn't — a real divergence. A real production case (Alonzo
+        # Caudill / ID 1223452256) showed that trusting one row alone wasn't
+        # what the owner wanted, so agent_portal now requires the same proof
+        # app/ always has: both agree, nothing to claw back.
+        data = _crm_csv([
+            _client("1", cleared="03/05/2026", dropped="06/23/2026", debt="16866", payments="1"),
+        ])
+        app_periods = parse_crm_and_calculate(data, "f.csv", **APP_FLAGS)
+        ap_periods = parse_crm_and_calculate(data, "f.csv", **AGENT_PORTAL_FLAGS)
+
+        app_clawback_total = sum(r["clawback_amount"] for p in app_periods for r in p["results"])
+        ap_clawback_total = sum(r["clawback_amount"] for p in ap_periods for r in p["results"])
+        assert app_clawback_total == 0.0
+        assert ap_clawback_total == 0.0
+
 
 class TestDivergencesAreScopedToTheirOwnFlagOnly:
     """The two documented, owner-confirmed differences show up ONLY where
@@ -165,27 +197,36 @@ class TestDivergencesAreScopedToTheirOwnFlagOnly:
         assert len(app_result["_all_period_clients"]) == 1   # app/ never shows same_month_cancel rows
         assert len(ap_result["_all_period_clients"]) == 2    # agent_portal does (display only)
 
-    def test_first_time_clawback_without_prior_evidence_is_the_one_real_divergence(self):
-        # No already_cleared_crm_ids/already_charged_back_crm_ids at all —
-        # exactly the "first upload, no DB history yet" scenario the owner's
-        # August 2026 policy directive for agent_portal was about.
+    def test_late_activation_is_the_one_remaining_divergence(self):
+        # require_prior_payment_evidence now governs ONLY late activation
+        # (the clawback half was split out into require_clawback_payment_evidence
+        # and no longer diverges — see test_first_time_clawback_without_
+        # prior_evidence_is_no_longer_a_divergence above). Client "1" cleared
+        # in March with no drop; already_cleared_crm_ids is non-empty (so the
+        # late-activation heuristic is live) but doesn't contain "1" —
+        # exactly "we've never independently seen this client paid before."
+        # Client "2" cleared in June, establishing June as the latest period
+        # in the file.
         data = _crm_csv([
-            _client("1", cleared="03/05/2026", dropped="06/23/2026", debt="16866", payments="1"),
+            _client("1", cleared="03/05/2026", debt="10000"),
+            _client("2", cleared="06/10/2026", debt="5000"),
         ])
-        app_periods = parse_crm_and_calculate(data, "f.csv", **APP_FLAGS)
-        ap_periods = parse_crm_and_calculate(data, "f.csv", **AGENT_PORTAL_FLAGS)
+        app_periods = parse_crm_and_calculate(
+            data, "f.csv", already_cleared_crm_ids={"some-other-id"}, **APP_FLAGS)
+        ap_periods = parse_crm_and_calculate(
+            data, "f.csv", already_cleared_crm_ids={"some-other-id"}, **AGENT_PORTAL_FLAGS)
 
-        # app/ (old/conservative policy, owner-confirmed to stay as-is during
-        # this merge): no proof of payment in this file or DB -> reclassified,
-        # no clawback anywhere.
-        app_clawback_total = sum(r["clawback_amount"] for p in app_periods for r in p["results"])
-        assert app_clawback_total == 0.0
+        # app/ (True — late activation runs): no independent proof client "1"
+        # was ever paid before -> reassigned forward, credited in June
+        # (the latest period in the file) instead of their real March clear.
+        app_labels = sorted(p["period_label"] for p in app_periods)
+        assert app_labels == ["2026-06"]
 
-        # agent_portal ("always assume i paid them for previous cleared
-        # files" — owner-confirmed): the client's own cleared date is treated
-        # as proof enough on its own -> a real clawback applies.
-        ap_clawback_total = sum(r["clawback_amount"] for p in ap_periods for r in p["results"])
-        assert ap_clawback_total == pytest.approx(168.66)  # 16866 * 1% flat-rate fallback
+        # agent_portal (False — no late-activation reassignment, owner-
+        # confirmed to stay as-is): client "1" stays credited in their own
+        # real cleared month.
+        ap_labels = sorted(p["period_label"] for p in ap_periods)
+        assert ap_labels == ["2026-03", "2026-06"]
 
 
 @pytest.mark.skipif(

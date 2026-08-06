@@ -339,9 +339,16 @@ def upload_csv():
             file_bytes, file.filename, already_cleared, already_charged_back, already_low_credit,
             already_history_paid,
             # agent_portal-specific policy flags — see commission_core/crm_parser.py's
-            # module docstring for the owner-confirmed reasoning behind all four.
+            # module docstring for the owner-confirmed reasoning behind all of these.
             persist_same_month_cancel=True,
             require_prior_payment_evidence=False,
+            # Owner policy, confirmed August 2026 (real case: Alonzo Caudill / ID
+            # 1223452256, clawed back on one row's own dates with zero independent
+            # proof the agent was ever paid): "we can't clawback something we didn't
+            # pay the agent." Deliberately does NOT also flip
+            # require_prior_payment_evidence — late activation stays on its own,
+            # unchanged, separate policy (still no reassignment) per owner sign-off.
+            require_clawback_payment_evidence=True,
             known_period_totals=known_period_totals(),
             known_enrolled_debt_by_crm_id=known_enrolled_debt_by_crm_id(),
             known_rate_by_crm_id=known_rate_by_crm_id(),
@@ -449,6 +456,8 @@ def upload_cordoba_payout():
                        "were not found in our commission reports, have no Dropped Date on file yet, or were "
                        "never actually paid commission (dropped before payout) — not listed under "
                        "\"Cordoba Charge back\"")
+
+    return redirect(url_for("admin.dashboard"))
 
 
 @bp.route("/upload-commission-history", methods=["POST"])

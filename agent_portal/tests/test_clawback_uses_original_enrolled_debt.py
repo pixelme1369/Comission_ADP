@@ -60,11 +60,16 @@ class TestClawbackUsesOriginallyRecordedEnrolledDebt:
             # not 1% of $2,664.62 ($26.65).
             assert clawback_row.clawback_amount == 306.88
 
-    def test_falls_back_to_the_files_own_debt_when_nothing_is_known_yet(self, app, db, client):
-        """No prior DB record at all for this crm_id -- must still use the
-        row's own Enrolled Debt. Valid under agent_portal's own
-        require_prior_payment_evidence=False policy (unlike app/'s, this
-        doesn't need a second upload to prove prior payment first)."""
+    def test_no_prior_evidence_means_no_clawback_at_all(self, app, db, client):
+        """OWNER POLICY (revised August 2026, real case: Alonzo Caudill / ID
+        1223452256): a client whose very first appearance in our data is a
+        single CRM row already showing BOTH a cleared and a dropped date has
+        no independent proof the agent was ever actually paid on them —
+        agent_portal no longer trusts that one row alone (see
+        require_clawback_payment_evidence on parse_crm_and_calculate). Before
+        this policy, this exact shape used the row's own Enrolled Debt as a
+        fallback and clawed back anyway; now there's nothing to claw back at
+        all -- reclassified same_month_cancel, same as app/ has always done."""
         admin = _make_admin(db)
         _login_as(client, admin)
 
@@ -81,6 +86,4 @@ class TestClawbackUsesOriginallyRecordedEnrolledDebt:
         assert resp.status_code == 200
 
         with app.app_context():
-            clawback_row = ClientRecord.query.filter_by(crm_id="999", clawback_applied=True).first()
-            assert clawback_row is not None
-            assert clawback_row.enrolled_debt == 5000.0
+            assert ClientRecord.query.filter_by(crm_id="999", clawback_applied=True).first() is None

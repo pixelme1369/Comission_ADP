@@ -429,16 +429,99 @@ class TestClawback:
         assert "2026-08" not in periods
 
 
+class TestClawbackPaymentEvidenceGuard:
+    """require_clawback_payment_evidence (owner policy, revised August 2026,
+    real case: Alonzo Caudill / ID 1223452256) — split out from
+    require_prior_payment_evidence so agent_portal can require proof of
+    prior payment for a clawback WITHOUT also re-enabling late activation.
+    The module-level parse_crm_and_calculate binds
+    require_prior_payment_evidence=False (agent_portal's late-activation
+    policy) — every test here overrides require_clawback_payment_evidence
+    explicitly to exercise the split behavior."""
+
+    def test_no_prior_evidence_blocks_the_clawback(self):
+        # Single row, cleared and dropped together, no already_cleared_crm_ids
+        # and no already_charged_back_crm_ids at all — the exact "first-ever
+        # upload" shape that used to be clawed back under agent_portal's old,
+        # unsplit policy.
+        data = crm_csv([
+            client("Z1", cleared="03/05/2026", dropped="06/23/2026", payments="1", debt="16866"),
+        ])
+        periods = by_period(parse_crm_and_calculate(
+            data, "f.csv", require_clawback_payment_evidence=True))
+        total_clawback = sum(
+            r["clawback_amount"] for p in periods.values() for r in p["results"]
+        )
+        assert total_clawback == 0.0
+
+    def test_prior_db_evidence_still_allows_the_clawback(self):
+        # Same shape, but already_cleared_crm_ids proves the agent really was
+        # paid before (e.g. an earlier CRM period or a Commission History
+        # import) — the clawback still applies exactly as before.
+        data = crm_csv([
+            client("Z2", cleared="03/05/2026", dropped="06/23/2026", payments="1", debt="16866"),
+        ])
+        periods = by_period(parse_crm_and_calculate(
+            data, "f.csv", already_cleared_crm_ids={"Z2"},
+            require_clawback_payment_evidence=True))
+        total_clawback = sum(
+            r["clawback_amount"] for p in periods.values() for r in p["results"]
+        )
+        assert total_clawback == pytest.approx(168.66)  # 16,866 x 1% flat-rate fallback
+
+    def test_guard_is_scoped_to_the_clawback_row_only(self):
+        # The guard only reclassifies the specific "clawback" row that lacks
+        # proof — it must not touch a completely unrelated, genuinely cleared
+        # (never dropped) client sharing the same file/period.
+        data = crm_csv([
+            client("Z3", cleared="03/05/2026", debt="9000"),
+            client("Z4", cleared="03/06/2026", dropped="06/23/2026", payments="1", debt="16866"),
+        ])
+        periods = by_period(parse_crm_and_calculate(
+            data, "f.csv", require_clawback_payment_evidence=True))
+        march = periods["2026-03"]["results"][0]
+        assert march["units_cleared"] == 1          # Z3 only — Z4 never enters cleared_buckets
+        assert march["gross_commission"] == pytest.approx(90.0)  # 9,000 x 1%
+        total_clawback = sum(
+            r["clawback_amount"] for p in periods.values() for r in p["results"]
+        )
+        assert total_clawback == 0.0  # Z4 still has no proof of its own -> not clawed back
+
+    def test_does_not_re_enable_late_activation(self):
+        # The whole point of the split: turning ON require_clawback_payment_
+        # evidence must NOT turn on late-activation reassignment too, since
+        # require_prior_payment_evidence (the flag that actually governs late
+        # activation) stays False here, matching agent_portal's real call sites.
+        data = crm_csv([
+            client("W1", cleared="03/05/2026", debt="10000"),
+            client("W2", cleared="06/10/2026", debt="5000"),
+        ])
+        periods = by_period(parse_crm_and_calculate(
+            data, "f.csv", already_cleared_crm_ids={"some-other-id"},
+            require_clawback_payment_evidence=True))
+        # W1 stays credited in its own real cleared month (March), NOT
+        # reassigned forward to June (the latest period in the file).
+        assert set(periods) == {"2026-03", "2026-06"}
+        assert periods["2026-03"]["results"][0]["units_cleared"] == 1
+
+
 class TestCancellationRatePolicy:
     def test_never_paid_cancels_still_count_in_the_rate(self):
         """OWNER POLICY (July 2026): an enrolled client who cancelled counts toward
         the cancellation rate even if commission was never paid on them.
         3 cleared + 1 never-paid cancel -> 25% > 20% -> tier penalty applies.
-        A4 itself IS clawed back here (agent_portal's require_prior_payment_evidence=False
-        policy treats the row's own cleared date as proof of payment on the very
-        first upload — see TestClawback) — that clawback landing in A4's own
-        Dropped Date month (August) is a separate, unrelated mechanism from the
-        cancellation-rate policy this test is actually about."""
+        A4 itself IS clawed back here — this test file's module-level
+        parse_crm_and_calculate binds require_prior_payment_evidence=False and
+        leaves require_clawback_payment_evidence unset, so it falls back to
+        that same False, treating A4's own cleared date as proof of payment
+        on the very first upload (see TestClawback). The REAL agent_portal
+        app no longer behaves this way — routes_admin.py/drive_sync.py now
+        pass require_clawback_payment_evidence=True explicitly (owner policy,
+        revised August 2026 — see TestClawbackPaymentEvidenceGuard below) —
+        that clawback landing in A4's own Dropped Date month (August) is a
+        separate, unrelated mechanism from the cancellation-rate policy this
+        test is actually about, which is why this file still exercises the
+        old default here rather than the app's real, stricter flag value."""
         data = crm_csv([
             client("A1", cleared="06/10/2026", debt="100000"),
             client("A2", cleared="06/11/2026", debt="100000"),

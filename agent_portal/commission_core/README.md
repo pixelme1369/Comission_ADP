@@ -39,10 +39,10 @@ index.py` already putting `agent_portal/` on `sys.path`.
 - `crm_parser.py` — parses the full-history CRM export. This is the ONE file with real behavior
   differences between the two apps, all owner-confirmed and all controlled by parameters on
   `parse_crm_and_calculate()` — see the module docstring at the top of that file for the full
-  explanation of `persist_same_month_cancel`, `require_prior_payment_evidence`, and
-  `already_history_paid_crm_ids`. Do not fork this file to add a fourth app-specific behavior; add
-  another explicit flag/parameter instead, and document why in that same docstring with an owner
-  sign-off reference.
+  explanation of `persist_same_month_cancel`, `require_prior_payment_evidence`,
+  `require_clawback_payment_evidence`, and `already_history_paid_crm_ids`. Do not fork this file to
+  add a new app-specific behavior; add another explicit flag/parameter instead, and document why in
+  that same docstring with an owner sign-off reference.
 
 ## Tests
 
