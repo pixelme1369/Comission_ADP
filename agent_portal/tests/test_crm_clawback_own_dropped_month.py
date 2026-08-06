@@ -88,9 +88,27 @@ class TestClawbackAppliesToAnAlreadyExistingPeriod:
     def test_reuploading_the_same_file_never_double_claws_back(self, app, db, client):
         """A full-history CRM export always re-includes every client ever
         seen, including already-clawed-back ones — re-uploading it must be a
-        complete no-op for that client, not a repeat deduction."""
+        complete no-op for that client, not a repeat deduction.
+
+        Two uploads, not one: agent_portal now requires proof of prior
+        payment before a clawback applies (require_clawback_payment_evidence,
+        owner policy revised August 2026) — a single row showing cleared and
+        dropped together, with no earlier record the agent was ever paid,
+        gets no clawback at all (see test_clawback_uses_original_enrolled_
+        debt.py). So the first upload here establishes the client as
+        genuinely cleared (no drop) to create that proof, matching how a
+        real multi-month history would look; the SAME second file (showing
+        the drop) is then posted twice to prove the double-clawback guard."""
         admin = _make_admin(db)
         _login_as(client, admin)
+
+        first = _crm_csv_bytes([
+            {"ID": "1", "Sales Rep": "Agent A", "Full Name": "Drops Later",
+             "1st Payment Cleared Date": "06/10/2026", "Status": "Active",
+             "Enrolled Debt": "10000", "# NSF": "0", "Payments Made": "1", "Pay Freq.": "Monthly"},
+        ])
+        client.post("/admin/upload-csv", data={"csv_file": (io.BytesIO(first), "f1.csv")},
+                    content_type="multipart/form-data")
 
         data = _crm_csv_bytes([
             {"ID": "1", "Sales Rep": "Agent A", "Full Name": "Drops Later",
@@ -98,7 +116,7 @@ class TestClawbackAppliesToAnAlreadyExistingPeriod:
              "Status": "Cancelled", "Enrolled Debt": "10000", "# NSF": "0",
              "Payments Made": "1", "Pay Freq.": "Monthly"},
         ])
-        client.post("/admin/upload-csv", data={"csv_file": (io.BytesIO(data), "f1.csv")},
+        client.post("/admin/upload-csv", data={"csv_file": (io.BytesIO(data), "f2.csv")},
                     content_type="multipart/form-data")
 
         with app.app_context():
@@ -108,9 +126,9 @@ class TestClawbackAppliesToAnAlreadyExistingPeriod:
             )
             assert total_after_first == 100.0
 
-        # Re-upload the EXACT same file again (a routine daily re-sync, say).
+        # Re-upload the EXACT same drop-showing file again (a routine daily re-sync, say).
         resp = client.post(
-            "/admin/upload-csv", data={"csv_file": (io.BytesIO(data), "f1.csv")},
+            "/admin/upload-csv", data={"csv_file": (io.BytesIO(data), "f2.csv")},
             content_type="multipart/form-data", follow_redirects=True,
         )
         assert resp.status_code == 200

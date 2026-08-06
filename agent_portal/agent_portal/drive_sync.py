@@ -98,9 +98,13 @@ def sync_from_drive():
         file_bytes, file_meta["name"], already_cleared, already_charged_back, already_low_credit,
         already_history_paid,
         # agent_portal-specific policy flags — see commission_core/crm_parser.py's
-        # module docstring for the owner-confirmed reasoning behind all four.
+        # module docstring for the owner-confirmed reasoning behind all of these.
+        # Kept identical to routes_admin.py's manual upload flags on purpose — the
+        # automated Drive sync and the manual admin upload must never diverge on
+        # what counts as a valid clawback for the same file.
         persist_same_month_cancel=True,
         require_prior_payment_evidence=False,
+        require_clawback_payment_evidence=True,
         known_period_totals=known_period_totals(),
         known_enrolled_debt_by_crm_id=known_enrolled_debt_by_crm_id(),
         known_rate_by_crm_id=known_rate_by_crm_id(),

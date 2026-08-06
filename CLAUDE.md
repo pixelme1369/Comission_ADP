@@ -217,27 +217,54 @@ agent_portal Vercel project's Root Directory setting would exclude a repo-root s
 from the deployed bundle). `app/__init__.py` puts that directory on `sys.path` so `import
 commission_core` works from this app's code exactly like a true sibling package would.
 
-`commission_core/crm_parser.py`'s `parse_crm_and_calculate()` takes three parameters (two
-keyword-only flags plus one optional set) that preserve the real, owner-confirmed behavior
-differences between the two apps (full explanation in that file's module docstring) — **do not
-silently unify these without a fresh owner sign-off, and do not fork the file to add a fourth
-app-specific behavior; add another explicit flag/parameter instead:**
+`commission_core/crm_parser.py`'s `parse_crm_and_calculate()` takes several parameters (keyword-only
+flags plus optional sets/dicts) that preserve the real, owner-confirmed behavior differences
+between the two apps (full explanation in that file's module docstring) — **do not silently unify
+these without a fresh owner sign-off, and do not fork the file to add a new app-specific behavior;
+add another explicit flag/parameter instead:**
 
 - `persist_same_month_cancel` — **`app/` uses the default, `False`.** `agent_portal/` passes
   `True`: clients who dropped the same month they cleared (or before their own payout date) are
   also surfaced as display-only rows in each period's client list. Never touches units/debt/rate/
   commission math either way.
-- `require_prior_payment_evidence` — **`app/` uses the default, `True`** (its original, more
-  conservative policy: a "clawback"-classified client is only actually clawed back, and a
-  currently-active client is only treated as a late activation, if the file or database has
-  independent proof the agent was paid before). `agent_portal/` passes `False`, per an explicit,
-  repeated owner directive ("always assume i paid them for previous cleared files even if its not
-  in the Commission History Backfill") confirmed August 2026: a client's own 1st Payment Cleared
-  Date is treated as proof enough on its own, so every clawback-classified row is always clawed
-  back and no client is ever reassigned to a later "late activation" period. When the
-  `commission_core` merge was proposed, the owner was explicitly asked whether to unify this policy
-  or keep `app/` on the old one as a second flag — **the owner chose to keep them separate.** Do
-  not change `app/`'s calculated numbers by flipping this flag without new, explicit sign-off.
+- `require_prior_payment_evidence` — **`app/` uses the default, `True`.** Governs **late
+  activation only** (a currently-active client is only treated as a late activation — commission
+  credit reassigned forward to the latest period in the file — if the file or database has
+  independent proof the agent was paid before; without it, they're credited in their own real
+  cleared_period instead). `agent_portal/` passes `False`, per an explicit, repeated owner
+  directive ("always assume i paid them for previous cleared files even if its not in the
+  Commission History Backfill") confirmed August 2026: no late-activation reassignment at all,
+  every client is always credited in their own real cleared_period. When the `commission_core`
+  merge was proposed, the owner was explicitly asked whether to unify this policy or keep `app/`
+  on the old one as a second flag — **the owner chose to keep them separate.** Do not change
+  `app/`'s calculated numbers by flipping this flag without new, explicit sign-off. **Until
+  August 2026 this flag also governed the Step 3 clawback proof-of-payment guard — it no longer
+  does, see `require_clawback_payment_evidence` below.**
+- `require_clawback_payment_evidence` — **`app/` never passes this explicitly; it defaults to
+  `require_prior_payment_evidence`'s value (`True`), so `app/`'s behavior is unchanged.**
+  `agent_portal/` now passes `True` explicitly (owner policy, **revised August 2026** — a real
+  case, Alonzo Caudill / ID 1223452256, cleared and dropped in the very same first-ever CRM
+  upload with zero independent proof he was ever paid, got clawed back on the strength of that
+  one row alone under the original "always assume I paid them" directive; owner: *"we can't
+  clawback something we didn't pay the agent"*). Split out of `require_prior_payment_evidence` so
+  `agent_portal/` could require the same clawback proof-of-payment `app/` has always required
+  **without** also re-enabling late-activation reassignment, which stays off (owner confirmed:
+  keep late activation as-is). A "clawback"-classified row is only actually clawed back if the
+  client either appeared in that same file's own cleared bucket, or its crm_id is already recorded
+  `is_cleared=True` in the DB — from a prior CRM-calculated period **or** a Commission History
+  import (both set `is_cleared=True` the same way, so "check commission history first" is already
+  covered). Without either, the row is reclassified to `same_month_cancel` (no deduction) instead
+  of trusted on the strength of its own single row. This does not change the Cordoba-chargeback
+  clawback path (`_apply_cordoba_chargebacks`) at all — that path has always independently
+  required `ClientRecord.query.filter_by(crm_id=..., is_cleared=True)` to exist before it claws
+  anything back, so it already enforced this same "we paid them first" rule on its own. Nor does
+  it change the informational "Cordoba Clawback: Yes" badge (`_mark_cordoba_chargeback_matches`),
+  which stays a simple ID match against ANY of our commission reports, deliberately decoupled from
+  whether money actually moved (see "Cordoba payout check" above) — a client skipped here can
+  still show that badge. Regression-tested in
+  `agent_portal/tests/test_crm_parser.py::TestClawbackPaymentEvidenceGuard`,
+  `agent_portal/tests/test_clawback_uses_original_enrolled_debt.py`, and
+  `agent_portal/tests/test_crm_clawback_own_dropped_month.py`.
 - `already_history_paid_crm_ids` — **`app/` always passes nothing (`None`)**, and structurally
   never needs to: `app/` kept its original "period already exists" guard, which still fully blocks
   a Commission History import and a calculated period from ever coexisting for the same month
@@ -252,7 +279,7 @@ app-specific behavior; add another explicit flag/parameter instead:**
   clawback is classified purely from a row's own cleared+dropped dates — the moment that same
   crm_id shows a Dropped Date in a future upload, it's caught exactly like any other clawback.
 
-Both apps get one unconditional bugfix regardless of either flag: a client reclassified out of
+Both apps get one unconditional bugfix regardless of any of these flags: a client reclassified out of
 "clawback" (proof-of-payment guard or low-credit) who was the ONLY activity for their agent in
 their own cleared period used to vanish from every page with zero trace — now a $0/0-unit holding
 entry keeps them visible. Zero effect on any dollar amount for any agent; this is the one behavior
