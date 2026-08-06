@@ -254,41 +254,41 @@ def calculate_clawback_amount(
     """
     Clawback owed for removing one already-commissioned client from a month's totals.
 
-    If it was the agent's only cleared unit that month, the full commission is clawed
-    back. If removing the client drops the agent's tier, the clawback is the full
-    commission difference on the whole month's debt (not just this client's share).
-    If the tier is unchanged, the clawback is just this client's share of the rate.
+    OWNER POLICY (revised, supersedes the original "tier recalculation" rule that
+    used to live here): the clawback is always just this client's own proportional
+    share of whatever rate the ORIGINAL month was actually paid at —
+    client_debt × orig_rate, where orig_rate = orig_gross_commission / orig_total_debt
+    (the exact effective rate that period's commission was calculated at — the
+    standard tier table, a fixed-rate agent, or a blended rate summed across
+    multiple sources sharing a period_label, see known_period_totals in
+    crm_parser.py — all collapse to the same gross/debt ratio either way, so this
+    needs no separate case for any of them).
 
-    If agent_name has a contractual fixed rate, the tier never changes (there is no
-    tier), so the clawback is always just this client's share at that fixed rate —
-    checked FIRST, before the orig_units <= 1 shortcut below. A fixed-rate agent has
-    no tier to drop, so "only one unit cleared that month" carries no special meaning
-    for them the way it does under the tier table; falling into that shortcut instead
-    would return the month's total orig_gross_commission verbatim, which is wrong
-    whenever it doesn't equal this client's own debt × their fixed rate (e.g. the
-    only other "unit" that month was a Credit Score <= 500 client, who counts as a
-    unit but contributes $0 debt/commission — orig_gross_commission would be $0,
-    clawing back nothing on a client who may owe hundreds of dollars). Bug found and
-    fixed via a real production case: a fixed-rate agent's clawback landed at $0.00
-    instead of client_debt × fixed_rate. See
-    tests/test_calculator.py::TestFixedRateOverride::test_fixed_rate_clawback_ignores_orig_units_shortcut.
+    This REPLACES the previous rule ("if removing this client would have dropped
+    the whole month below a tier boundary, claw back the full commission
+    difference across ALL of that month's debt, not just this client's share").
+    That rule could produce a clawback wildly out of proportion to the dropped
+    client's own debt — confirmed real case: an $18,007 client generating a
+    $5,364.47 clawback (~30% effective rate, nowhere near any real tier rate)
+    because their departure alone, in isolation, would have dropped the agent
+    below a tier boundary for a month's worth of OTHER clients' debt they had
+    nothing to do with. orig_units and orig_cancellation_rate_pct are no longer
+    used by this function — kept as parameters only for backward compatibility
+    with existing call sites (crm_parser.py, cordoba_ingest.py, routes.py); do
+    not remove them without updating all of those.
+
+    Fixed-rate agents (get_fixed_rate) are checked first and return their flat
+    rate unconditionally, same as always — there's no tier to recalculate for them
+    either way, before or after this policy change.
     """
     fixed_rate = get_fixed_rate(agent_name)
     if fixed_rate is not None:
         return max(0.0, round(client_debt * fixed_rate, 2))
 
-    if orig_units <= 1:
-        return round(orig_gross_commission, 2)
+    # No debt on record for the original month (orig_result wasn't found at all,
+    # or the only other activity was a $0-commission low-credit/safe-cancel unit)
+    # — fall back to the lowest tier rate, same fallback crm_parser.py's Step 3
+    # already uses when it can't find an orig_result to pass in here at all.
+    orig_rate = (orig_gross_commission / orig_total_debt) if orig_total_debt > 0 else 0.01
 
-    new_units = orig_units - 1
-    new_debt = orig_total_debt - client_debt
-    _, new_rate = get_adjusted_tier_rate(new_units, orig_cancellation_rate_pct)
-    _, orig_rate = get_adjusted_tier_rate(orig_units, orig_cancellation_rate_pct)
-
-    if new_rate != orig_rate:
-        new_commission = new_rate * new_debt
-        cb = orig_gross_commission - new_commission
-    else:
-        cb = client_debt * orig_rate
-
-    return max(0.0, round(cb, 2))
+    return max(0.0, round(client_debt * orig_rate, 2))

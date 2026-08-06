@@ -198,11 +198,17 @@ class TestClawbackAmount:
         cb = calculate_clawback_amount(25, 500_000.0, 6_250.0, 0.0, 30_000.0)
         assert cb == pytest.approx(375.0)  # 30,000 x 1.25%
 
-    def test_tier_change_claws_back_difference_on_whole_month(self):
-        # 21 units (Tier 2) -> 20 units (Tier 1): whole month repriced
+    def test_tier_change_no_longer_reprices_the_whole_month(self):
+        """OWNER POLICY (revised, supersedes the original "reprice the whole
+        month" rule): even when removing this client would have dropped the
+        agent below a tier boundary (21 units Tier 2 -> 20 units Tier 1), the
+        clawback is still just this client's own share at the rate the month
+        was ACTUALLY paid at — never a bigger number driven by other clients'
+        debt this client had nothing to do with. Confirmed real case: an
+        $18,007 client generating a $5,364.47 clawback (~30% effective rate)
+        under the old rule."""
         cb = calculate_clawback_amount(21, 420_000.0, 5_250.0, 0.0, 20_000.0)
-        # new commission = 400,000 x 1% = 4,000 ; clawback = 5,250 - 4,000
-        assert cb == pytest.approx(1_250.0)
+        assert cb == pytest.approx(250.0)  # 20,000 x 1.25% (5,250 / 420,000)
 
     def test_never_negative(self):
         assert calculate_clawback_amount(2, 10_000.0, 0.0, 0.0, 5_000.0) >= 0.0
